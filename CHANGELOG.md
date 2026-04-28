@@ -1,3 +1,11 @@
+## 2.0.2
+
+**Docs: scope security claims to per-source threat coverage**
+- Reworked README "Security Model" section to separate user-side threats (covered by the monotonic anchor regardless of source) from network-side threats (per-source coverage matrix across NTP / HTTPS / NTS / Marzullo consensus).
+- Qualified the lead paragraph and Features list: "tamper-proof" is now scoped to user-side system-clock manipulation; per-sample MITM resistance is correctly attributed to NTS (RFC 8915) rather than implied as a property of every source.
+- Cross-linked `SECURITY.md` from the Security Model section for vulnerability disclosure.
+- No code or behavior changes.
+
 ## 2.0.1
 
 **Fix: NTS sample timestamp accuracy**

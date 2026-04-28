@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20Web%20%7C%20Desktop-blue.svg)](https://pub.dev/packages/trusted_time)
 
-**TrustedTime** is a high-integrity, production-grade time guardian for Flutter. It provides a tamper-proof UTC clock anchored to hardware monotonic oscillators, ensuring your app's temporal logic remains perfect even if the system clock is manipulated.
+**TrustedTime** is a high-integrity, production-grade time guardian for Flutter. It provides a UTC clock anchored to hardware monotonic oscillators, ensuring your app's temporal logic remains correct even if the user manipulates the system clock. With optional Network Time Security ([NTS, RFC 8915](https://datatracker.ietf.org/doc/html/rfc8915)), the network samples themselves are also cryptographically authenticated end-to-end against on-path attackers.
 
 [Architecture](ARCHITECTURE.md) • [Contributing](CONTRIBUTING.md) • [Security](SECURITY.md) • [Changelog](CHANGELOG.md)
 
@@ -46,9 +46,9 @@ TrustedTime solves this by providing a **secure virtual clock** that:
 
 ## Features
 
-*   **Tamper-Proof Time**: Anchors network UTC to hardware monotonic uptime.
-*   **Multi-Source Consensus**: Quorum-based resolution via NTP, NTS, and HTTPS.
-*   **Authenticated Time (NTS)**: Optional [RFC 8915](https://datatracker.ietf.org/doc/html/rfc8915) Network Time Security for cryptographically verified samples.
+*   **Tamper-Resistant Time**: Anchors network UTC to hardware monotonic uptime — survives user-side system-clock manipulation, app restarts, and offline operation.
+*   **Multi-Source Consensus**: Quorum-based Marzullo intersection across NTP, NTS, and HTTPS bounds the impact of any single dishonest source.
+*   **Authenticated Time (NTS, opt-in)**: [RFC 8915](https://datatracker.ietf.org/doc/html/rfc8915) Network Time Security adds cryptographic authentication of network samples against on-path attackers (TLS + AEAD).
 *   **Secure Persistence**: Encrypted state recovery across app restarts.
 *   **High Performance**: Synchronous, zero-latency access with <1μs overhead.
 *   **Offline Ready**: Continues providing trusted time without connectivity once anchored.
@@ -239,21 +239,43 @@ After the initial sync, TrustedTime uses a single lightweight timer to schedule 
 
 ## Security Model
 
-TrustedTime protects against:
+TrustedTime distinguishes two threat classes: **user-side** attacks against the local system clock, and **network-side** attacks against the time samples in flight. Coverage depends on which sources are configured.
 
-| Threat                       | Protected |
-| ---------------------------- | --------- |
-| Manual clock change          | ✅         |
-| Offline replay               | ✅         |
-| Trial extension              | ✅         |
-| System time rollback         | ✅         |
-| App restart abuse            | ✅         |
-| Network MITM (single server) | ✅         |
+### User-side threats (covered by the monotonic anchor)
 
-Limitations:
+These are mitigated regardless of which network source is configured, because trusted time is computed from hardware monotonic uptime plus a verified anchor — the user's system clock is never read after the anchor is established.
 
-* Requires internet on first launch
-* Cannot protect against hardware-level clock manipulation
+| Threat                  | Protected |
+| ----------------------- | --------- |
+| Manual clock change     | ✅         |
+| System time rollback    | ✅         |
+| Trial extension         | ✅         |
+| App restart abuse       | ✅         |
+| Offline replay          | ✅         |
+| Device reboot           | ✅ (detected → resync) |
+
+### Network-side threats (per source)
+
+| Threat                                | NTP (default) | HTTPS `Date` header | NTS (RFC 8915) | Marzullo consensus across ≥2 sources |
+| ------------------------------------- | :-----------: | :-----------------: | :------------: | :----------------------------------: |
+| Passive eavesdropping                 |       ❌       |          ✅          |        ✅       |                  n/a                 |
+| Off-path attacker (response spoofing) |       ❌       |          ✅          |        ✅       |                   ✅                  |
+| On-path / MITM attacker               |       ❌       |        ⚠️ (1)       |        ✅       |                ⚠️ (2)                |
+| Single dishonest server               |     ⚠️ (2)    |        ⚠️ (2)       |     ⚠️ (2)     |                   ✅                  |
+
+(1) HTTPS `Date` is bound to a TLS handshake, so a network attacker cannot forge it without a valid certificate; however, the header is single-second resolution and the server itself is trusted.
+(2) Mitigated by configuring multiple sources from independent operators — the engine's Marzullo intersection rejects samples that disagree with the quorum. A single attacker who controls fewer than half of the configured servers cannot shift the consensus.
+
+**Recommendation for security-sensitive deployments:** configure at least two `ntsServers` from independent operators (e.g. `time.cloudflare.com`, `nts.netnod.se`) so that every accepted sample is cryptographically authenticated, and the consensus algorithm bounds the impact of any single compromised operator.
+
+### Limitations
+
+* Requires internet on first launch to establish the anchor.
+* Cannot protect against hardware-level oscillator manipulation or a compromised OS that lies about monotonic uptime (rooted/jailbroken devices — see [SECURITY.md](SECURITY.md) "Out of Scope").
+* Default-configured NTP and HTTPS sources are **not** end-to-end authenticated; rely on Marzullo consensus across multiple operators for MITM resistance, or opt into NTS for per-sample cryptographic authentication.
+* HTTPS `Date` header has 1-second resolution and depends on the upstream server's clock accuracy.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ---
 
