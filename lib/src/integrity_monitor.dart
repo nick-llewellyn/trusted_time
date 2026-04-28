@@ -72,9 +72,20 @@ final class IntegrityMonitor {
     }
   }
 
-  Future<bool> checkRebootOnWarmStart(TrustAnchor previousAnchor) async {
+  /// Compares the device's current monotonic uptime against [previousAnchor]
+  /// to determine whether a reboot has occurred since the anchor was captured.
+  ///
+  /// Returns the reboot verdict alongside the freshly-sampled uptime so that
+  /// callers can reuse it (e.g., to compute the elapsed-time gap on warm
+  /// restore) without issuing a second platform-channel call.
+  Future<({bool rebooted, int currentUptimeMs})> checkRebootOnWarmStart(
+    TrustAnchor previousAnchor,
+  ) async {
     final currentUptime = await _clock.uptimeMs();
-    return currentUptime < previousAnchor.uptimeMs;
+    return (
+      rebooted: currentUptime < previousAnchor.uptimeMs,
+      currentUptimeMs: currentUptime,
+    );
   }
 
   void _emit(IntegrityEvent event) {

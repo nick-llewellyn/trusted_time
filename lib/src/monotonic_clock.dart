@@ -41,16 +41,25 @@ final class SyncClock {
 
   static int _cachedUptimeMs = 0;
   static int _cachedWallMs = 0;
+  static int _initialElapsedMs = 0;
   static final Stopwatch _stopwatch = Stopwatch();
 
-  static void update(int uptimeMs, int wallMs) {
+  /// Updates the cached anchor and restarts the elapsed-time stopwatch.
+  ///
+  /// [initialElapsedMs] seeds [elapsedSinceAnchorMs] with a pre-existing
+  /// gap. On warm restore, this is the difference between the current
+  /// native uptime and [TrustAnchor.uptimeMs], so that elapsed time
+  /// covers the period the app was not running.
+  static void update(int uptimeMs, int wallMs, {int initialElapsedMs = 0}) {
     _cachedUptimeMs = uptimeMs;
     _cachedWallMs = wallMs;
+    _initialElapsedMs = initialElapsedMs;
     _stopwatch.reset();
     _stopwatch.start();
   }
 
-  static int elapsedSinceAnchorMs() => _stopwatch.elapsedMilliseconds;
+  static int elapsedSinceAnchorMs() =>
+      _initialElapsedMs + _stopwatch.elapsedMilliseconds;
 
   static int get lastUptimeMs => _cachedUptimeMs;
   static int get lastWallMs => _cachedWallMs;
@@ -61,6 +70,7 @@ final class SyncClock {
   static void reset() {
     _cachedUptimeMs = 0;
     _cachedWallMs = 0;
+    _initialElapsedMs = 0;
     _stopwatch.stop();
     _stopwatch.reset();
   }

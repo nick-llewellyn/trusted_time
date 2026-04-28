@@ -151,9 +151,14 @@ final class TrustedTimeImpl {
 
     final persisted = _config.persistState ? await _store.load() : null;
     if (persisted != null) {
-      final rebooted = await _monitor.checkRebootOnWarmStart(persisted);
-      if (!rebooted) {
-        _applyAnchor(persisted);
+      final check = await _monitor.checkRebootOnWarmStart(persisted);
+      if (!check.rebooted) {
+        // Native uptime advances even when the process is not running.
+        // Seed SyncClock with the gap so that `now()` accounts for time
+        // elapsed since the anchor was captured, not just since this
+        // process started.
+        final elapsedSinceAnchor = check.currentUptimeMs - persisted.uptimeMs;
+        _applyAnchor(persisted, initialElapsedMs: elapsedSinceAnchor);
         _trusted = true;
         _scheduleRefresh();
         if (_config.backgroundSyncInterval != null) {
@@ -212,9 +217,13 @@ final class TrustedTimeImpl {
     }
   }
 
-  void _applyAnchor(TrustAnchor anchor) {
+  void _applyAnchor(TrustAnchor anchor, {int initialElapsedMs = 0}) {
     _anchor = anchor;
-    SyncClock.update(anchor.uptimeMs, anchor.wallMs);
+    SyncClock.update(
+      anchor.uptimeMs,
+      anchor.wallMs,
+      initialElapsedMs: initialElapsedMs,
+    );
     _monitor.attach(anchor);
   }
 
