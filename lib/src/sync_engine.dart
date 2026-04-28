@@ -24,6 +24,7 @@ final class SyncEngine {
       _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum),
       _sources = [
         for (final host in config.ntpServers) NtpSource(host, clock: clock),
+        for (final host in config.ntsServers) NtsSource(host, clock: clock),
         for (final url in config.httpsSources) HttpsSource(url, clock: clock),
         ...config.additionalSources,
       ];

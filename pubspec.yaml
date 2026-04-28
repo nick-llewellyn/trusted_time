@@ -1,6 +1,6 @@
 name: trusted_time
 description: Tamper-proof, high-precision network time for Flutter. Anchored to hardware monotonic clocks to prevent system-time manipulation.
-version: 1.2.1
+version: 2.0.0
 homepage: https://github.com/Sahad2701/trusted_time
 repository: https://github.com/Sahad2701/trusted_time
 issue_tracker: https://github.com/Sahad2701/trusted_time/issues
@@ -14,8 +14,11 @@ topics:
   - tamper-proof
 
 environment:
-  sdk: '>=3.4.0 <4.0.0'
-  flutter: '>=3.19.0'
+  # Floor raised to match `package:nts` (Dart ^3.10 / Flutter >=3.38),
+  # which is required for the Native Assets pipeline that bundles its
+  # Rust-backed NTS-KE + AEAD-NTP implementation.
+  sdk: '^3.10.0'
+  flutter: '>=3.38.0'
 
 dependencies:
   flutter:
@@ -27,6 +30,7 @@ dependencies:
   flutter_web_plugins:
     sdk: flutter
   timezone: ^0.11.0
+  nts: ^1.1.0
 
 dev_dependencies:
   flutter_test:
