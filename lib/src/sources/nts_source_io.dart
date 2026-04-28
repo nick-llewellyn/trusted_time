@@ -161,9 +161,18 @@ final class NtsSource implements TrustedTimeSource {
     final best = samples.first;
 
     final rttMicros = best.raw.roundTripMicros.toInt();
+    // `utcUnixMicros` is the raw server transmit timestamp T3. The engine
+    // pins this sample to `capturedMonotonicMs` (≈ T4), so to satisfy the
+    // `TimeSample.networkUtc` contract ("already RTT-corrected") we need
+    // the estimated UTC at that instant. With only T1, T3, and the
+    // wall-clock RTT (T4-T1) exposed by `package:nts`, the standard NTP
+    // symmetric-path estimator T3 + RTT/2 is the best available proxy.
+    // Min-RTD selection is what makes this safe: smaller RTD bounds the
+    // worst-case asymmetry-induced offset error.
+    final halfRttMicros = rttMicros ~/ 2;
     return TimeSample(
       networkUtc: DateTime.fromMicrosecondsSinceEpoch(
-        best.raw.utcUnixMicros.toInt(),
+        best.raw.utcUnixMicros.toInt() + halfRttMicros,
         isUtc: true,
       ),
       roundTripTime: Duration(microseconds: rttMicros),

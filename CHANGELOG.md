@@ -1,3 +1,9 @@
+## 2.0.1
+
+**Fix: NTS sample timestamp accuracy**
+- `NtsSource` now applies the standard NTP symmetric-path estimator (`T3 + RTT/2`) when constructing `TimeSample.networkUtc`. Previously the raw server transmit timestamp (T3) was forwarded unadjusted, which violated the `TimeSample` contract requiring UTC-at-receipt anchored to `capturedMonotonicMs` (≈ T4). The systematic underestimate (typical RTT/2 of 4–15ms) would have biased the `SyncEngine` Marzullo consensus negative, especially when NTS was the only authenticated source in the mix.
+- Added a dedicated unit test pinning the half-RTT adjustment behavior, including odd-RTT truncation and zero-RTT degenerate cases.
+
 ## 2.0.0
 
 **New: Network Time Security (NTS, RFC 8915)**

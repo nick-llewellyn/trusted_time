@@ -87,9 +87,11 @@ void main() {
       expect(sample.source.id, 'nts:time.cloudflare.com');
       expect(sample.source.host, 'time.cloudflare.com');
       expect(sample.source.stratum, 3);
+      // T3 (1700000000123456) + RTT/2 (6000) — symmetric-path estimator
+      // for UTC at the instant of receipt.
       expect(
         sample.networkUtc,
-        DateTime.fromMicrosecondsSinceEpoch(1700000000123456, isUtc: true),
+        DateTime.fromMicrosecondsSinceEpoch(1700000000129456, isUtc: true),
       );
       expect(sample.roundTripTime, const Duration(microseconds: 12000));
       expect(sample.uncertainty, const Duration(microseconds: 6000));
@@ -173,9 +175,10 @@ void main() {
 
       expect(sample.roundTripTime, const Duration(microseconds: 5000));
       expect(sample.uncertainty, const Duration(microseconds: 2500));
+      // T3 (1700000000020000) + RTT/2 (2500) for the selected sample.
       expect(
         sample.networkUtc,
-        DateTime.fromMicrosecondsSinceEpoch(1700000000020000, isUtc: true),
+        DateTime.fromMicrosecondsSinceEpoch(1700000000022500, isUtc: true),
       );
       // The selected sample's stratum (index 2) carries through.
       expect(sample.source.stratum, 4);
@@ -237,9 +240,10 @@ void main() {
       final sample = await source.fetch();
 
       expect(sample.roundTripTime, const Duration(microseconds: 5000));
+      // T3 (1700000000000003) + RTT/2 (2500) for the selected sample.
       expect(
         sample.networkUtc,
-        DateTime.fromMicrosecondsSinceEpoch(1700000000000003, isUtc: true),
+        DateTime.fromMicrosecondsSinceEpoch(1700000000002503, isUtc: true),
       );
     });
 
@@ -331,6 +335,39 @@ void main() {
       );
 
       await expectLater(source.fetch(), throwsA(isA<RangeError>()));
+    });
+
+    test('networkUtc adds half-RTT to T3 (symmetric-path estimator)',
+        () async {
+      // The Rust layer returns the raw server transmit timestamp T3 plus
+      // the wall-clock RTT (T4-T1). The source must forward UTC-at-receipt
+      // = T3 + RTT/2 so the engine can pin it to capturedMonotonicMs (≈T4)
+      // without systematic underestimate. Integer division truncates
+      // toward zero; an odd RTT loses sub-microsecond precision (well
+      // below NTP's measurement floor and acceptable for a uint anchor).
+      final cases = <({int t3, int rtt, int expectedUtc})>[
+        (t3: 1700000000000000, rtt: 8000, expectedUtc: 1700000000004000),
+        (t3: 1700000000000000, rtt: 1, expectedUtc: 1700000000000000),
+        (t3: 1700000000000000, rtt: 9999, expectedUtc: 1700000000004999),
+        (t3: 1700000000000000, rtt: 0, expectedUtc: 1700000000000000),
+      ];
+      for (final c in cases) {
+        final source = NtsSource(
+          'nts.example.org',
+          burstSize: 1,
+          burstSpacing: Duration.zero,
+          clock: _FakeMonotonicClock(0),
+          query: ({required spec, required timeoutMs}) async =>
+              _sample(utcUnixMicros: c.t3, roundTripMicros: c.rtt),
+          warmCookies: _noopWarm,
+        );
+        final sample = await source.fetch();
+        expect(
+          sample.networkUtc.microsecondsSinceEpoch,
+          c.expectedUtc,
+          reason: 'T3=${c.t3} RTT=${c.rtt} should yield T3 + RTT~/2',
+        );
+      }
     });
   });
 }
