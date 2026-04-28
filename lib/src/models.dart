@@ -102,6 +102,109 @@ final class TrustAnchor {
       'wall: $wallMs, uncertainty: ±${uncertaintyMs}ms)';
 }
 
+/// Identifies the broad category of a time-authority source.
+enum TimeSourceKind {
+  /// Network Time Protocol (UDP).
+  ntp,
+
+  /// HTTPS `Date` header probe.
+  https,
+
+  /// Application-supplied custom source.
+  custom,
+}
+
+/// NTP leap-second indicator (per RFC 5905).
+enum LeapIndicator { noWarning, addSecond, deleteSecond, unsynchronized }
+
+/// Structured metadata describing the origin of a [TimeSample].
+///
+/// Carries protocol-level signals that the sync engine and downstream
+/// consumers can use to weight, audit, or annotate the sample.
+@immutable
+final class TimeSourceMetadata {
+  const TimeSourceMetadata({
+    required this.kind,
+    required this.id,
+    this.host,
+    this.stratum,
+    this.leapIndicator,
+  });
+
+  /// Broad category of the source (NTP / HTTPS / custom).
+  final TimeSourceKind kind;
+
+  /// Unique identifier matching [TrustedTimeSource.id].
+  final String id;
+
+  /// Hostname or URL queried, when applicable.
+  final String? host;
+
+  /// NTP stratum value (1-15), if reported by the protocol.
+  final int? stratum;
+
+  /// NTP leap-second indicator, if reported by the protocol.
+  final LeapIndicator? leapIndicator;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TimeSourceMetadata &&
+          kind == other.kind &&
+          id == other.id &&
+          host == other.host &&
+          stratum == other.stratum &&
+          leapIndicator == other.leapIndicator;
+
+  @override
+  int get hashCode => Object.hash(kind, id, host, stratum, leapIndicator);
+
+  @override
+  String toString() =>
+      'TimeSourceMetadata(kind: $kind, id: $id, host: $host, '
+      'stratum: $stratum, leap: $leapIndicator)';
+}
+
+/// A single observation from a [TrustedTimeSource], captured atomically at
+/// the moment the network response was received.
+///
+/// Pinning [capturedMonotonicMs] inside the source — rather than after all
+/// queries resolve — keeps the anchor's reference point free of drift from
+/// slower siblings.
+@immutable
+final class TimeSample {
+  const TimeSample({
+    required this.networkUtc,
+    required this.roundTripTime,
+    required this.uncertainty,
+    required this.capturedMonotonicMs,
+    required this.source,
+    required this.capturedAt,
+  });
+
+  /// UTC time reported by the source (already RTT-corrected by the source
+  /// implementation when applicable).
+  final DateTime networkUtc;
+
+  /// Measured round-trip latency to acquire this sample.
+  final Duration roundTripTime;
+
+  /// Estimated uncertainty (half-RTT by default; sources with tighter
+  /// internal estimates may report less).
+  final Duration uncertainty;
+
+  /// Device monotonic uptime in milliseconds, captured the instant the
+  /// response was received.
+  final int capturedMonotonicMs;
+
+  /// Origin metadata for auditing and consensus weighting.
+  final TimeSourceMetadata source;
+
+  /// Wall-clock time at sample capture (diagnostics only — not used for
+  /// trust decisions).
+  final DateTime capturedAt;
+}
+
 /// Contract for implementing custom time-authority providers.
 ///
 /// Implement this interface to add enterprise or custom time sources
@@ -114,8 +217,8 @@ final class TrustAnchor {
 ///   String get id => 'my-company-ntp';
 ///
 ///   @override
-///   Future<DateTime> queryUtc() async {
-///     // Query your time authority and return UTC.
+///   Future<TimeSample> fetch() async {
+///     // Query your time authority and return a structured sample.
 ///   }
 /// }
 /// ```
@@ -124,11 +227,15 @@ abstract interface class TrustedTimeSource {
   /// consensus weighting (e.g., `'ntp:time.google.com'`).
   String get id;
 
-  /// Queries the remote time authority and returns the current UTC time.
+  /// Queries the remote time authority and returns a structured
+  /// [TimeSample] including UTC, round-trip time, captured monotonic
+  /// uptime, and origin metadata.
   ///
-  /// Implementations should throw on failure rather than returning stale
-  /// or estimated values — the sync engine handles failures gracefully.
-  Future<DateTime> queryUtc();
+  /// Implementations must capture the monotonic reference at the moment
+  /// the response is received (before any aggregation) and should throw
+  /// on failure rather than returning stale or estimated values — the
+  /// sync engine handles failures gracefully.
+  Future<TimeSample> fetch();
 }
 
 /// Immutable configuration for the TrustedTime engine.

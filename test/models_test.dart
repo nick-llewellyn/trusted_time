@@ -154,5 +154,15 @@ class _FakeSource implements TrustedTimeSource {
   String get id => _id;
 
   @override
-  Future<DateTime> queryUtc() async => DateTime.now().toUtc();
+  Future<TimeSample> fetch() async {
+    final now = DateTime.now().toUtc();
+    return TimeSample(
+      networkUtc: now,
+      roundTripTime: const Duration(milliseconds: 10),
+      uncertainty: const Duration(milliseconds: 5),
+      capturedMonotonicMs: 0,
+      source: TimeSourceMetadata(kind: TimeSourceKind.custom, id: _id),
+      capturedAt: now,
+    );
+  }
 }

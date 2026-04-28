@@ -38,7 +38,15 @@ import 'src/trusted_time_mock.dart';
 
 export 'src/exceptions.dart';
 export 'src/integrity_event.dart';
-export 'src/models.dart' show TrustedTimeConfig, TrustedTimeSource, TrustAnchor;
+export 'src/models.dart'
+    show
+        LeapIndicator,
+        TimeSample,
+        TimeSourceKind,
+        TimeSourceMetadata,
+        TrustAnchor,
+        TrustedTimeConfig,
+        TrustedTimeSource;
 export 'src/trusted_time_estimate.dart';
 export 'src/trusted_time_mock.dart';
 

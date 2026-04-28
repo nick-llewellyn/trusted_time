@@ -1,5 +1,6 @@
 import 'package:http/http.dart' as http;
 import '../models.dart';
+import '../monotonic_clock.dart';
 
 export 'ntp_source_stub.dart' if (dart.library.io) 'ntp_source_io.dart';
 
@@ -15,17 +16,19 @@ export 'ntp_source_stub.dart' if (dart.library.io) 'ntp_source_io.dart';
 /// final source = HttpsSource('https://internal.example.com', client: client);
 /// ```
 final class HttpsSource implements TrustedTimeSource {
-  HttpsSource(this._url, {http.Client? client})
-    : _client = client ?? http.Client();
+  HttpsSource(this._url, {http.Client? client, MonotonicClock? clock})
+    : _client = client ?? http.Client(),
+      _clock = clock ?? PlatformMonotonicClock();
 
   final String _url;
   final http.Client _client;
+  final MonotonicClock _clock;
 
   @override
   String get id => 'https:$_url';
 
   @override
-  Future<DateTime> queryUtc() async {
+  Future<TimeSample> fetch() async {
     final uri = Uri.parse(_url);
     final sw = Stopwatch()..start();
 
@@ -38,6 +41,10 @@ final class HttpsSource implements TrustedTimeSource {
       response = await _client.get(uri).timeout(const Duration(seconds: 3));
     }
     sw.stop();
+    // Capture monotonic reference immediately on response receipt, before
+    // any further aggregation work in the sync engine.
+    final capturedMonotonicMs = await _clock.uptimeMs();
+    final capturedAt = DateTime.now().toUtc();
 
     final dateHeader = response.headers['date'];
     if (dateHeader == null) {
@@ -45,9 +52,21 @@ final class HttpsSource implements TrustedTimeSource {
     }
 
     final serverTime = _HttpDate.parse(dateHeader);
-    return serverTime
+    final networkUtc = serverTime
         .add(Duration(milliseconds: sw.elapsedMilliseconds ~/ 2))
         .toUtc();
+    return TimeSample(
+      networkUtc: networkUtc,
+      roundTripTime: sw.elapsed,
+      uncertainty: Duration(milliseconds: sw.elapsedMilliseconds ~/ 2),
+      capturedMonotonicMs: capturedMonotonicMs,
+      source: TimeSourceMetadata(
+        kind: TimeSourceKind.https,
+        id: id,
+        host: uri.host,
+      ),
+      capturedAt: capturedAt,
+    );
   }
 
   void dispose() => _client.close();

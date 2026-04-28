@@ -15,7 +15,7 @@ import 'trusted_time_mock.dart';
 final class TrustedTimeImpl {
   TrustedTimeImpl._({
     required TrustedTimeConfig config,
-    required AnchorStore store,
+    required AnchorStorage store,
     required MonotonicClock clock,
   }) : _config = config,
        _store = store,
@@ -42,7 +42,7 @@ final class TrustedTimeImpl {
   }
 
   final TrustedTimeConfig _config;
-  final AnchorStore _store;
+  final AnchorStorage _store;
   final SyncEngine _syncEngine;
   final IntegrityMonitor _monitor;
 

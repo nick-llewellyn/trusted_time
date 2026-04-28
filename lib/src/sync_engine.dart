@@ -15,27 +15,40 @@ import 'sources/time_sources.dart';
 /// uncertainty.
 final class SyncEngine {
   /// Creates a sync engine with the given [config] and [clock].
+  ///
+  /// Time-source instances are built from the config and the clock is
+  /// forwarded to NTP/HTTPS sources so each can pin its monotonic
+  /// reference at response receipt.
   SyncEngine({required TrustedTimeConfig config, required MonotonicClock clock})
     : _config = config,
-      _clock = clock,
-      _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum);
+      _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum),
+      _sources = [
+        for (final host in config.ntpServers) NtpSource(host, clock: clock),
+        for (final url in config.httpsSources) HttpsSource(url, clock: clock),
+        ...config.additionalSources,
+      ];
+
+  /// Test seam: build a SyncEngine with a pre-assembled list of sources.
+  /// Bypasses the config-driven source construction so unit tests can
+  /// inject [TrustedTimeSource] fakes directly.
+  @visibleForTesting
+  SyncEngine.withSources({
+    required TrustedTimeConfig config,
+    required List<TrustedTimeSource> sources,
+  }) : _config = config,
+       _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum),
+       _sources = List.unmodifiable(sources);
 
   final TrustedTimeConfig _config;
-  final MonotonicClock _clock;
   final MarzulloEngine _engine;
-
-  /// Lazily built list of time authorities from config servers and custom
-  /// sources.
-  late final List<TrustedTimeSource> _sources = [
-    for (final host in _config.ntpServers) NtpSource(host),
-    for (final url in _config.httpsSources) HttpsSource(url),
-    ..._config.additionalSources,
-  ];
+  final List<TrustedTimeSource> _sources;
 
   /// Executes concurrent sampling and returns a hardware-pinned trust anchor.
   ///
   /// Queries all configured time sources in parallel, filters by maximum
   /// latency, and uses Marzullo's algorithm to find the consensus interval.
+  /// The anchor's uptime is pinned to the lowest-RTT sample's captured
+  /// monotonic reference, avoiding drift from a post-aggregation re-sample.
   ///
   /// Throws [TrustedTimeSyncException] if no sources respond or if quorum
   /// cannot be reached.
@@ -47,7 +60,16 @@ final class SyncEngine {
       );
     }
 
-    final result = _engine.resolve(samples);
+    final marzulloSamples = [
+      for (final s in samples)
+        SourceSample(
+          sourceId: s.source.id,
+          utc: s.networkUtc,
+          roundTripMs: s.roundTripTime.inMilliseconds,
+        ),
+    ];
+
+    final result = _engine.resolve(marzulloSamples);
     if (result == null) {
       throw TrustedTimeSyncException(
         'Quorum not reached: got ${samples.length} samples, '
@@ -55,13 +77,17 @@ final class SyncEngine {
       );
     }
 
-    final uptimeMs = await _clock.uptimeMs();
-    final wallMs = DateTime.now().millisecondsSinceEpoch;
+    // Pin uptime to the lowest-RTT sample's captured monotonic — this is
+    // the tightest reference available, recorded the instant its response
+    // was received (not after slower siblings resolved).
+    final best = samples.reduce(
+      (a, b) => a.roundTripTime <= b.roundTripTime ? a : b,
+    );
 
     return TrustAnchor(
       networkUtcMs: result.utc.millisecondsSinceEpoch,
-      uptimeMs: uptimeMs,
-      wallMs: wallMs,
+      uptimeMs: best.capturedMonotonicMs,
+      wallMs: best.capturedAt.millisecondsSinceEpoch,
       uncertaintyMs: result.uncertaintyMs,
     );
   }
@@ -74,27 +100,23 @@ final class SyncEngine {
   }
 
   /// Queries all sources concurrently and filters by max latency.
-  Future<List<SourceSample>> _queryConcurrently() async {
+  Future<List<TimeSample>> _queryConcurrently() async {
     final results = await Future.wait(_sources.map(_querySafe));
     return results
-        .whereType<SourceSample>()
-        .where((s) => s.roundTripMs <= _config.maxLatency.inMilliseconds)
+        .whereType<TimeSample>()
+        .where(
+          (s) => s.roundTripTime.inMilliseconds <=
+              _config.maxLatency.inMilliseconds,
+        )
         .toList();
   }
 
   /// Wraps a source query in a try-catch with timeout enforcement.
   ///
   /// Returns `null` on failure to allow graceful degradation.
-  Future<SourceSample?> _querySafe(TrustedTimeSource source) async {
+  Future<TimeSample?> _querySafe(TrustedTimeSource source) async {
     try {
-      final sw = Stopwatch()..start();
-      final utc = await source.queryUtc().timeout(_config.maxLatency);
-      sw.stop();
-      return SourceSample(
-        sourceId: source.id,
-        utc: utc,
-        roundTripMs: sw.elapsedMilliseconds,
-      );
+      return await source.fetch().timeout(_config.maxLatency);
     } catch (e) {
       if (kDebugMode) {
         debugPrint('[TrustedTime] Source ${source.id} failed: $e');
