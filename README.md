@@ -47,7 +47,8 @@ TrustedTime solves this by providing a **secure virtual clock** that:
 ## Features
 
 *   **Tamper-Proof Time**: Anchors network UTC to hardware monotonic uptime.
-*   **Multi-Source Consensus**: Quorum-based resolution via NTP and HTTPS.
+*   **Multi-Source Consensus**: Quorum-based resolution via NTP, NTS, and HTTPS.
+*   **Authenticated Time (NTS)**: Optional [RFC 8915](https://datatracker.ietf.org/doc/html/rfc8915) Network Time Security for cryptographically verified samples.
 *   **Secure Persistence**: Encrypted state recovery across app restarts.
 *   **High Performance**: Synchronous, zero-latency access with <1μs overhead.
 *   **Offline Ready**: Continues providing trusted time without connectivity once anchored.
@@ -182,6 +183,7 @@ await TrustedTime.initialize(
   config: TrustedTimeConfig(
     refreshInterval: Duration(hours: 12),
     ntpServers: ['time.google.com', 'pool.ntp.org'],
+    ntsServers: ['time.cloudflare.com', 'nts.netnod.se'],
     httpsSources: ['https://www.google.com', 'https://www.cloudflare.com'],
     maxLatency: Duration(seconds: 2),
     minimumQuorum: 2,
@@ -189,6 +191,14 @@ await TrustedTime.initialize(
   ),
 );
 ```
+
+### Authenticated time via NTS (RFC 8915)
+
+Set `ntsServers` to opt into Network Time Security. NTS samples are cryptographically authenticated end-to-end, defending against on-path attackers who can forge or shift plain NTP replies. Each NTS sample carries `source.authenticated: true` on the `TimeSample`. The IANA-assigned NTS-KE port (`4460`) is used automatically; pass hostnames only.
+
+NTS is supported on iOS, Android, macOS, Linux, and Windows via the [`nts`](https://pub.dev/packages/nts) package's Rust-backed implementation. On web, NTS sources are silently skipped and the engine falls back to `httpsSources`.
+
+> **SDK requirement**: Enabling NTS pulls in the `package:nts` toolchain, which requires Dart `^3.10.0` / Flutter `>=3.38.0`.
 
 ---
 

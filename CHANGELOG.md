@@ -1,3 +1,16 @@
+## 2.0.0
+
+**New: Network Time Security (NTS, RFC 8915)**
+- Added `NtsSource` — authenticated NTPv4 over UDP with TLS-derived AEAD keys, wrapping [`package:nts`](https://pub.dev/packages/nts).
+- Added `TrustedTimeConfig.ntsServers` (opt-in, empty by default) for configuring NTS-KE hosts. The IANA-assigned port `4460` is always used.
+- Added `TimeSourceKind.nts` and `TimeSourceMetadata.authenticated` (defaults to `false` for NTP/HTTPS/custom; `true` for NTS).
+- `SyncEngine` queries NTS sources concurrently alongside NTP and HTTPS, treating their samples identically for Marzullo intersection.
+- Web behavior unchanged: `NtsSource` is stubbed out via conditional export and silently skipped by the engine.
+- See `docs/adr/0001-nts-integration-strategy.md` for the design rationale.
+
+**Breaking**
+- SDK floor raised: `sdk: ^3.10.0`, `flutter: >=3.38.0`. Required by `package:nts` and the underlying Native Assets / `flutter_rust_bridge` v2 toolchain. The Dart-level API surface remains additive — apps that don't configure `ntsServers` see no behavioral change beyond the SDK requirement.
+
 ## 1.2.1
 
 
