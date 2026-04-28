@@ -107,6 +107,10 @@ enum TimeSourceKind {
   /// Network Time Protocol (UDP).
   ntp,
 
+  /// Network Time Security (RFC 8915) — authenticated NTPv4 over UDP
+  /// with TLS-derived AEAD keys.
+  nts,
+
   /// HTTPS `Date` header probe.
   https,
 
@@ -129,9 +133,10 @@ final class TimeSourceMetadata {
     this.host,
     this.stratum,
     this.leapIndicator,
+    this.authenticated = false,
   });
 
-  /// Broad category of the source (NTP / HTTPS / custom).
+  /// Broad category of the source (NTP / NTS / HTTPS / custom).
   final TimeSourceKind kind;
 
   /// Unique identifier matching [TrustedTimeSource.id].
@@ -146,6 +151,11 @@ final class TimeSourceMetadata {
   /// NTP leap-second indicator, if reported by the protocol.
   final LeapIndicator? leapIndicator;
 
+  /// Whether this sample was cryptographically authenticated end-to-end
+  /// (e.g., via NTS AEAD verification). Plain NTP and HTTPS-`Date`
+  /// samples are never authenticated.
+  final bool authenticated;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -154,15 +164,18 @@ final class TimeSourceMetadata {
           id == other.id &&
           host == other.host &&
           stratum == other.stratum &&
-          leapIndicator == other.leapIndicator;
+          leapIndicator == other.leapIndicator &&
+          authenticated == other.authenticated;
 
   @override
-  int get hashCode => Object.hash(kind, id, host, stratum, leapIndicator);
+  int get hashCode =>
+      Object.hash(kind, id, host, stratum, leapIndicator, authenticated);
 
   @override
   String toString() =>
       'TimeSourceMetadata(kind: $kind, id: $id, host: $host, '
-      'stratum: $stratum, leap: $leapIndicator)';
+      'stratum: $stratum, leap: $leapIndicator, '
+      'authenticated: $authenticated)';
 }
 
 /// A single observation from a [TrustedTimeSource], captured atomically at
@@ -264,6 +277,7 @@ final class TrustedTimeConfig {
       'time.cloudflare.com',
       'pool.ntp.org',
     ],
+    this.ntsServers = const [],
     this.httpsSources = const [
       'https://www.google.com',
       'https://www.cloudflare.com',
@@ -287,6 +301,14 @@ final class TrustedTimeConfig {
   /// At least [minimumQuorum] servers should be listed for reliable
   /// consensus. Defaults to Google, Cloudflare, and pool.ntp.org.
   final List<String> ntpServers;
+
+  /// NTS-KE server hostnames to query (RFC 8915), opt-in.
+  ///
+  /// Each entry is a hostname; the IANA-assigned default port `4460`
+  /// is always used. Empty by default — the engine ignores NTS unless
+  /// explicitly configured. Not supported on web (samples from these
+  /// hosts will be silently dropped by the engine on browser builds).
+  final List<String> ntsServers;
 
   /// HTTPS URLs whose `Date` headers are used as a fallback time source.
   ///
@@ -336,6 +358,7 @@ final class TrustedTimeConfig {
       other is TrustedTimeConfig &&
           refreshInterval == other.refreshInterval &&
           listEquals(ntpServers, other.ntpServers) &&
+          listEquals(ntsServers, other.ntsServers) &&
           listEquals(httpsSources, other.httpsSources) &&
           maxLatency == other.maxLatency &&
           minimumQuorum == other.minimumQuorum &&
@@ -348,6 +371,7 @@ final class TrustedTimeConfig {
   int get hashCode => Object.hash(
     refreshInterval,
     Object.hashAll(ntpServers),
+    Object.hashAll(ntsServers),
     Object.hashAll(httpsSources),
     maxLatency,
     minimumQuorum,
