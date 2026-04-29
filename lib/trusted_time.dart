@@ -224,7 +224,9 @@ abstract final class TrustedTime {
   ///
   /// void main() {
   ///   WidgetsFlutterBinding.ensureInitialized();
-  ///   TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback);
+  ///   unawaited(
+  ///     TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback),
+  ///   );
   ///   runApp(MyApp());
   /// }
   /// ```
@@ -324,10 +326,6 @@ abstract final class TrustedTime {
     TrustedTimeConfig config = const TrustedTimeConfig(),
   }) async {
     WidgetsFlutterBinding.ensureInitialized();
-    if (!_timezoneInitialized) {
-      tz.initializeTimeZones();
-      _timezoneInitialized = true;
-    }
     final result = await bg.runBackgroundSync(config: config);
     try {
       await _bgChannel.invokeMethod<void>('notifyBackgroundComplete', {
