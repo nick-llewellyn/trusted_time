@@ -147,23 +147,17 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
             return
         }
 
-        // BGAppRefreshTask grants ~30s; the expirationHandler ensures a
-        // hung Dart callback does not stall the OS scheduler. Hop to main
-        // for teardown because FlutterEngine lifecycle is main-thread-only.
-        // The task is captured here so finishHeadlessSync can complete it
-        // even if expiration fires before the main-thread block below has
-        // run `self.pendingTask = task` (otherwise the guard would return
-        // early and the OS would never see setTaskCompleted).
-        task.expirationHandler = { [weak self] in
-            DispatchQueue.main.async {
-                self?.finishHeadlessSync(success: false, expired: true, task: task)
-            }
-        }
-
         // FlutterEngine creation, plugin registration, channel-handler
         // setup, and engine.run must all happen on the main thread;
         // BGTaskScheduler dispatches its launch handler on a background
-        // queue.
+        // queue. The expirationHandler is also installed on main, *after*
+        // pendingTask is set, so it cannot fire and finalize the task
+        // before main-thread state is established (which would let the
+        // block below restart a headless engine after expiration and/or
+        // produce a duplicate setTaskCompleted call). If the OS expires
+        // the task before this block runs, no handler is installed yet
+        // and the OS hard-terminates the task — acceptable because no
+        // engine has been created.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else {
                 task.setTaskCompleted(success: false)
@@ -171,6 +165,16 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
             }
             self.pendingTask = task
             self.pendingTaskCompleted = false
+
+            // BGAppRefreshTask grants ~30s; the expirationHandler ensures
+            // a hung Dart callback does not stall the OS scheduler. Hop
+            // to main for teardown because FlutterEngine lifecycle is
+            // main-thread-only.
+            task.expirationHandler = { [weak self] in
+                DispatchQueue.main.async {
+                    self?.finishHeadlessSync(success: false, expired: true, task: task)
+                }
+            }
 
             let engine = FlutterEngine(
                 name: "TrustedTimeBackgroundEngine",
@@ -210,11 +214,11 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     /// with notifyBackgroundComplete) is a no-op. Always runs on main
     /// because FlutterEngine teardown is main-thread-only.
     ///
-    /// - Parameter task: Optional fallback used by the expiration handler
-    ///   when expiration fires before `pendingTask` has been assigned on
-    ///   the main thread. Without it, an early expiration would return
-    ///   from the guard below and never call `setTaskCompleted`, leaving
-    ///   the OS scheduler hanging on the task until its hard timeout.
+    /// - Parameter task: Optional fallback. The expiration handler is
+    ///   installed on main *after* `pendingTask` is assigned, so under
+    ///   normal flow `pendingTask` is always non-nil here. The parameter
+    ///   is kept as a defensive backstop for any future caller that
+    ///   completes a task before main-thread state is established.
     private func finishHeadlessSync(
         success: Bool,
         expired: Bool = false,

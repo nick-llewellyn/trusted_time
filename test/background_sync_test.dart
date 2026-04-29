@@ -165,6 +165,102 @@ void main() {
       );
     });
   });
+
+  group('TrustedTime.runBackgroundSync', () {
+    const channel = MethodChannel('trusted_time/background');
+    final consensusUtc = DateTime.utc(2026, 1, 15, 10);
+    final calls = <MethodCall>[];
+
+    setUp(() {
+      calls.clear();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+        calls.add(call);
+        return null;
+      });
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    test('notifies native of completion with success=true on a passing run',
+        () async {
+      final result = await public_api.TrustedTime.runBackgroundSync(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          minimumQuorum: 2,
+          // persistState=false so the run does not touch real
+          // flutter_secure_storage from the test process.
+          persistState: false,
+          additionalSources: [
+            _FakeSource(idValue: 'fake-a', utc: consensusUtc),
+            _FakeSource(
+              idValue: 'fake-b',
+              utc: consensusUtc.add(const Duration(milliseconds: 5)),
+            ),
+          ],
+        ),
+      );
+      expect(result.isSuccess, isTrue);
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'notifyBackgroundComplete');
+      final args = calls.single.arguments as Map;
+      expect(args['success'], isTrue);
+      expect(args.containsKey('reason'), isFalse);
+    });
+
+    test('notifies native of completion with success=false and reason on '
+        'a failing run', () async {
+      final result = await public_api.TrustedTime.runBackgroundSync(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          minimumQuorum: 2,
+          persistState: false,
+          additionalSources: [
+            _FakeSource(idValue: 'a', utc: consensusUtc, shouldThrow: true),
+            _FakeSource(idValue: 'b', utc: consensusUtc, shouldThrow: true),
+          ],
+        ),
+      );
+      expect(result.isSuccess, isFalse);
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'notifyBackgroundComplete');
+      final args = calls.single.arguments as Map;
+      expect(args['success'], isFalse);
+      expect(args['reason'], isA<String>());
+      expect((args['reason'] as String).isNotEmpty, isTrue);
+    });
+
+    test('swallows MissingPluginException when channel is unmocked',
+        () async {
+      // The default mock from setUp() is overridden with `null` here so
+      // method-channel calls raise MissingPluginException (the realistic
+      // desktop/web behaviour). The public API must still return the
+      // sync result instead of propagating the channel error.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      final result = await public_api.TrustedTime.runBackgroundSync(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          minimumQuorum: 2,
+          persistState: false,
+          additionalSources: [
+            _FakeSource(idValue: 'a', utc: consensusUtc),
+            _FakeSource(idValue: 'b', utc: consensusUtc),
+          ],
+        ),
+      );
+      expect(result.isSuccess, isTrue);
+    });
+  });
 }
 
 @pragma('vm:entry-point')

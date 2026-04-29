@@ -15,11 +15,13 @@ import 'package:trusted_time/src/monotonic_clock.dart';
 ///
 /// **Scope**: this test pins the contract that the unit-of-work
 /// advances [TrustAnchor.networkUtcMs] in the persisted store. It does
-/// **not** exercise [TrustedTime.runBackgroundSync] (the public API
-/// that also issues the `notifyBackgroundComplete` channel call — that
-/// path is covered in `test/background_sync_test.dart`), and it does
 /// **not** drive the real OS scheduler because that requires a device
-/// and is platform-specific:
+/// and is platform-specific. Public-API coverage of
+/// [TrustedTime.runBackgroundSync] (including the
+/// `notifyBackgroundComplete` channel call) lives in
+/// `test/background_sync_test.dart`.
+///
+/// To exercise the real OS scheduler manually:
 ///
 /// - Android: `adb shell cmd jobscheduler run -f`
 ///   `[package] [jobId]` against a debug-built host app, then inspect
