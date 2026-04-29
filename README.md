@@ -227,7 +227,7 @@ void main() async {
 }
 ```
 
-> **Required:** the callback **must** be a top-level or static function annotated with `@pragma('vm:entry-point')`, otherwise tree-shaking strips it in release builds and `registerBackgroundCallback` throws `ArgumentError`.
+> **Required:** the callback **must** be a top-level or static function annotated with `@pragma('vm:entry-point')`. These are two separate requirements: the *shape* requirement (top-level / static) is what `PluginUtilities.getCallbackHandle` validates, so `registerBackgroundCallback` throws `ArgumentError` synchronously when a closure or instance method is passed. The *retention* requirement (`@pragma('vm:entry-point')`) is a build-time directive that prevents AOT tree-shaking from stripping the callback in release builds; it cannot be observed at registration time. Omitting the pragma in release will surface later, when the OS-spawned headless engine tries to invoke the entrypoint and the lookup fails.
 
 **Platform setup**
 
