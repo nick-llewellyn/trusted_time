@@ -34,8 +34,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
-import 'src/background_sync.dart';
-import 'src/background_sync.dart' as bg show runBackgroundSync;
+import 'src/background_sync.dart' as bg;
 import 'src/exceptions.dart';
 import 'src/integrity_event.dart';
 import 'src/models.dart';
@@ -322,7 +321,7 @@ abstract final class TrustedTime {
   /// engine can be torn down inside the OS budget.
   ///
   /// Returns a [TrustedTimeBackgroundResult] describing the outcome.
-  static Future<TrustedTimeBackgroundResult> runBackgroundSync({
+  static Future<bg.TrustedTimeBackgroundResult> runBackgroundSync({
     TrustedTimeConfig config = const TrustedTimeConfig(),
   }) async {
     WidgetsFlutterBinding.ensureInitialized();
@@ -330,7 +329,7 @@ abstract final class TrustedTime {
     try {
       await _bgChannel.invokeMethod<void>('notifyBackgroundComplete', {
         'success': result.isSuccess,
-        if (result is BackgroundSyncFailure) 'reason': result.reason,
+        if (result is bg.BackgroundSyncFailure) 'reason': result.reason,
       });
     } on MissingPluginException {
       // Channel is absent on desktop/web and in unit tests that have not

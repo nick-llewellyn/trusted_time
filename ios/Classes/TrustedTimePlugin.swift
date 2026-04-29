@@ -102,7 +102,15 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         if !bgRegistered {
             BGTaskScheduler.shared.register(forTaskWithIdentifier: bgTaskId, using: nil) { [weak self] task in
                 guard let self = self else {
-                    task.setTaskCompleted(success: true)
+                    // Plugin instance was deallocated between registration and
+                    // the OS firing this task — no work was performed, so report
+                    // failure rather than success. This lets BGTaskScheduler
+                    // apply its normal back-off and retry semantics instead of
+                    // recording a phantom successful refresh. Rescheduling the
+                    // next request is not possible from here (the scheduler
+                    // call lives on the instance); the next app launch will
+                    // re-register and call `scheduleNextBgSync()` itself.
+                    task.setTaskCompleted(success: false)
                     return
                 }
                 self.performBackgroundSync(task: task)
