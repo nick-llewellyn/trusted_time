@@ -152,7 +152,12 @@ void main() {
       );
     });
 
-    test('throws ArgumentError for non-vm-entry-point callbacks', () async {
+    test('throws ArgumentError when callback handle cannot be resolved',
+        () async {
+      // Nested (non-top-level) functions cannot be resolved to a callback
+      // handle by the Dart VM, so [PluginUtilities.getCallbackHandle]
+      // returns null. The `@pragma('vm:entry-point')` annotation is a
+      // separate, build-time concern not exercised here.
       void localCallback() {}
       expect(
         () => public_api.TrustedTime.registerBackgroundCallback(localCallback),

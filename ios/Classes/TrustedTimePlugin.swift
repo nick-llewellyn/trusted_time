@@ -208,16 +208,27 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     }
 
     /// Pre-2.x behaviour: validates connectivity without refreshing the
-    /// anchor. Used when no Dart callback is registered.
+    /// anchor. Used when no Dart callback is registered. Reports success
+    /// only when the HEAD request returns a 2xx response so iOS can
+    /// reschedule with backoff on transient connectivity failures
+    /// (parity with the Android worker's `Result.retry()` semantics).
     private func performConnectivityFallback(task: BGTask) {
         let url = URL(string: "https://www.google.com")!
         var request = URLRequest(url: url)
         request.httpMethod = "HEAD"
         request.timeoutInterval = 10
 
-        let dataTask = URLSession.shared.dataTask(with: request) { [weak self] _, _, _ in
+        let dataTask = URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
             self?.scheduleNextBgSync()
-            task.setTaskCompleted(success: true)
+            let ok: Bool
+            if error != nil {
+                ok = false
+            } else if let http = response as? HTTPURLResponse {
+                ok = (200...299).contains(http.statusCode)
+            } else {
+                ok = false
+            }
+            task.setTaskCompleted(success: ok)
         }
 
         task.expirationHandler = {

@@ -228,10 +228,17 @@ abstract final class TrustedTime {
   /// stable across app launches as long as the callback's library URI and
   /// function name do not change.
   ///
-  /// Throws [ArgumentError] if [callback] is not annotated with
-  /// `@pragma('vm:entry-point')` or is otherwise not a top-level/static
-  /// function (in which case [PluginUtilities.getCallbackHandle] returns
-  /// `null`).
+  /// Throws [ArgumentError] if [PluginUtilities.getCallbackHandle] cannot
+  /// resolve a handle for [callback]. To be resolvable, the callback must:
+  ///
+  /// - be a top-level or static function (closures and instance methods
+  ///   are not supported by the Dart VM's callback-handle mechanism), and
+  /// - in release builds, be annotated with `@pragma('vm:entry-point')`
+  ///   so it survives tree-shaking.
+  ///
+  /// Note: the `@pragma` annotation is enforced by the Dart compiler at
+  /// build time, not at runtime; this method only observes whether the
+  /// VM was able to produce a handle.
   static Future<void> registerBackgroundCallback(
     void Function() callback,
   ) async {
@@ -246,8 +253,10 @@ abstract final class TrustedTime {
       throw ArgumentError.value(
         callback,
         'callback',
-        'Callback handle could not be resolved. The callback must be a '
-            "top-level or static function annotated with @pragma('vm:entry-point').",
+        'Could not resolve a callback handle. The callback must be a '
+            'top-level or static function; in release builds it must also '
+            "be annotated with @pragma('vm:entry-point') to survive "
+            'tree-shaking.',
       );
     }
     await _bgChannel.invokeMethod<void>('setBackgroundCallbackHandle', {
