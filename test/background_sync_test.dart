@@ -302,6 +302,48 @@ void main() {
       );
       expect(result.isSuccess, isTrue);
     });
+
+    test('honors overrideForTesting: returns synthetic success without '
+        'network I/O or channel traffic', () async {
+      // Active mock must short-circuit the headless entrypoint identically
+      // to enableBackgroundSync / registerBackgroundCallback. A failing
+      // additionalSources list is wired in to prove the real sync engine
+      // is never reached: if the override path were missed, every source
+      // would throw and the result would be BackgroundSyncFailure.
+      final mockTime = DateTime.utc(2026, 6, 1, 12);
+      final mock = public_api.TrustedTimeMock(initial: mockTime);
+      public_api.TrustedTime.overrideForTesting(mock);
+      addTearDown(() {
+        public_api.TrustedTime.resetOverride();
+        mock.dispose();
+      });
+
+      final result = await public_api.TrustedTime.runBackgroundSync(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          minimumQuorum: 2,
+          persistState: false,
+          additionalSources: [
+            _FakeSource(idValue: 'a', utc: consensusUtc, shouldThrow: true),
+            _FakeSource(idValue: 'b', utc: consensusUtc, shouldThrow: true),
+          ],
+        ),
+      );
+
+      expect(result, isA<BackgroundSyncSuccess>());
+      expect(result.isSuccess, isTrue);
+      final success = result as BackgroundSyncSuccess;
+      expect(success.anchor.networkUtcMs, mockTime.millisecondsSinceEpoch);
+      expect(success.anchor.wallMs, mockTime.millisecondsSinceEpoch);
+      expect(success.elapsed, Duration.zero);
+      // Channel must see zero traffic — the override path skips the
+      // notifyBackgroundComplete signal entirely (matching how
+      // enableBackgroundSync / registerBackgroundCallback short-circuit
+      // before any platform-channel call).
+      expect(calls, isEmpty);
+    });
   });
 }
 

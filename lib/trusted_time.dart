@@ -42,7 +42,7 @@ import 'package:timezone/timezone.dart' as tz;
 //   unit-of-work function reachable without shadowing the static
 //   `TrustedTime.runBackgroundSync` defined below.
 import 'src/background_sync.dart'
-    show BackgroundSyncFailure, TrustedTimeBackgroundResult;
+    show BackgroundSyncFailure, BackgroundSyncSuccess, TrustedTimeBackgroundResult;
 import 'src/background_sync.dart' as bg show runBackgroundSync;
 import 'src/exceptions.dart';
 import 'src/integrity_event.dart';
@@ -329,10 +329,39 @@ abstract final class TrustedTime {
   /// Automatically notifies the native plugin of completion so the headless
   /// engine can be torn down inside the OS budget.
   ///
+  /// When a [TrustedTimeMock] is active via [overrideForTesting], this method
+  /// short-circuits before any network I/O, secure-storage write, or
+  /// platform-channel traffic, and returns a deterministic
+  /// [BackgroundSyncSuccess] synthesized from the mock's current time. This
+  /// keeps the override contract consistent with the rest of the static API
+  /// (where every method delegates to the mock) and prevents tests that
+  /// invoke the registered background callback from accidentally exercising
+  /// the real sync engine.
+  ///
   /// Returns a [TrustedTimeBackgroundResult] describing the outcome.
   static Future<TrustedTimeBackgroundResult> runBackgroundSync({
     TrustedTimeConfig config = const TrustedTimeConfig(),
   }) async {
+    // Honor the test-mock override before any side-effecting work. Mirrors
+    // the early-return pattern in initialize / now / enableBackgroundSync /
+    // registerBackgroundCallback so the dartdoc claim on
+    // overrideForTesting ("all static methods delegate to the mock") holds
+    // for the headless entrypoint as well.
+    final override = _override;
+    if (override != null) {
+      final nowMs = override.nowUnixMs;
+      return BackgroundSyncSuccess(
+        anchor: TrustAnchor(
+          networkUtcMs: nowMs,
+          // Mock has no uptime / wall / uncertainty surface; synthesize zero
+          // values rather than reaching for PlatformMonotonicClock here.
+          uptimeMs: 0,
+          wallMs: nowMs,
+          uncertaintyMs: 0,
+        ),
+        elapsed: Duration.zero,
+      );
+    }
     WidgetsFlutterBinding.ensureInitialized();
     final result = await bg.runBackgroundSync(config: config);
     try {
