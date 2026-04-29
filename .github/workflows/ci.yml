@@ -32,12 +32,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.41.0 is the first Flutter shipping a stable Dart 3.10 (the SDK
-        # floor imposed by package:nts via Native Assets / flutter_rust_bridge
-        # v2). Earlier 3.38.x ships a Dart 3.10.0 pre-release, which the
-        # caret constraint `^3.10.0` excludes.
-        # 3.41.7 is the .fvmrc pin used for local development.
-        flutter: ['3.41.0', '3.41.7']
+        # 3.38.10 matches the floor exercised by package:nts CI. The pubspec
+        # floor is `flutter: '>=3.38.0'` / `sdk: '^3.10.0'`, but Flutter 3.38.0
+        # accidentally shipped a Dart 3.10.0 pre-release (flutter/flutter
+        # #178400); 3.38.1 was the hotfix that delivered stable Dart 3.10.0.
+        # 3.38.10 is the latest patch in that line and resolves cleanly under
+        # the unchanged `^3.10.0` caret. 3.41.7 is the .fvmrc pin used for
+        # local development.
+        flutter: ['3.38.10', '3.41.7']
     steps:
       - uses: actions/checkout@v5
 
@@ -127,7 +129,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        flutter: ['3.41.0', '3.41.7']
+        flutter: ['3.38.10', '3.41.7']
     steps:
       - uses: actions/checkout@v5
       - uses: subosito/flutter-action@v2
