@@ -2,11 +2,25 @@ package com.trustedtime.trusted_time
 
 import android.content.Context
 import android.os.SystemClock
-import androidx.work.*
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import io.flutter.FlutterInjector
+import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.view.FlutterCallbackInformation
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.TimeUnit
 
 /** Main entry point for the TrustedTime Android plugin. */
@@ -42,6 +56,23 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 scheduleBackgroundSync(hours.toLong())
                 result.success(null)
             }
+            "setBackgroundCallbackHandle" -> {
+                val handle = call.argument<Number>("handle")?.toLong()
+                if (handle == null) {
+                    result.error("INVALID_ARGS", "handle is required", null)
+                    return
+                }
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .edit()
+                    .putLong(KEY_HANDLE, handle)
+                    .apply()
+                result.success(null)
+            }
+            "notifyBackgroundComplete" -> {
+                val success = call.argument<Boolean>("success") ?: false
+                backgroundSyncResult?.complete(success)
+                result.success(null)
+            }
             else -> result.notImplemented()
         }
     }
@@ -59,29 +90,90 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         backgroundChannel.setMethodCallHandler(null)
         IntegrityWatcher.detach(context)
     }
+
+    companion object {
+        internal const val PREFS = "trusted_time_prefs"
+        internal const val KEY_HANDLE = "tt_bg_callback_handle"
+
+        /**
+         * Set by [BackgroundSyncWorker] before launching the headless engine,
+         * completed by the plugin instance attached to that engine when Dart
+         * invokes `notifyBackgroundComplete`. The static handoff bridges a
+         * method-channel call landing in a plugin instance back to the
+         * suspending worker that owns the engine.
+         */
+        @JvmStatic
+        @Volatile
+        internal var backgroundSyncResult: CompletableDeferred<Boolean>? = null
+    }
 }
 
 /**
- * Background worker that performs a lightweight HTTPS HEAD check to validate
- * connectivity and confirm the device can reach time servers. The actual clock
- * drift correction happens on the Dart side during the next foreground sync.
+ * Periodic worker that performs the actual anchor refresh.
  *
- * The worker's primary purpose is to keep the WorkManager schedule alive and
- * ensure network availability for the Dart engine's next sync cycle.
+ * If the host app has registered a Dart callback via
+ * `TrustedTime.registerBackgroundCallback`, this worker spins up a headless
+ * [FlutterEngine], invokes that callback (which is expected to call
+ * `TrustedTime.runBackgroundSync()`), and waits for completion via the
+ * `trusted_time/background.notifyBackgroundComplete` method-channel call.
+ *
+ * If no callback is registered, this falls back to a connectivity-only
+ * HTTPS HEAD probe, preserving the pre-2.x behaviour for integrators that
+ * have not yet adopted the host-registered callback pattern.
  */
 class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+
     override suspend fun doWork(): Result {
-        return try {
-            val url = java.net.URL("https://www.google.com")
-            val conn = url.openConnection() as java.net.HttpURLConnection
-            conn.requestMethod = "HEAD"
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
-            conn.connect()
-            conn.disconnect()
-            Result.success()
-        } catch (_: Exception) {
-            Result.retry()
+        val prefs = applicationContext.getSharedPreferences(
+            TrustedTimePlugin.PREFS, Context.MODE_PRIVATE,
+        )
+        val handle = prefs.getLong(TrustedTimePlugin.KEY_HANDLE, 0L)
+        if (handle == 0L) return runConnectivityFallback()
+
+        val callbackInfo = FlutterCallbackInformation.lookupCallbackInformation(handle)
+            ?: return runConnectivityFallback()
+
+        return runHeadlessSync(callbackInfo)
+    }
+
+    private suspend fun runHeadlessSync(
+        callbackInfo: FlutterCallbackInformation,
+    ): Result = withContext(Dispatchers.Main) {
+        val loader = FlutterInjector.instance().flutterLoader()
+        loader.startInitialization(applicationContext)
+        loader.ensureInitializationComplete(applicationContext, null)
+
+        val engine = FlutterEngine(applicationContext)
+        val deferred = CompletableDeferred<Boolean>()
+        TrustedTimePlugin.backgroundSyncResult = deferred
+        try {
+            val args = DartExecutor.DartCallback(
+                applicationContext.assets,
+                loader.findAppBundlePath(),
+                callbackInfo,
+            )
+            engine.dartExecutor.executeDartCallback(args)
+
+            // 9-minute budget leaves headroom inside WorkManager's 10-minute
+            // default cap; tasks that exceed this are killed by the OS.
+            val success = withTimeoutOrNull(9 * 60 * 1000L) { deferred.await() }
+            if (success == true) Result.success() else Result.retry()
+        } finally {
+            TrustedTimePlugin.backgroundSyncResult = null
+            engine.destroy()
         }
+    }
+
+    private fun runConnectivityFallback(): Result = try {
+        val url = java.net.URL("https://www.google.com")
+        val conn = url.openConnection() as java.net.HttpURLConnection
+        conn.requestMethod = "HEAD"
+        conn.connectTimeout = 5000
+        conn.readTimeout = 5000
+        conn.connect()
+        conn.disconnect()
+        Result.success()
+    } catch (_: Exception) {
+        Result.retry()
     }
 }

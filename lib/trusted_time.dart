@@ -27,8 +27,13 @@
 library;
 
 import 'dart:async';
+import 'dart:ui';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
+import 'src/background_sync.dart';
+import 'src/background_sync.dart' as bg show runBackgroundSync;
 import 'src/exceptions.dart';
 import 'src/integrity_event.dart';
 import 'src/models.dart';
@@ -36,6 +41,11 @@ import 'src/trusted_time_estimate.dart';
 import 'src/trusted_time_impl.dart';
 import 'src/trusted_time_mock.dart';
 
+export 'src/background_sync.dart'
+    show
+        BackgroundSyncFailure,
+        BackgroundSyncSuccess,
+        TrustedTimeBackgroundResult;
 export 'src/exceptions.dart';
 export 'src/integrity_event.dart';
 export 'src/models.dart'
@@ -179,12 +189,101 @@ abstract final class TrustedTime {
   /// On Android, uses WorkManager. On iOS, uses BGTaskScheduler.
   /// On desktop, falls back to a Dart [Timer.periodic].
   /// On web, this is a no-op (browsers suspend background tabs).
+  ///
+  /// **Prerequisite for real headless refresh** (Android/iOS): call
+  /// [registerBackgroundCallback] first with a host-app `@pragma('vm:entry-point')`
+  /// function. Without it, background fires fall back to a connectivity-only
+  /// HTTPS HEAD probe that does not refresh the anchor — see ADR 0002.
   static Future<void> enableBackgroundSync({
     Duration interval = const Duration(hours: 24),
   }) {
     if (_override != null) return Future.value();
     return TrustedTimeImpl.instance.enableBackgroundSync(interval);
   }
+
+  /// Registers the host-app callback that the OS scheduler will invoke
+  /// from a headless [FlutterEngine] for each background fire.
+  ///
+  /// The callback **must** be a top-level or static function annotated with
+  /// `@pragma('vm:entry-point')` to survive tree-shaking in release builds.
+  /// In a typical integration the callback simply forwards to
+  /// [runBackgroundSync]:
+  ///
+  /// ```dart
+  /// @pragma('vm:entry-point')
+  /// void trustedTimeBackgroundCallback() {
+  ///   TrustedTime.runBackgroundSync();
+  /// }
+  ///
+  /// void main() {
+  ///   WidgetsFlutterBinding.ensureInitialized();
+  ///   TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback);
+  ///   runApp(MyApp());
+  /// }
+  /// ```
+  ///
+  /// Internally resolves the callback to an `int64` handle via
+  /// [PluginUtilities.getCallbackHandle] and persists it through the native
+  /// plugin (Android `SharedPreferences`, iOS `UserDefaults`). The handle is
+  /// stable across app launches as long as the callback's library URI and
+  /// function name do not change.
+  ///
+  /// Throws [ArgumentError] if [callback] is not annotated with
+  /// `@pragma('vm:entry-point')` or is otherwise not a top-level/static
+  /// function (in which case [PluginUtilities.getCallbackHandle] returns
+  /// `null`).
+  static Future<void> registerBackgroundCallback(
+    void Function() callback,
+  ) async {
+    if (_override != null) return;
+    final handle = PluginUtilities.getCallbackHandle(callback);
+    if (handle == null) {
+      throw ArgumentError.value(
+        callback,
+        'callback',
+        'Callback handle could not be resolved. The callback must be a '
+            "top-level or static function annotated with @pragma('vm:entry-point').",
+      );
+    }
+    await _bgChannel.invokeMethod<void>('setBackgroundCallbackHandle', {
+      'handle': handle.toRawHandle(),
+    });
+  }
+
+  /// Executes a single network sync against the configured time sources and
+  /// persists the resulting anchor.
+  ///
+  /// Designed for use inside the host-app callback registered via
+  /// [registerBackgroundCallback]. Bypasses the foreground engine's timer
+  /// and integrity-monitor setup; the next foreground call to [initialize]
+  /// warm-restores from the freshly persisted anchor.
+  ///
+  /// Automatically notifies the native plugin of completion so the headless
+  /// engine can be torn down inside the OS budget.
+  ///
+  /// Returns a [TrustedTimeBackgroundResult] describing the outcome.
+  static Future<TrustedTimeBackgroundResult> runBackgroundSync({
+    TrustedTimeConfig config = const TrustedTimeConfig(),
+  }) async {
+    WidgetsFlutterBinding.ensureInitialized();
+    if (!_timezoneInitialized) {
+      tz.initializeTimeZones();
+      _timezoneInitialized = true;
+    }
+    final result = await bg.runBackgroundSync(config: config);
+    try {
+      await _bgChannel.invokeMethod<void>('notifyBackgroundComplete', {
+        'success': result.isSuccess,
+        if (result is BackgroundSyncFailure) 'reason': result.reason,
+      });
+    } catch (_) {
+      // Channel may be absent in tests / desktop / web; the result is still
+      // valid and persisted, native cleanup is a best-effort signal only.
+    }
+    return result;
+  }
+
+  static const _bgChannel = MethodChannel('trusted_time/background');
 
   /// Returns trusted local time in a specific IANA timezone.
   ///

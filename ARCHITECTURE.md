@@ -43,6 +43,36 @@ The anchor is stored in encrypted platform storage (`Keychain` or `Keystore`).
 - **Persistence Logic**: On app restart, we load the anchor. If `CurrentUptime > U_sync`, the anchor is still valid (no reboot has occurred).
 - **Integrity Loss**: If `CurrentUptime < U_sync`, the device has rebooted, the monotonic counter has reset, and a new network sync is required.
 
+## Background Sync (Headless Engine)
+
+When `enableBackgroundSync` is paired with a host-registered callback, the OS scheduler fires a real anchor refresh from a headless `FlutterEngine`. Design rationale and failure modes are captured in [ADR 0002](docs/adr/0002-headless-background-sync.md).
+
+```
+WorkManager / BGAppRefreshTask  ─►  Worker.doWork() / performBackgroundSync(task:)
+                                    │
+                                    ├─ read callback handle (SharedPreferences / UserDefaults)
+                                    │   └─ if absent: HTTPS HEAD fallback ── done
+                                    │
+                                    ├─ FlutterEngine() with auto-registered plugins (Android)
+                                    │  / FlutterEngine + setPluginRegistrantCallback (iOS)
+                                    │
+                                    └─ executeDartCallback / run(withEntrypoint:)
+                                        │
+                                        ▼
+                          @pragma('vm:entry-point') trustedTimeBackgroundCallback
+                                        │
+                                        ▼
+                          TrustedTime.runBackgroundSync()
+                                        │
+                                        ▼
+                          SyncEngine.sync() ─► AnchorStore.save(anchor)
+                                        │
+                                        ▼
+                          notifyBackgroundComplete(success: bool) ─► native teardown
+```
+
+Engine teardown is bounded by a 9-minute coroutine timeout on Android (inside WorkManager's 10-minute cap) and by `BGTask.expirationHandler` on iOS (~30s OS budget). The Dart entrypoint deliberately bypasses `TrustedTimeImpl.init` and constructs a `SyncEngine` directly: there is no foreground engine to participate in, no refresh timer to start, and no integrity-monitor to attach. The next foreground `TrustedTime.initialize()` warm-restores from the freshly persisted anchor through the standard path.
+
 ## Performance Analysis
 
 ### Synchronous Retrieval

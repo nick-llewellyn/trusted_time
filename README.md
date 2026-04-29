@@ -200,6 +200,53 @@ NTS is supported on iOS, Android, macOS, Linux, and Windows via the [`nts`](http
 
 > **SDK requirement**: Enabling NTS pulls in the `package:nts` toolchain, which requires Dart `^3.10.0` / Flutter `>=3.38.0`.
 
+### Background sync (real headless refresh)
+
+When `enableBackgroundSync` is paired with a registered host-app callback, TrustedTime spins up a headless `FlutterEngine` from the OS scheduler (Android `WorkManager`, iOS `BGAppRefreshTask`), runs a real Marzullo-quorum sync, and persists a fresh `TrustAnchor` — so the next foreground launch warm-restores from current data without a network round-trip. See [ADR 0002](docs/adr/0002-headless-background-sync.md) for the full design.
+
+```dart
+@pragma('vm:entry-point')
+void trustedTimeBackgroundCallback() {
+  TrustedTime.runBackgroundSync();
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await TrustedTime.initialize();
+  await TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback);
+  await TrustedTime.enableBackgroundSync(interval: Duration(hours: 6));
+  runApp(MyApp());
+}
+```
+
+> **Required:** the callback **must** be a top-level or static function annotated with `@pragma('vm:entry-point')`, otherwise tree-shaking strips it in release builds and `registerBackgroundCallback` throws `ArgumentError`.
+
+**Platform setup**
+
+- **Android:** no extra setup. `WorkManager` and the headless engine bootstrap are wired by the plugin.
+- **iOS:** add the BGTask identifier to `ios/Runner/Info.plist`:
+
+  ```xml
+  <key>BGTaskSchedulerPermittedIdentifiers</key>
+  <array>
+    <string>com.trustedtime.backgroundsync</string>
+  </array>
+  ```
+
+  And register the host's plugin registrant onto the headless engine in `AppDelegate.swift`:
+
+  ```swift
+  import trusted_time
+  // inside application(_:didFinishLaunchingWithOptions:):
+  TrustedTimePlugin.setPluginRegistrantCallback { engine in
+    GeneratedPluginRegistrant.register(with: engine)
+  }
+  ```
+
+  Without the plugin-registrant shim, the headless engine cannot reach `flutter_secure_storage` and the persisted anchor write would fail.
+
+**Back-compat fallback:** if `registerBackgroundCallback` is never called, `enableBackgroundSync` falls back to the pre-2.x connectivity-only HTTPS HEAD probe so existing integrators are not broken.
+
 ---
 
 ## Platform Behavior
