@@ -339,10 +339,10 @@ packages:
     dependency: transitive
     description:
       name: nts
-      sha256: "2a2641b6ac2b8bcdea36ba5255b3070a8b09d174f9afb281f8502a590375807d"
+      sha256: d484cf32d8c08fda4eef676be45bb07fe016e47032a486c0f1919936e712415a
       url: "https://pub.dev"
     source: hosted
-    version: "1.1.0"
+    version: "1.3.1"
   objective_c:
     dependency: transitive
     description:
@@ -538,7 +538,7 @@ packages:
       path: ".."
       relative: true
     source: path
-    version: "2.0.0"
+    version: "2.0.2"
   typed_data:
     dependency: transitive
     description:

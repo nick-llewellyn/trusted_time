@@ -27,8 +27,23 @@
 library;
 
 import 'dart:async';
+import 'dart:developer' as developer;
+import 'dart:ui';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
+// Two imports against the same library to keep the public API surface clean:
+// - The unprefixed `show` makes the re-exported result types usable in
+//   public signatures without leaking an internal `bg.` prefix into
+//   dartdoc/IDE tooltips.
+// - The prefixed `as bg show runBackgroundSync` keeps the internal
+//   unit-of-work function reachable without shadowing the static
+//   `TrustedTime.runBackgroundSync` defined below.
+import 'src/background_sync.dart'
+    show BackgroundSyncFailure, BackgroundSyncSuccess, TrustedTimeBackgroundResult;
+import 'src/background_sync.dart' as bg show runBackgroundSync;
 import 'src/exceptions.dart';
 import 'src/integrity_event.dart';
 import 'src/models.dart';
@@ -36,6 +51,11 @@ import 'src/trusted_time_estimate.dart';
 import 'src/trusted_time_impl.dart';
 import 'src/trusted_time_mock.dart';
 
+export 'src/background_sync.dart'
+    show
+        BackgroundSyncFailure,
+        BackgroundSyncSuccess,
+        TrustedTimeBackgroundResult;
 export 'src/exceptions.dart';
 export 'src/integrity_event.dart';
 export 'src/models.dart'
@@ -179,12 +199,196 @@ abstract final class TrustedTime {
   /// On Android, uses WorkManager. On iOS, uses BGTaskScheduler.
   /// On desktop, falls back to a Dart [Timer.periodic].
   /// On web, this is a no-op (browsers suspend background tabs).
+  ///
+  /// **Prerequisite for real headless refresh** (Android/iOS): call
+  /// [registerBackgroundCallback] first with a host-app `@pragma('vm:entry-point')`
+  /// function. Without it, background fires fall back to a connectivity-only
+  /// HTTPS HEAD probe that does not refresh the anchor — see ADR 0002.
   static Future<void> enableBackgroundSync({
     Duration interval = const Duration(hours: 24),
   }) {
     if (_override != null) return Future.value();
     return TrustedTimeImpl.instance.enableBackgroundSync(interval);
   }
+
+  /// Registers the host-app callback that the OS scheduler will invoke
+  /// from a headless [FlutterEngine] for each background fire.
+  ///
+  /// The callback **must** be a top-level or static function annotated with
+  /// `@pragma('vm:entry-point')` to survive tree-shaking in release builds.
+  /// In a typical integration the callback simply forwards to
+  /// [runBackgroundSync]:
+  ///
+  /// ```dart
+  /// import 'dart:async';
+  ///
+  /// @pragma('vm:entry-point')
+  /// void trustedTimeBackgroundCallback() {
+  ///   // Host callback is `void Function()`, so awaiting is not possible;
+  ///   // `unawaited(...)` makes the fire-and-forget intent explicit and
+  ///   // keeps the `unawaited_futures` lint clean for hosts that adopt it.
+  ///   unawaited(TrustedTime.runBackgroundSync());
+  /// }
+  ///
+  /// void main() {
+  ///   WidgetsFlutterBinding.ensureInitialized();
+  ///   unawaited(
+  ///     TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback),
+  ///   );
+  ///   runApp(MyApp());
+  /// }
+  /// ```
+  ///
+  /// Internally resolves the callback to an `int64` handle via
+  /// [PluginUtilities.getCallbackHandle] and persists it through the native
+  /// plugin (Android `SharedPreferences`, iOS `UserDefaults`). The handle is
+  /// stable across app launches as long as the callback's library URI and
+  /// function name do not change.
+  ///
+  /// On Android and iOS, throws [ArgumentError] if
+  /// [PluginUtilities.getCallbackHandle] cannot resolve a handle for
+  /// [callback]. To be resolvable, the callback must:
+  ///
+  /// - be a top-level or static function (closures and instance methods
+  ///   are not supported by the Dart VM's callback-handle mechanism), and
+  /// - in release builds, be annotated with `@pragma('vm:entry-point')`
+  ///   so it survives tree-shaking.
+  ///
+  /// Note: the `@pragma` annotation is enforced by the Dart compiler at
+  /// build time, not at runtime; this method only observes whether the
+  /// VM was able to produce a handle.
+  ///
+  /// Registration is a no-op on platforms that do not run an OS background
+  /// scheduler — web and desktop (Linux/macOS/Windows). The platform check
+  /// happens before [PluginUtilities.getCallbackHandle], so a host that
+  /// passes a closure on those platforms will not see [ArgumentError]
+  /// either; the dev-time validation only runs where the registered
+  /// callback could actually be invoked. In unit tests that have not
+  /// mocked the `trusted_time/background` method channel, the resulting
+  /// [MissingPluginException] is also swallowed so hosts can call this
+  /// unconditionally from shared startup code.
+  static Future<void> registerBackgroundCallback(
+    void Function() callback,
+  ) async {
+    if (_override != null) return;
+    // Skip on platforms that do not run an OS background scheduler. The
+    // OS-side WorkManager/BGTaskScheduler hooks only exist on Android and
+    // iOS; on web and desktop the persisted handle would never be read,
+    // so spending dev-time validation on the callback shape (closure vs
+    // top-level) only adds friction to shared startup code.
+    if (kIsWeb ||
+        (defaultTargetPlatform != TargetPlatform.android &&
+            defaultTargetPlatform != TargetPlatform.iOS)) {
+      return;
+    }
+    // Defensive: host apps are expected to call this from `main()` after
+    // `WidgetsFlutterBinding.ensureInitialized()`, but the method-channel
+    // invoke below requires bindings regardless. Keep symmetric with
+    // [runBackgroundSync] which initializes bindings unconditionally.
+    WidgetsFlutterBinding.ensureInitialized();
+    final handle = PluginUtilities.getCallbackHandle(callback);
+    if (handle == null) {
+      throw ArgumentError.value(
+        callback,
+        'callback',
+        'Could not resolve a callback handle. The callback must be a '
+            'top-level or static function; in release builds it must also '
+            "be annotated with @pragma('vm:entry-point') to survive "
+            'tree-shaking.',
+      );
+    }
+    try {
+      await _bgChannel.invokeMethod<void>('setBackgroundCallbackHandle', {
+        'handle': handle.toRawHandle(),
+      });
+    } on MissingPluginException {
+      // Channel is absent on platforms without a native trusted_time
+      // implementation (web, desktop) and in unit tests that have not
+      // mocked it. Treat registration as a no-op there so hosts can call
+      // it unconditionally from shared startup code; on platforms that do
+      // not run the OS scheduler, the handle would be unused anyway.
+    }
+  }
+
+  /// Executes a single network sync against the configured time sources and,
+  /// by default, persists the resulting anchor.
+  ///
+  /// Designed for use inside the host-app callback registered via
+  /// [registerBackgroundCallback]. Bypasses the foreground engine's timer
+  /// and integrity-monitor setup; the next foreground call to [initialize]
+  /// warm-restores from the freshly persisted anchor.
+  ///
+  /// Persistence is governed by [TrustedTimeConfig.persistState] (default
+  /// `true`). When `false`, a successful run still returns a
+  /// [BackgroundSyncSuccess] but the anchor is *not* written to storage —
+  /// the next foreground [initialize] will not see the freshly fetched
+  /// value. This override exists primarily for tests and for hosts that
+  /// want to drive their own persistence outside the bundled
+  /// `flutter_secure_storage` path.
+  ///
+  /// Automatically notifies the native plugin of completion so the headless
+  /// engine can be torn down inside the OS budget.
+  ///
+  /// When a [TrustedTimeMock] is active via [overrideForTesting], this method
+  /// short-circuits before any network I/O, secure-storage write, or
+  /// platform-channel traffic, and returns a deterministic
+  /// [BackgroundSyncSuccess] synthesized from the mock's current time. This
+  /// keeps the override contract consistent with the rest of the static API
+  /// (where every method delegates to the mock) and prevents tests that
+  /// invoke the registered background callback from accidentally exercising
+  /// the real sync engine.
+  ///
+  /// Returns a [TrustedTimeBackgroundResult] describing the outcome.
+  static Future<TrustedTimeBackgroundResult> runBackgroundSync({
+    TrustedTimeConfig config = const TrustedTimeConfig(),
+  }) async {
+    // Honor the test-mock override before any side-effecting work. Mirrors
+    // the early-return pattern in initialize / now / enableBackgroundSync /
+    // registerBackgroundCallback so the dartdoc claim on
+    // overrideForTesting ("all static methods delegate to the mock") holds
+    // for the headless entrypoint as well.
+    final override = _override;
+    if (override != null) {
+      final nowMs = override.nowUnixMs;
+      return BackgroundSyncSuccess(
+        anchor: TrustAnchor(
+          networkUtcMs: nowMs,
+          // Mock has no uptime / wall / uncertainty surface; synthesize zero
+          // values rather than reaching for PlatformMonotonicClock here.
+          uptimeMs: 0,
+          wallMs: nowMs,
+          uncertaintyMs: 0,
+        ),
+        elapsed: Duration.zero,
+      );
+    }
+    WidgetsFlutterBinding.ensureInitialized();
+    final result = await bg.runBackgroundSync(config: config);
+    try {
+      await _bgChannel.invokeMethod<void>('notifyBackgroundComplete', {
+        'success': result.isSuccess,
+        if (result is BackgroundSyncFailure) 'reason': result.reason,
+      });
+    } on MissingPluginException {
+      // Channel is absent on desktop/web and in unit tests that have not
+      // mocked it. The anchor is already persisted; native cleanup is a
+      // best-effort signal only.
+    } catch (e, s) {
+      // Surfacing other failures (channel wired but handler errored, etc.)
+      // matters operationally — without this signal the native worker
+      // waits the full budget then retries unnecessarily.
+      developer.log(
+        'TrustedTime.runBackgroundSync: failed to notify native completion',
+        name: 'trusted_time',
+        level: 900,
+        error: e,
+        stackTrace: s,
+      );
+    }
+    return result;
+  }
+
+  static const _bgChannel = MethodChannel('trusted_time/background');
 
   /// Returns trusted local time in a specific IANA timezone.
   ///

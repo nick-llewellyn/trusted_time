@@ -2,6 +2,20 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:trusted_time/trusted_time.dart';
 
+/// Top-level entrypoint invoked from a headless [FlutterEngine] when the OS
+/// scheduler (Android `WorkManager` / iOS `BGAppRefreshTask`) fires the
+/// background sync. The `@pragma('vm:entry-point')` annotation is mandatory
+/// — it keeps this symbol alive through release-mode tree-shaking so the
+/// callback handle persisted in `SharedPreferences`/`UserDefaults` resolves.
+@pragma('vm:entry-point')
+void trustedTimeBackgroundCallback() {
+  // The host callback signature is `void Function()`, so it cannot await
+  // the returned Future. `unawaited(...)` makes the fire-and-forget intent
+  // explicit and keeps `unawaited_futures` clean if a host copy/pastes
+  // this pattern into an async context.
+  unawaited(TrustedTime.runBackgroundSync());
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -12,6 +26,11 @@ Future<void> main() async {
       persistState: true,
     ),
   );
+
+  // Pre-register the background callback so subsequent calls to
+  // `enableBackgroundSync` perform a real anchor refresh rather than the
+  // back-compat HTTPS-HEAD fallback.
+  await TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback);
 
   runApp(const MyApp());
 }

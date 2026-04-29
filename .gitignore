@@ -38,7 +38,7 @@ migrate_working_dir/
 !**/gradlew.bat
 
 # Internal Documentation
-docs/
+
 
 # Test output artifacts
 test_results.txt
