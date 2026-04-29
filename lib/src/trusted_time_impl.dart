@@ -90,13 +90,19 @@ final class TrustedTimeImpl {
       return null;
     }
 
-    final currentTime = testOverride != null ? testOverride!.now : DateTime.now();
+    final currentTime = testOverride != null
+        ? testOverride!.now
+        : DateTime.now();
     final wallElapsed = Duration(
       milliseconds: currentTime.millisecondsSinceEpoch - baseWallMs!,
     );
-    final confidence = (1.0 - wallElapsed.inMinutes.abs() / 4320.0).clamp(0.0, 1.0);
+    final confidence = (1.0 - wallElapsed.inMinutes.abs() / 4320.0).clamp(
+      0.0,
+      1.0,
+    );
     final errorMs =
-        (wallElapsed.inMilliseconds.abs() * _config.oscillatorDriftFactor).round();
+        (wallElapsed.inMilliseconds.abs() * _config.oscillatorDriftFactor)
+            .round();
 
     return TrustedTimeEstimate(
       estimatedTime: DateTime.fromMillisecondsSinceEpoch(

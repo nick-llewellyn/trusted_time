@@ -40,7 +40,10 @@ void main() {
 
     test('clear wipes anchor and last-known timestamps', () async {
       const anchor = TrustAnchor(
-        networkUtcMs: 1, uptimeMs: 2, wallMs: 3, uncertaintyMs: 0,
+        networkUtcMs: 1,
+        uptimeMs: 2,
+        wallMs: 3,
+        uncertaintyMs: 0,
       );
       await storage.save(anchor);
       await storage.clear();
@@ -50,10 +53,16 @@ void main() {
 
     test('successive saves overwrite earlier state', () async {
       const a = TrustAnchor(
-        networkUtcMs: 100, uptimeMs: 1, wallMs: 200, uncertaintyMs: 5,
+        networkUtcMs: 100,
+        uptimeMs: 1,
+        wallMs: 200,
+        uncertaintyMs: 5,
       );
       const b = TrustAnchor(
-        networkUtcMs: 999, uptimeMs: 2, wallMs: 888, uncertaintyMs: 7,
+        networkUtcMs: 999,
+        uptimeMs: 2,
+        wallMs: 888,
+        uncertaintyMs: 7,
       );
       await storage.save(a);
       await storage.save(b);

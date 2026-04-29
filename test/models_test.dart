@@ -38,12 +38,8 @@ void main() {
     });
 
     test('configs with different httpsSources are NOT equal', () {
-      const a = TrustedTimeConfig(
-        httpsSources: ['https://www.google.com'],
-      );
-      const b = TrustedTimeConfig(
-        httpsSources: ['https://www.cloudflare.com'],
-      );
+      const a = TrustedTimeConfig(httpsSources: ['https://www.google.com']);
+      const b = TrustedTimeConfig(httpsSources: ['https://www.cloudflare.com']);
       expect(a, isNot(equals(b)));
     });
 
@@ -122,13 +118,22 @@ void main() {
 
     test('equality and hashCode', () {
       final a = TrustAnchor(
-        networkUtcMs: 100, uptimeMs: 200, wallMs: 300, uncertaintyMs: 10,
+        networkUtcMs: 100,
+        uptimeMs: 200,
+        wallMs: 300,
+        uncertaintyMs: 10,
       );
       final b = TrustAnchor(
-        networkUtcMs: 100, uptimeMs: 200, wallMs: 300, uncertaintyMs: 10,
+        networkUtcMs: 100,
+        uptimeMs: 200,
+        wallMs: 300,
+        uncertaintyMs: 10,
       );
       final c = TrustAnchor(
-        networkUtcMs: 999, uptimeMs: 200, wallMs: 300, uncertaintyMs: 10,
+        networkUtcMs: 999,
+        uptimeMs: 200,
+        wallMs: 300,
+        uncertaintyMs: 10,
       );
       expect(a, equals(b));
       expect(a.hashCode, equals(b.hashCode));
@@ -137,7 +142,10 @@ void main() {
 
     test('copyWith returns new instance with updated uncertainty', () {
       final anchor = TrustAnchor(
-        networkUtcMs: 100, uptimeMs: 200, wallMs: 300, uncertaintyMs: 10,
+        networkUtcMs: 100,
+        uptimeMs: 200,
+        wallMs: 300,
+        uncertaintyMs: 10,
       );
       final copy = anchor.copyWith(uncertaintyMs: 50);
       expect(copy.uncertaintyMs, 50);

@@ -136,9 +136,9 @@ void main() {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
-        calls.add(call);
-        return null;
-      });
+            calls.add(call);
+            return null;
+          });
     });
 
     tearDown(() {
@@ -154,27 +154,26 @@ void main() {
       expect(calls, hasLength(1));
       expect(calls.single.method, 'setBackgroundCallbackHandle');
       expect(calls.single.arguments, isA<Map>());
-      expect(
-        (calls.single.arguments as Map)['handle'],
-        isA<int>(),
-      );
+      expect((calls.single.arguments as Map)['handle'], isA<int>());
     });
 
-    test('throws ArgumentError when callback handle cannot be resolved',
-        () async {
-      // Nested (non-top-level) functions cannot be resolved to a callback
-      // handle by the Dart VM, so [PluginUtilities.getCallbackHandle]
-      // returns null. The `@pragma('vm:entry-point')` annotation is a
-      // separate, build-time concern not exercised here.
-      void localCallback() {}
-      expect(
-        () => public_api.TrustedTime.registerBackgroundCallback(localCallback),
-        throwsArgumentError,
-      );
-    });
+    test(
+      'throws ArgumentError when callback handle cannot be resolved',
+      () async {
+        // Nested (non-top-level) functions cannot be resolved to a callback
+        // handle by the Dart VM, so [PluginUtilities.getCallbackHandle]
+        // returns null. The `@pragma('vm:entry-point')` annotation is a
+        // separate, build-time concern not exercised here.
+        void localCallback() {}
+        expect(
+          () =>
+              public_api.TrustedTime.registerBackgroundCallback(localCallback),
+          throwsArgumentError,
+        );
+      },
+    );
 
-    test('swallows MissingPluginException when channel is unmocked',
-        () async {
+    test('swallows MissingPluginException when channel is unmocked', () async {
       // Simulate a host that calls registration before the native plugin
       // is available: clearing the mock handler installed in setUp causes
       // invokeMethod to throw MissingPluginException, which
@@ -217,9 +216,9 @@ void main() {
       calls.clear();
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
-        calls.add(call);
-        return null;
-      });
+            calls.add(call);
+            return null;
+          });
     });
 
     tearDown(() {
@@ -227,33 +226,35 @@ void main() {
           .setMockMethodCallHandler(channel, null);
     });
 
-    test('notifies native of completion with success=true on a passing run',
-        () async {
-      final result = await public_api.TrustedTime.runBackgroundSync(
-        config: TrustedTimeConfig(
-          ntpServers: const [],
-          httpsSources: const [],
-          ntsServers: const [],
-          minimumQuorum: 2,
-          // persistState=false so the run does not touch real
-          // flutter_secure_storage from the test process.
-          persistState: false,
-          additionalSources: [
-            _FakeSource(idValue: 'fake-a', utc: consensusUtc),
-            _FakeSource(
-              idValue: 'fake-b',
-              utc: consensusUtc.add(const Duration(milliseconds: 5)),
-            ),
-          ],
-        ),
-      );
-      expect(result.isSuccess, isTrue);
-      expect(calls, hasLength(1));
-      expect(calls.single.method, 'notifyBackgroundComplete');
-      final args = calls.single.arguments as Map;
-      expect(args['success'], isTrue);
-      expect(args.containsKey('reason'), isFalse);
-    });
+    test(
+      'notifies native of completion with success=true on a passing run',
+      () async {
+        final result = await public_api.TrustedTime.runBackgroundSync(
+          config: TrustedTimeConfig(
+            ntpServers: const [],
+            httpsSources: const [],
+            ntsServers: const [],
+            minimumQuorum: 2,
+            // persistState=false so the run does not touch real
+            // flutter_secure_storage from the test process.
+            persistState: false,
+            additionalSources: [
+              _FakeSource(idValue: 'fake-a', utc: consensusUtc),
+              _FakeSource(
+                idValue: 'fake-b',
+                utc: consensusUtc.add(const Duration(milliseconds: 5)),
+              ),
+            ],
+          ),
+        );
+        expect(result.isSuccess, isTrue);
+        expect(calls, hasLength(1));
+        expect(calls.single.method, 'notifyBackgroundComplete');
+        final args = calls.single.arguments as Map;
+        expect(args['success'], isTrue);
+        expect(args.containsKey('reason'), isFalse);
+      },
+    );
 
     test('notifies native of completion with success=false and reason on '
         'a failing run', () async {
@@ -279,8 +280,7 @@ void main() {
       expect((args['reason'] as String).isNotEmpty, isTrue);
     });
 
-    test('swallows MissingPluginException when channel is unmocked',
-        () async {
+    test('swallows MissingPluginException when channel is unmocked', () async {
       // The default mock from setUp() is overridden with `null` here so
       // method-channel calls raise MissingPluginException (the realistic
       // desktop/web behaviour). The public API must still return the

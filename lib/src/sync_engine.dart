@@ -106,7 +106,8 @@ final class SyncEngine {
     return results
         .whereType<TimeSample>()
         .where(
-          (s) => s.roundTripTime.inMilliseconds <=
+          (s) =>
+              s.roundTripTime.inMilliseconds <=
               _config.maxLatency.inMilliseconds,
         )
         .toList();

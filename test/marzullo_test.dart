@@ -51,8 +51,7 @@ void main() {
       ]);
 
       expect(result, isNotNull);
-      final diffFromBase =
-          (result!.utc.millisecondsSinceEpoch - baseMs).abs();
+      final diffFromBase = (result!.utc.millisecondsSinceEpoch - baseMs).abs();
       expect(diffFromBase, lessThan(100));
     });
 

@@ -12,11 +12,13 @@ import 'package:web/web.dart' as web;
 /// refreshes; the engine will perform a fresh network sync on each load.
 class TrustedTimeWebPlugin {
   static void registerWith(Registrar registrar) {
-    const MethodChannel('trusted_time/monotonic')
-        .setMethodCallHandler(_handleMonotonic);
+    const MethodChannel(
+      'trusted_time/monotonic',
+    ).setMethodCallHandler(_handleMonotonic);
 
-    const MethodChannel('trusted_time/background')
-        .setMethodCallHandler(_handleBackground);
+    const MethodChannel(
+      'trusted_time/background',
+    ).setMethodCallHandler(_handleBackground);
   }
 
   static Future<dynamic> _handleMonotonic(MethodCall call) async {

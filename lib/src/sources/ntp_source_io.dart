@@ -32,11 +32,7 @@ final class NtpSource implements TrustedTimeSource {
       roundTripTime: rtt,
       uncertainty: Duration(milliseconds: rtt.inMilliseconds ~/ 2),
       capturedMonotonicMs: capturedMonotonicMs,
-      source: TimeSourceMetadata(
-        kind: TimeSourceKind.ntp,
-        id: id,
-        host: _host,
-      ),
+      source: TimeSourceMetadata(kind: TimeSourceKind.ntp, id: id, host: _host),
       capturedAt: capturedAt,
     );
   }

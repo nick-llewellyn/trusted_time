@@ -38,34 +38,43 @@ final class IntegrityMonitor {
 
       switch (type) {
         case 'clockJumped':
-          _emit(IntegrityEvent(
-            reason: TamperReason.systemClockJumped,
-            detectedAt: DateTime.now().toUtc(),
-            drift: driftMs != null ? Duration(milliseconds: driftMs) : null,
-          ));
+          _emit(
+            IntegrityEvent(
+              reason: TamperReason.systemClockJumped,
+              detectedAt: DateTime.now().toUtc(),
+              drift: driftMs != null ? Duration(milliseconds: driftMs) : null,
+            ),
+          );
         case 'reboot':
-          _emit(IntegrityEvent(
-            reason: TamperReason.deviceRebooted,
-            detectedAt: DateTime.now().toUtc(),
-          ));
+          _emit(
+            IntegrityEvent(
+              reason: TamperReason.deviceRebooted,
+              detectedAt: DateTime.now().toUtc(),
+            ),
+          );
         case 'timezoneChanged':
           final now = DateTime.now();
           final prev = _lastTimezoneOffset;
           _lastTimezoneOffset = now.timeZoneOffset;
-          _emit(IntegrityEvent(
-            reason: TamperReason.timezoneChanged,
-            detectedAt: now.toUtc(),
-            drift: prev != null
-                ? Duration(
-                    milliseconds: (now.timeZoneOffset - prev).inMilliseconds.abs(),
-                  )
-                : null,
-          ));
+          _emit(
+            IntegrityEvent(
+              reason: TamperReason.timezoneChanged,
+              detectedAt: now.toUtc(),
+              drift: prev != null
+                  ? Duration(
+                      milliseconds: (now.timeZoneOffset - prev).inMilliseconds
+                          .abs(),
+                    )
+                  : null,
+            ),
+          );
         default:
-          _emit(IntegrityEvent(
-            reason: TamperReason.unknown,
-            detectedAt: DateTime.now().toUtc(),
-          ));
+          _emit(
+            IntegrityEvent(
+              reason: TamperReason.unknown,
+              detectedAt: DateTime.now().toUtc(),
+            ),
+          );
       }
     } catch (e, st) {
       debugPrint('[TrustedTime] Integrity event handling error: $e\n$st');

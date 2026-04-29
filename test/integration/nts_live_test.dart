@@ -16,25 +16,32 @@ import 'package:trusted_time/src/sources/nts_source_io.dart';
 /// ```
 void main() {
   group('NtsSource (live)', () {
-    test('returns an authenticated sample from time.cloudflare.com',
-        () async {
-      final source = NtsSource('time.cloudflare.com');
-      final sample = await source.fetch();
+    test(
+      'returns an authenticated sample from time.cloudflare.com',
+      () async {
+        final source = NtsSource('time.cloudflare.com');
+        final sample = await source.fetch();
 
-      expect(sample.source.authenticated, isTrue);
-      expect(sample.source.kind, TimeSourceKind.nts);
-      expect(sample.source.host, 'time.cloudflare.com');
-      expect(sample.networkUtc.isAfter(DateTime.utc(2025)), isTrue);
-      expect(sample.roundTripTime.inSeconds, lessThan(5));
-    }, timeout: const Timeout(Duration(seconds: 15)));
+        expect(sample.source.authenticated, isTrue);
+        expect(sample.source.kind, TimeSourceKind.nts);
+        expect(sample.source.host, 'time.cloudflare.com');
+        expect(sample.networkUtc.isAfter(DateTime.utc(2025)), isTrue);
+        expect(sample.roundTripTime.inSeconds, lessThan(5));
+      },
+      timeout: const Timeout(Duration(seconds: 15)),
+    );
 
-    test('returns an authenticated sample from nts.netnod.se', () async {
-      final source = NtsSource('nts.netnod.se');
-      final sample = await source.fetch();
+    test(
+      'returns an authenticated sample from nts.netnod.se',
+      () async {
+        final source = NtsSource('nts.netnod.se');
+        final sample = await source.fetch();
 
-      expect(sample.source.authenticated, isTrue);
-      expect(sample.source.kind, TimeSourceKind.nts);
-      expect(sample.networkUtc.isAfter(DateTime.utc(2025)), isTrue);
-    }, timeout: const Timeout(Duration(seconds: 15)));
+        expect(sample.source.authenticated, isTrue);
+        expect(sample.source.kind, TimeSourceKind.nts);
+        expect(sample.networkUtc.isAfter(DateTime.utc(2025)), isTrue);
+      },
+      timeout: const Timeout(Duration(seconds: 15)),
+    );
   });
 }

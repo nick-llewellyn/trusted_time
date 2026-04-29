@@ -45,7 +45,7 @@ The anchor is stored in encrypted platform storage (`Keychain` or `Keystore`).
 
 ## Background Sync (Headless Engine)
 
-When `enableBackgroundSync` is paired with a host-registered callback, the OS scheduler fires a real anchor refresh from a headless `FlutterEngine`. Design rationale and failure modes are captured in [ADR 0002](docs/adr/0002-headless-background-sync.md).
+When `enableBackgroundSync` is paired with a host-registered callback, the OS scheduler fires a real anchor refresh from a headless `FlutterEngine`. Design rationale and failure modes are captured in [ADR 0002](doc/adr/0002-headless-background-sync.md).
 
 ```
 WorkManager / BGAppRefreshTask  ─►  Worker.doWork() / performBackgroundSync(task:)
