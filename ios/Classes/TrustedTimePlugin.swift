@@ -17,9 +17,15 @@ public typealias TrustedTimePluginRegistrantCallback = (FlutterEngine) -> Void
 ///      <string>com.trustedtime.backgroundsync</string>
 ///    </array>
 ///    ```
-///    Without this entry, `BGTaskScheduler.shared.register(...)` returns
-///    `false` and background syncs will not fire. The plugin logs this via
-///    `NSLog` so the misconfiguration shows up in the device console.
+///    Without this entry, `BGTaskScheduler.shared.submit(...)` throws
+///    `BGTaskSchedulerErrorCodeNotPermitted` on every scheduling attempt
+///    and background syncs will not fire. The plugin logs the thrown
+///    error via `NSLog` so the misconfiguration shows up in the device
+///    console; a related diagnostic is also logged when
+///    `BGTaskScheduler.shared.register(...)` returns `false`, although
+///    that return value alone is not treated as fatal because it also
+///    occurs benignly when the identifier was already registered by an
+///    earlier `TrustedTimePlugin` instance in the same process.
 /// 2. Wire `GeneratedPluginRegistrant` into the headless engine path from
 ///    your `AppDelegate`:
 ///    ```swift
@@ -36,7 +42,6 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     private var clockObservers: [NSObjectProtocol] = []
     private let bgTaskId = "com.trustedtime.backgroundsync"
     private var bgRegistered = false
-    private var bgRegistrationSucceeded = false
     private var bgIntervalHours = 24
     private var headlessEngine: FlutterEngine?
     private var bgChannel: FlutterMethodChannel?
@@ -101,16 +106,20 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     /// Subsequent calls reuse the existing registration; the interval is
     /// read from [bgIntervalHours] inside the handler closure.
     ///
-    /// `BGTaskScheduler.register(...)` returns `false` when the task
-    /// identifier is missing from the host app's
-    /// `BGTaskSchedulerPermittedIdentifiers` Info.plist entry, or when a
-    /// handler is already registered for it. Since Apple does not permit
-    /// re-registering the same identifier on the same instance, we record
-    /// the attempt unconditionally (`bgRegistered`) but only proceed to
-    /// schedule a request when registration actually succeeded
-    /// (`bgRegistrationSucceeded`). Submitting a request for an
-    /// unregistered identifier would silently fail inside `try?` and waste
-    /// every subsequent `enableBackgroundSync` call.
+    /// `BGTaskScheduler.register(...)` returns `false` for two distinct
+    /// reasons that the API does not let us distinguish:
+    ///   (a) the task identifier is missing from the host app's
+    ///       `BGTaskSchedulerPermittedIdentifiers` Info.plist entry
+    ///       (host-app misconfiguration), or
+    ///   (b) the identifier has already been registered earlier in the
+    ///       same process by another `TrustedTimePlugin` instance — for
+    ///       example in an add-to-app or multi-`FlutterEngine` setup.
+    /// We log the condition so case (a) is visible in device logs, and
+    /// we always proceed to `scheduleNextBgSync()` regardless. Under
+    /// case (b) the `submit(...)` call below succeeds because the
+    /// identifier is registered globally for the process. Under case
+    /// (a) the `submit(...)` call throws and is logged with the precise
+    /// error, which is the signal the host integrator actually needs.
     private func registerBgSync() {
         if !bgRegistered {
             bgRegistered = true
@@ -132,31 +141,39 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
                 }
                 self.performBackgroundSync(task: task)
             }
-            bgRegistrationSucceeded = registered
             if !registered {
-                // Surface the misconfiguration via NSLog so it shows up in
-                // device logs / Xcode console; the host app cannot recover at
-                // runtime (Info.plist is read at launch), so retrying would
-                // be useless. The most common cause is a missing
-                // `BGTaskSchedulerPermittedIdentifiers` entry — see the
-                // class-level docs above.
                 NSLog(
                     "[TrustedTime] BGTaskScheduler.register returned false for "
-                    + "identifier '\(bgTaskId)'. Background sync will not fire. "
-                    + "Add the identifier to BGTaskSchedulerPermittedIdentifiers "
-                    + "in the host app's Info.plist."
+                    + "identifier '\(bgTaskId)'. This is expected when another "
+                    + "plugin instance has already registered the identifier "
+                    + "in the same process; scheduleNextBgSync() will still "
+                    + "succeed in that case. If background sync never fires, "
+                    + "verify the identifier is listed in "
+                    + "BGTaskSchedulerPermittedIdentifiers in the host app's "
+                    + "Info.plist (the actual error code will be surfaced by "
+                    + "BGTaskScheduler.submit below)."
                 )
             }
         }
-        if bgRegistrationSucceeded {
-            scheduleNextBgSync()
-        }
+        scheduleNextBgSync()
     }
 
     private func scheduleNextBgSync() {
         let req = BGAppRefreshTaskRequest(identifier: bgTaskId)
         req.earliestBeginDate = Date(timeIntervalSinceNow: Double(bgIntervalHours) * 3600)
-        try? BGTaskScheduler.shared.submit(req)
+        // Use do/try/catch instead of try? so the precise BGTaskScheduler
+        // error code (e.g. .notPermitted for a missing Info.plist entry,
+        // .tooManyPendingTaskRequests, .unavailable) shows up in device
+        // logs. Silent failure here was the original cause of "background
+        // sync never fires and there's nothing in the console" reports.
+        do {
+            try BGTaskScheduler.shared.submit(req)
+        } catch {
+            NSLog(
+                "[TrustedTime] BGTaskScheduler.submit failed for identifier "
+                + "'\(bgTaskId)': \(error.localizedDescription)"
+            )
+        }
     }
 
     /// Top-level handler for an OS-fired BGAppRefreshTask: spins up a
