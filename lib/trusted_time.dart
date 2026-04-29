@@ -29,6 +29,7 @@ library;
 import 'dart:async';
 import 'dart:developer' as developer;
 import 'dart:ui';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:timezone/data/latest.dart' as tz;
@@ -234,8 +235,9 @@ abstract final class TrustedTime {
   /// stable across app launches as long as the callback's library URI and
   /// function name do not change.
   ///
-  /// Throws [ArgumentError] if [PluginUtilities.getCallbackHandle] cannot
-  /// resolve a handle for [callback]. To be resolvable, the callback must:
+  /// On Android and iOS, throws [ArgumentError] if
+  /// [PluginUtilities.getCallbackHandle] cannot resolve a handle for
+  /// [callback]. To be resolvable, the callback must:
   ///
   /// - be a top-level or static function (closures and instance methods
   ///   are not supported by the Dart VM's callback-handle mechanism), and
@@ -246,15 +248,29 @@ abstract final class TrustedTime {
   /// build time, not at runtime; this method only observes whether the
   /// VM was able to produce a handle.
   ///
-  /// On platforms without a native `trusted_time` implementation (web,
-  /// desktop) and in unit tests that have not mocked the
-  /// `trusted_time/background` method channel, registration is a no-op
-  /// — the resulting [MissingPluginException] is swallowed so hosts can
-  /// call this unconditionally from shared startup code.
+  /// Registration is a no-op on platforms that do not run an OS background
+  /// scheduler — web and desktop (Linux/macOS/Windows). The platform check
+  /// happens before [PluginUtilities.getCallbackHandle], so a host that
+  /// passes a closure on those platforms will not see [ArgumentError]
+  /// either; the dev-time validation only runs where the registered
+  /// callback could actually be invoked. In unit tests that have not
+  /// mocked the `trusted_time/background` method channel, the resulting
+  /// [MissingPluginException] is also swallowed so hosts can call this
+  /// unconditionally from shared startup code.
   static Future<void> registerBackgroundCallback(
     void Function() callback,
   ) async {
     if (_override != null) return;
+    // Skip on platforms that do not run an OS background scheduler. The
+    // OS-side WorkManager/BGTaskScheduler hooks only exist on Android and
+    // iOS; on web and desktop the persisted handle would never be read,
+    // so spending dev-time validation on the callback shape (closure vs
+    // top-level) only adds friction to shared startup code.
+    if (kIsWeb ||
+        (defaultTargetPlatform != TargetPlatform.android &&
+            defaultTargetPlatform != TargetPlatform.iOS)) {
+      return;
+    }
     // Defensive: host apps are expected to call this from `main()` after
     // `WidgetsFlutterBinding.ensureInitialized()`, but the method-channel
     // invoke below requires bindings regardless. Keep symmetric with

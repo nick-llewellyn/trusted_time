@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
@@ -127,6 +128,12 @@ void main() {
 
     setUp(() {
       calls.clear();
+      // The default test platform is host-dependent (macOS for the local
+      // test runner) which short-circuits registerBackgroundCallback as a
+      // no-op. Pin to Android so the channel-call branch is exercised;
+      // individual tests below override this where they specifically
+      // assert the non-mobile no-op path.
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
         calls.add(call);
@@ -135,6 +142,7 @@ void main() {
     });
 
     tearDown(() {
+      debugDefaultTargetPlatformOverride = null;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     });
@@ -167,9 +175,9 @@ void main() {
 
     test('swallows MissingPluginException when channel is unmocked',
         () async {
-      // Simulate web/desktop or a host that calls registration before the
-      // native plugin is available: clearing the mock handler installed in
-      // setUp causes invokeMethod to throw MissingPluginException, which
+      // Simulate a host that calls registration before the native plugin
+      // is available: clearing the mock handler installed in setUp causes
+      // invokeMethod to throw MissingPluginException, which
       // [TrustedTime.registerBackgroundCallback] must swallow so shared
       // startup code can call it unconditionally.
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -180,6 +188,23 @@ void main() {
         ),
         completes,
       );
+    });
+
+    test('is a no-op on non-Android/iOS platforms (no channel call, '
+        'no ArgumentError for unresolvable callbacks)', () async {
+      // Override the per-group Android pin: pretend we're running on
+      // desktop/web so the platform short-circuit fires before
+      // PluginUtilities.getCallbackHandle is consulted. A closure (which
+      // would normally throw ArgumentError) must complete normally and
+      // the channel must receive zero calls because there is no OS
+      // scheduler to read the persisted handle on these platforms.
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+      void localCallback() {}
+      await expectLater(
+        public_api.TrustedTime.registerBackgroundCallback(localCallback),
+        completes,
+      );
+      expect(calls, isEmpty);
     });
   });
 

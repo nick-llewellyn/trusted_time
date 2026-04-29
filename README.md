@@ -207,6 +207,9 @@ When `enableBackgroundSync` is paired with a registered host-app callback, Trust
 ```dart
 import 'dart:async';
 
+import 'package:flutter/material.dart';
+import 'package:trusted_time/trusted_time.dart';
+
 @pragma('vm:entry-point')
 void trustedTimeBackgroundCallback() {
   // Fire-and-forget: the host callback is `void Function()` and cannot
