@@ -159,6 +159,11 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
             workerChannel.setMethodCallHandler { call, result ->
                 if (call.method == "notifyBackgroundComplete") {
                     val success = call.argument<Boolean>("success") ?: false
+                    // CompletableDeferred.complete returns false (rather than
+                    // throwing) when the deferred has already been resolved,
+                    // which makes duplicate notifyBackgroundComplete calls or
+                    // a late call racing with teardown safe. We discard the
+                    // boolean intentionally — only the first signal counts.
                     deferred.complete(success)
                     result.success(null)
                 } else {

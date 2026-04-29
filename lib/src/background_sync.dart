@@ -18,12 +18,17 @@ sealed class TrustedTimeBackgroundResult {
   bool get isSuccess;
 }
 
-/// Sync completed and a fresh [TrustAnchor] was persisted to [AnchorStorage].
+/// Sync completed and a fresh [TrustAnchor] was produced. The anchor is
+/// written to [AnchorStorage] iff `config.persistState` is `true` (the
+/// default); when `false` the success is still reported but no storage
+/// write occurs.
 final class BackgroundSyncSuccess extends TrustedTimeBackgroundResult {
   const BackgroundSyncSuccess({required this.anchor, required this.elapsed});
 
-  /// The newly persisted anchor. Subsequent foreground calls to
-  /// [TrustedTime.initialize] will warm-restore from this value.
+  /// The freshly fetched anchor. When `config.persistState` is `true` (the
+  /// default), this value has been written to [AnchorStorage] and
+  /// subsequent foreground calls to [TrustedTime.initialize] will
+  /// warm-restore from it.
   final TrustAnchor anchor;
 
   /// Wall-clock duration of the headless run, useful for diagnostics.
@@ -57,17 +62,23 @@ final class BackgroundSyncFailure extends TrustedTimeBackgroundResult {
       'BackgroundSyncFailure(reason: $reason, elapsed: $elapsed)';
 }
 
-/// Executes a single network sync against the configured time sources and
-/// persists the resulting anchor.
+/// Executes a single network sync against the configured time sources and,
+/// by default, persists the resulting anchor.
 ///
 /// This is the unit-of-work invoked by the host-app callback registered via
 /// [TrustedTime.registerBackgroundCallback]. It deliberately bypasses
 /// [TrustedTimeImpl.init]: there is no foreground engine instance to
 /// participate in, no refresh timer to start, and no integrity-monitor to
 /// attach. Instead it constructs a [SyncEngine] directly, runs one
-/// [SyncEngine.sync], writes the result to [AnchorStorage], and returns.
+/// [SyncEngine.sync], optionally writes the result to [AnchorStorage], and
+/// returns.
 ///
-/// The anchor is *only* persisted; the in-memory [SyncClock] is not updated,
+/// Persistence is gated on [TrustedTimeConfig.persistState] (default
+/// `true`). When `false`, a successful run still returns a
+/// [BackgroundSyncSuccess] but no storage write occurs — useful for tests
+/// and for hosts that manage anchor persistence outside this package.
+///
+/// Even when persisted, the in-memory [SyncClock] is not updated here,
 /// because the next foreground [TrustedTime.initialize] will do that itself
 /// from the persisted value via the standard warm-restore path.
 ///

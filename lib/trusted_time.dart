@@ -265,13 +265,21 @@ abstract final class TrustedTime {
     });
   }
 
-  /// Executes a single network sync against the configured time sources and
-  /// persists the resulting anchor.
+  /// Executes a single network sync against the configured time sources and,
+  /// by default, persists the resulting anchor.
   ///
   /// Designed for use inside the host-app callback registered via
   /// [registerBackgroundCallback]. Bypasses the foreground engine's timer
   /// and integrity-monitor setup; the next foreground call to [initialize]
   /// warm-restores from the freshly persisted anchor.
+  ///
+  /// Persistence is governed by [TrustedTimeConfig.persistState] (default
+  /// `true`). When `false`, a successful run still returns a
+  /// [BackgroundSyncSuccess] but the anchor is *not* written to storage —
+  /// the next foreground [initialize] will not see the freshly fetched
+  /// value. This override exists primarily for tests and for hosts that
+  /// want to drive their own persistence outside the bundled
+  /// `flutter_secure_storage` path.
   ///
   /// Automatically notifies the native plugin of completion so the headless
   /// engine can be torn down inside the OS budget.

@@ -134,6 +134,19 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
             return
         }
 
+        // Without the host-app's pluginRegistrantCallback we cannot wire
+        // GeneratedPluginRegistrant onto the headless engine, so plugin
+        // calls (notably flutter_secure_storage for anchor persistence,
+        // plus this plugin's own monotonic and background channels) would
+        // throw MissingPluginException for every fire and exhaust the OS
+        // budget on a no-op. Fall back to the connectivity probe so the
+        // run still reports a sensible outcome to BGTaskScheduler instead
+        // of repeatedly retrying a misconfigured engine.
+        guard TrustedTimePlugin.pluginRegistrantCallback != nil else {
+            performConnectivityFallback(task: task)
+            return
+        }
+
         // BGAppRefreshTask grants ~30s; the expirationHandler ensures a
         // hung Dart callback does not stall the OS scheduler. Hop to main
         // for teardown because FlutterEngine lifecycle is main-thread-only.
