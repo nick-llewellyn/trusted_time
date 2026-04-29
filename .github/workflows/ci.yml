@@ -15,32 +15,182 @@ on:
       - '.gitignore'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
+    name: Dart + Android (Flutter ${{ matrix.flutter }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.38.0 is the first stable shipping Dart 3.10, the SDK floor
+        # imposed by package:nts (Native Assets / flutter_rust_bridge v2).
+        # 3.41.7 is the .fvmrc pin used for local development.
+        flutter: ['3.38.0', '3.41.7']
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: ${{ matrix.flutter }}
           channel: 'stable'
+          cache: true
 
-      - name: Install dependencies
+      - name: Cache pub
+        uses: actions/cache@v5
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ matrix.flutter }}-${{ hashFiles('**/pubspec.yaml') }}
+          restore-keys: |
+            pub-${{ runner.os }}-${{ matrix.flutter }}-
+
+      - name: Cache Gradle
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ matrix.flutter }}-${{ hashFiles('example/android/**/*.gradle*', 'example/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ matrix.flutter }}-
+
+      - name: Resolve package dependencies
         run: flutter pub get
 
       - name: Verify formatting
-        run: dart format .
+        if: matrix.flutter == '3.41.7'
+        run: dart format --output=none --set-exit-if-changed .
 
-      - name: Analyze project
+      - name: Analyze package
         run: flutter analyze
 
+      # `--exclude-tags network` skips test/integration/nts_live_test.dart
+      # which requires libnts_rust.so (a native-assets build target)
+      # unavailable on hosted Linux runners. The `background`-tagged
+      # integration tests are pure-Dart with mocked sources and stay
+      # in scope.
       - name: Run tests
-        run: flutter test
+        run: flutter test --exclude-tags network --coverage
+
+      - name: Upload coverage to Codecov
+        if: matrix.flutter == '3.41.7'
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage/lcov.info
+          use_oidc: true
+          fail_ci_if_error: false
+
+      - name: Upload coverage artifact
+        if: matrix.flutter == '3.41.7'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-lcov
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Resolve example dependencies
+        working-directory: example
+        run: flutter pub get
 
       - name: Analyze example app
         working-directory: example
-        run: |
-          flutter pub get
-          flutter analyze
+        run: flutter analyze
+
+      - name: Build example APK (debug)
+        working-directory: example
+        run: flutter build apk --debug
+
+  ios:
+    name: iOS (Flutter ${{ matrix.flutter }})
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        flutter: ['3.38.0', '3.41.7']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ matrix.flutter }}
+          channel: 'stable'
+          cache: true
+      - name: Cache pub
+        uses: actions/cache@v5
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-${{ matrix.flutter }}-${{ hashFiles('**/pubspec.yaml') }}
+          restore-keys: |
+            pub-${{ runner.os }}-${{ matrix.flutter }}-
+      - name: Cache CocoaPods
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/Library/Caches/CocoaPods
+            example/ios/Pods
+          key: pods-${{ matrix.flutter }}-${{ hashFiles('example/ios/Podfile', '**/pubspec.yaml') }}
+          restore-keys: |
+            pods-${{ matrix.flutter }}-
+      - run: flutter pub get
+      - working-directory: example
+        run: flutter pub get
+      - name: Build example for iOS simulator
+        working-directory: example
+        run: flutter build ios --simulator --no-codesign
+
+  publish-check:
+    name: pana + publish dry-run (Flutter 3.41.7)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.7'
+          channel: 'stable'
+          cache: true
+      - uses: actions/cache@v5
+        with:
+          path: ~/.pub-cache
+          key: pub-${{ runner.os }}-3.41.7-${{ hashFiles('**/pubspec.yaml') }}
+          restore-keys: |
+            pub-${{ runner.os }}-3.41.7-
+      - run: flutter pub get
+      - run: dart pub global activate pana
+      # Threshold 30 = floor 130/160. Conservative starting point;
+      # tighten in a follow-up after observing the actual baseline
+      # (Native Assets typically forces a -10 platform-support hit).
+      - run: pana --no-warning --exit-code-threshold 30 .
+      - run: flutter pub publish --dry-run
+
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high

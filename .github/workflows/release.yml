@@ -1,0 +1,124 @@
+# Tag-driven release: pushes a new version to pub.dev via OIDC trusted
+# publishing (no long-lived tokens) and cuts a matching GitHub Release.
+#
+# Prerequisite (one-time, maintainer action):
+#   1. First publish must be done manually with `flutter pub publish`
+#      from a maintainer's machine -- pub.dev only exposes the trusted-
+#      publisher UI after a package exists.
+#   2. At https://pub.dev/packages/trusted_time/admin, enable
+#      automated publishing pointing at this repo and this exact
+#      workflow file path (`.github/workflows/release.yml`).
+#
+# Release procedure:
+#   1. Bump `version:` in pubspec.yaml and add a `## X.Y.Z` section to
+#      CHANGELOG.md in a PR. Squash-merge to main.
+#   2. From an updated local main: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+#   3. This workflow runs, validates, publishes, and cuts the release.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Tag refs are unique so cancellation is moot in practice; explicit here
+# so this stays correct if the trigger is ever broadened.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Pin-only: releases always ship from the .fvmrc-pinned Flutter
+    # version, the same one that produces the pana baseline gated by
+    # the publish-check job in CI. A single canonical build for what
+    # hits pub.dev.
+    name: Publish to pub.dev (Flutter 3.41.7)
+    runs-on: ubuntu-latest
+
+    # `id-token: write` is required for pub.dev OIDC trusted publishing
+    # (the Dart SDK exchanges the GitHub Actions OIDC token for an
+    # ephemeral pub.dev credential). `contents: write` is required to
+    # create the GitHub Release.
+    permissions:
+      id-token: write
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.7'
+          channel: 'stable'
+          cache: true
+
+      # Catches the common mistake of tagging without bumping pubspec,
+      # which would otherwise publish the previous version's source
+      # under the new tag's release notes. Tag format: vX.Y.Z; pubspec
+      # carries the bare X.Y.Z.
+      - name: Verify tag matches pubspec version
+        run: |
+          tag_version="${GITHUB_REF#refs/tags/v}"
+          pubspec_version="$(grep '^version:' pubspec.yaml | awk '{print $2}')"
+          echo "tag:     $tag_version"
+          echo "pubspec: $pubspec_version"
+          if [ "$tag_version" != "$pubspec_version" ]; then
+            echo "::error::Tag v$tag_version does not match pubspec version $pubspec_version"
+            exit 1
+          fi
+
+      - name: Resolve package dependencies
+        run: flutter pub get
+
+      # Defence in depth: re-run the publication gates that the push
+      # workflow runs on main. Catches the case where main was green at
+      # tag time but the pinned Flutter version has since picked up a
+      # transitive dep that breaks pana.
+      - name: Activate pana
+        run: dart pub global activate pana
+      - name: Run pana
+        run: pana --no-warning --exit-code-threshold 30 .
+      - name: Verify pub publish dry-run
+        run: flutter pub publish --dry-run
+
+      # `--force` skips the interactive y/n prompt. Authentication
+      # happens via the OIDC env vars (ACTIONS_ID_TOKEN_REQUEST_URL /
+      # _TOKEN) that the `id-token: write` permission injects. Until
+      # trusted publishing is configured on pub.dev, this step fails
+      # with an auth error and the release notes step is skipped.
+      - name: Publish to pub.dev
+        run: flutter pub publish --force
+
+      # Pull the section between `## X.Y.Z` and the next `## ` heading
+      # out of CHANGELOG.md for the GitHub Release body. `^## ` matches
+      # exactly two hashes followed by a space, so `### Public API`
+      # subheadings inside the section are preserved verbatim.
+      - name: Extract CHANGELOG section
+        id: changelog
+        run: |
+          tag_version="${GITHUB_REF#refs/tags/v}"
+          notes="$(awk -v ver="$tag_version" '
+            /^## / {
+              if (found) exit
+              if ($2 == ver) { found=1; next }
+            }
+            found { print }
+          ' CHANGELOG.md)"
+          {
+            echo "notes<<EOF"
+            echo "$notes"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.notes }}
+          draft: false
+          prerelease: false
