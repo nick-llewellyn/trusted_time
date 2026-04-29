@@ -69,8 +69,13 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 result.success(null)
             }
             "notifyBackgroundComplete" -> {
-                val success = call.argument<Boolean>("success") ?: false
-                backgroundSyncResult?.complete(success)
+                // The worker installs its own scoped handler on the headless
+                // engine's binary messenger after Dart starts (see
+                // [BackgroundSyncWorker.runHeadlessSync]); that handler is
+                // what actually unblocks the worker. This branch only fires
+                // on the foreground engine, where the call is a no-op so a
+                // foreground TrustedTime.runBackgroundSync() invocation
+                // cannot prematurely complete an in-flight background run.
                 result.success(null)
             }
             else -> result.notImplemented()
@@ -94,17 +99,7 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     companion object {
         internal const val PREFS = "trusted_time_prefs"
         internal const val KEY_HANDLE = "tt_bg_callback_handle"
-
-        /**
-         * Set by [BackgroundSyncWorker] before launching the headless engine,
-         * completed by the plugin instance attached to that engine when Dart
-         * invokes `notifyBackgroundComplete`. The static handoff bridges a
-         * method-channel call landing in a plugin instance back to the
-         * suspending worker that owns the engine.
-         */
-        @JvmStatic
-        @Volatile
-        internal var backgroundSyncResult: CompletableDeferred<Boolean>? = null
+        internal const val BG_CHANNEL = "trusted_time/background"
     }
 }
 
@@ -145,7 +140,24 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
 
         val engine = FlutterEngine(applicationContext)
         val deferred = CompletableDeferred<Boolean>()
-        TrustedTimePlugin.backgroundSyncResult = deferred
+        // Install the completion handler directly on the headless engine's
+        // binary messenger so a foreground engine running in the same process
+        // cannot complete this worker's deferred (each FlutterEngine has its
+        // own messenger; the plugin instance attached to the foreground
+        // engine sees a different channel).
+        val workerChannel = MethodChannel(
+            engine.dartExecutor.binaryMessenger,
+            TrustedTimePlugin.BG_CHANNEL,
+        )
+        workerChannel.setMethodCallHandler { call, result ->
+            if (call.method == "notifyBackgroundComplete") {
+                val success = call.argument<Boolean>("success") ?: false
+                deferred.complete(success)
+                result.success(null)
+            } else {
+                result.notImplemented()
+            }
+        }
         try {
             val args = DartExecutor.DartCallback(
                 applicationContext.assets,
@@ -159,7 +171,7 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
             val success = withTimeoutOrNull(9 * 60 * 1000L) { deferred.await() }
             if (success == true) Result.success() else Result.retry()
         } finally {
-            TrustedTimePlugin.backgroundSyncResult = null
+            workerChannel.setMethodCallHandler(null)
             engine.destroy()
         }
     }

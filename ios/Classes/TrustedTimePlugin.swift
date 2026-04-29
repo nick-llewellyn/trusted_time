@@ -39,6 +39,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     private var headlessEngine: FlutterEngine?
     private var bgChannel: FlutterMethodChannel?
     private var pendingTask: BGTask?
+    private var pendingTaskCompleted = false
 
     fileprivate static let kHandleKey = "com.trustedtime.bgCallbackHandle"
     fileprivate static var pluginRegistrantCallback: TrustedTimePluginRegistrantCallback?
@@ -136,9 +137,13 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         // BGAppRefreshTask grants ~30s; the expirationHandler ensures a
         // hung Dart callback does not stall the OS scheduler. Hop to main
         // for teardown because FlutterEngine lifecycle is main-thread-only.
+        // The task is captured here so finishHeadlessSync can complete it
+        // even if expiration fires before the main-thread block below has
+        // run `self.pendingTask = task` (otherwise the guard would return
+        // early and the OS would never see setTaskCompleted).
         task.expirationHandler = { [weak self] in
             DispatchQueue.main.async {
-                self?.finishHeadlessSync(success: false, expired: true)
+                self?.finishHeadlessSync(success: false, expired: true, task: task)
             }
         }
 
@@ -152,6 +157,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
                 return
             }
             self.pendingTask = task
+            self.pendingTaskCompleted = false
 
             let engine = FlutterEngine(
                 name: "TrustedTimeBackgroundEngine",
@@ -190,21 +196,33 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     /// Idempotent: a second call (e.g. from the expiration handler racing
     /// with notifyBackgroundComplete) is a no-op. Always runs on main
     /// because FlutterEngine teardown is main-thread-only.
-    private func finishHeadlessSync(success: Bool, expired: Bool = false) {
+    ///
+    /// - Parameter task: Optional fallback used by the expiration handler
+    ///   when expiration fires before `pendingTask` has been assigned on
+    ///   the main thread. Without it, an early expiration would return
+    ///   from the guard below and never call `setTaskCompleted`, leaving
+    ///   the OS scheduler hanging on the task until its hard timeout.
+    private func finishHeadlessSync(
+        success: Bool,
+        expired: Bool = false,
+        task: BGTask? = nil
+    ) {
         if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
-                self?.finishHeadlessSync(success: success, expired: expired)
+                self?.finishHeadlessSync(success: success, expired: expired, task: task)
             }
             return
         }
-        guard let task = pendingTask else { return }
+        if pendingTaskCompleted { return }
+        guard let resolved = pendingTask ?? task else { return }
+        pendingTaskCompleted = true
         pendingTask = nil
         bgChannel?.setMethodCallHandler(nil)
         bgChannel = nil
         headlessEngine?.destroyContext()
         headlessEngine = nil
         scheduleNextBgSync()
-        task.setTaskCompleted(success: success && !expired)
+        resolved.setTaskCompleted(success: success && !expired)
     }
 
     /// Pre-2.x behaviour: validates connectivity without refreshing the

@@ -27,6 +27,7 @@
 library;
 
 import 'dart:async';
+import 'dart:developer' as developer;
 import 'dart:ui';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -290,9 +291,21 @@ abstract final class TrustedTime {
         'success': result.isSuccess,
         if (result is BackgroundSyncFailure) 'reason': result.reason,
       });
-    } catch (_) {
-      // Channel may be absent in tests / desktop / web; the result is still
-      // valid and persisted, native cleanup is a best-effort signal only.
+    } on MissingPluginException {
+      // Channel is absent on desktop/web and in unit tests that have not
+      // mocked it. The anchor is already persisted; native cleanup is a
+      // best-effort signal only.
+    } catch (e, s) {
+      // Surfacing other failures (channel wired but handler errored, etc.)
+      // matters operationally — without this signal the native worker
+      // waits the full budget then retries unnecessarily.
+      developer.log(
+        'TrustedTime.runBackgroundSync: failed to notify native completion',
+        name: 'trusted_time',
+        level: 900,
+        error: e,
+        stackTrace: s,
+      );
     }
     return result;
   }

@@ -18,7 +18,7 @@ Neither path acquires a `TimeSample`, runs the Marzullo consensus, or persists a
 
 **Implement Option 1: real headless anchor refresh on Android (`WorkManager` + headless `FlutterEngine`) and iOS (`BGAppRefreshTask` + headless `FlutterEngine`).** The host-side dispatch follows the **host-registered callback pattern** used by `package:workmanager` and `package:flutter_local_notifications`:
 
-1. The host app declares a top-level `@pragma('vm:entry-point')` function that calls `await TrustedTime.runBackgroundSync()`.
+1. The host app declares a top-level `@pragma('vm:entry-point')` function that calls `TrustedTime.runBackgroundSync()`. The callback type is `void Function()` — fire-and-forget; `runBackgroundSync` drives its own completion via the `trusted_time/background.notifyBackgroundComplete` method-channel call below, so the host does not (and cannot) await it from the native worker's perspective.
 2. Before `runApp`, the host registers it via `TrustedTime.registerBackgroundCallback(callback)`.
 3. The package resolves the callback to an `int64` handle via `PluginUtilities.getCallbackHandle` and persists it through the `trusted_time/background` method channel — `SharedPreferences` on Android, `UserDefaults` on iOS.
 4. When `WorkManager` or `BGTaskScheduler` fires, the native worker reads the handle, instantiates a headless `FlutterEngine`, runs the registered Dart entrypoint, awaits a completion notification on a method channel, and tears the engine down inside the OS budget.
