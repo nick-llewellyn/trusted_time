@@ -34,7 +34,16 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
-import 'src/background_sync.dart' as bg;
+// Two imports against the same library to keep the public API surface clean:
+// - The unprefixed `show` makes the re-exported result types usable in
+//   public signatures without leaking an internal `bg.` prefix into
+//   dartdoc/IDE tooltips.
+// - The prefixed `as bg show runBackgroundSync` keeps the internal
+//   unit-of-work function reachable without shadowing the static
+//   `TrustedTime.runBackgroundSync` defined below.
+import 'src/background_sync.dart'
+    show BackgroundSyncFailure, TrustedTimeBackgroundResult;
+import 'src/background_sync.dart' as bg show runBackgroundSync;
 import 'src/exceptions.dart';
 import 'src/integrity_event.dart';
 import 'src/models.dart';
@@ -321,7 +330,7 @@ abstract final class TrustedTime {
   /// engine can be torn down inside the OS budget.
   ///
   /// Returns a [TrustedTimeBackgroundResult] describing the outcome.
-  static Future<bg.TrustedTimeBackgroundResult> runBackgroundSync({
+  static Future<TrustedTimeBackgroundResult> runBackgroundSync({
     TrustedTimeConfig config = const TrustedTimeConfig(),
   }) async {
     WidgetsFlutterBinding.ensureInitialized();
@@ -329,7 +338,7 @@ abstract final class TrustedTime {
     try {
       await _bgChannel.invokeMethod<void>('notifyBackgroundComplete', {
         'success': result.isSuccess,
-        if (result is bg.BackgroundSyncFailure) 'reason': result.reason,
+        if (result is BackgroundSyncFailure) 'reason': result.reason,
       });
     } on MissingPluginException {
       // Channel is absent on desktop/web and in unit tests that have not
