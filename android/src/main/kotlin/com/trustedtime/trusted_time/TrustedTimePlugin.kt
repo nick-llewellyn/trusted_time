@@ -19,6 +19,7 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.FlutterCallbackInformation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.TimeUnit
@@ -133,46 +134,62 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
 
     private suspend fun runHeadlessSync(
         callbackInfo: FlutterCallbackInformation,
-    ): Result = withContext(Dispatchers.Main) {
-        val loader = FlutterInjector.instance().flutterLoader()
-        loader.startInitialization(applicationContext)
-        loader.ensureInitializationComplete(applicationContext, null)
-
-        val engine = FlutterEngine(applicationContext)
+    ): Result {
         val deferred = CompletableDeferred<Boolean>()
-        // Install the completion handler directly on the headless engine's
-        // binary messenger so a foreground engine running in the same process
-        // cannot complete this worker's deferred (each FlutterEngine has its
-        // own messenger; the plugin instance attached to the foreground
-        // engine sees a different channel).
-        val workerChannel = MethodChannel(
-            engine.dartExecutor.binaryMessenger,
-            TrustedTimePlugin.BG_CHANNEL,
-        )
-        workerChannel.setMethodCallHandler { call, result ->
-            if (call.method == "notifyBackgroundComplete") {
-                val success = call.argument<Boolean>("success") ?: false
-                deferred.complete(success)
-                result.success(null)
-            } else {
-                result.notImplemented()
+        // FlutterEngine creation, plugin/channel wiring, and
+        // executeDartCallback must run on the main thread; once Dart is
+        // running the awaited completion arrives via a channel callback
+        // (also delivered on main) but the suspended wait itself runs on
+        // the worker's default dispatcher to avoid pinning a 9-minute
+        // budget to Main and contending with the host app's UI work.
+        val (engine, workerChannel) = withContext(Dispatchers.Main) {
+            val loader = FlutterInjector.instance().flutterLoader()
+            loader.startInitialization(applicationContext)
+            loader.ensureInitializationComplete(applicationContext, null)
+
+            val engine = FlutterEngine(applicationContext)
+            // Install the completion handler directly on the headless
+            // engine's binary messenger so a foreground engine running in
+            // the same process cannot complete this worker's deferred
+            // (each FlutterEngine has its own messenger).
+            val workerChannel = MethodChannel(
+                engine.dartExecutor.binaryMessenger,
+                TrustedTimePlugin.BG_CHANNEL,
+            )
+            workerChannel.setMethodCallHandler { call, result ->
+                if (call.method == "notifyBackgroundComplete") {
+                    val success = call.argument<Boolean>("success") ?: false
+                    deferred.complete(success)
+                    result.success(null)
+                } else {
+                    result.notImplemented()
+                }
             }
-        }
-        try {
             val args = DartExecutor.DartCallback(
                 applicationContext.assets,
                 loader.findAppBundlePath(),
                 callbackInfo,
             )
             engine.dartExecutor.executeDartCallback(args)
+            engine to workerChannel
+        }
 
-            // 9-minute budget leaves headroom inside WorkManager's 10-minute
-            // default cap; tasks that exceed this are killed by the OS.
+        return try {
+            // 9-minute budget leaves headroom inside WorkManager's
+            // 10-minute default cap; tasks that exceed this are killed by
+            // the OS. The wait runs off-main on the worker's coroutine
+            // dispatcher (Dispatchers.Default by default for
+            // CoroutineWorker), so a long Dart sync does not block Main.
             val success = withTimeoutOrNull(9 * 60 * 1000L) { deferred.await() }
             if (success == true) Result.success() else Result.retry()
         } finally {
-            workerChannel.setMethodCallHandler(null)
-            engine.destroy()
+            // Teardown must hop back to Main and complete even if the
+            // worker is cancelled (e.g., WorkManager kills the run on the
+            // 10-minute boundary), otherwise the FlutterEngine leaks.
+            withContext(NonCancellable + Dispatchers.Main) {
+                workerChannel.setMethodCallHandler(null)
+                engine.destroy()
+            }
         }
     }
 
