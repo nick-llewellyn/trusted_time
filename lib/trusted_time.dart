@@ -245,6 +245,12 @@ abstract final class TrustedTime {
   /// Note: the `@pragma` annotation is enforced by the Dart compiler at
   /// build time, not at runtime; this method only observes whether the
   /// VM was able to produce a handle.
+  ///
+  /// On platforms without a native `trusted_time` implementation (web,
+  /// desktop) and in unit tests that have not mocked the
+  /// `trusted_time/background` method channel, registration is a no-op
+  /// — the resulting [MissingPluginException] is swallowed so hosts can
+  /// call this unconditionally from shared startup code.
   static Future<void> registerBackgroundCallback(
     void Function() callback,
   ) async {
@@ -265,9 +271,17 @@ abstract final class TrustedTime {
             'tree-shaking.',
       );
     }
-    await _bgChannel.invokeMethod<void>('setBackgroundCallbackHandle', {
-      'handle': handle.toRawHandle(),
-    });
+    try {
+      await _bgChannel.invokeMethod<void>('setBackgroundCallbackHandle', {
+        'handle': handle.toRawHandle(),
+      });
+    } on MissingPluginException {
+      // Channel is absent on platforms without a native trusted_time
+      // implementation (web, desktop) and in unit tests that have not
+      // mocked it. Treat registration as a no-op there so hosts can call
+      // it unconditionally from shared startup code; on platforms that do
+      // not run the OS scheduler, the handle would be unused anyway.
+    }
   }
 
   /// Executes a single network sync against the configured time sources and,

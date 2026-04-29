@@ -164,6 +164,23 @@ void main() {
         throwsArgumentError,
       );
     });
+
+    test('swallows MissingPluginException when channel is unmocked',
+        () async {
+      // Simulate web/desktop or a host that calls registration before the
+      // native plugin is available: clearing the mock handler installed in
+      // setUp causes invokeMethod to throw MissingPluginException, which
+      // [TrustedTime.registerBackgroundCallback] must swallow so shared
+      // startup code can call it unconditionally.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      await expectLater(
+        public_api.TrustedTime.registerBackgroundCallback(
+          _registerableTopLevelCallback,
+        ),
+        completes,
+      );
+    });
   });
 
   group('TrustedTime.runBackgroundSync', () {
