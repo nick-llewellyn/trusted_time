@@ -205,8 +205,13 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
         conn.connectTimeout = 5000
         conn.readTimeout = 5000
         conn.connect()
+        // HttpURLConnection.connect() does not throw on non-2xx responses,
+        // so a captive portal returning 302/403 would otherwise be reported
+        // as a success and suppress WorkManager's backoff. Gate on the 2xx
+        // range to match the iOS performConnectivityFallback semantics.
+        val code = conn.responseCode
         conn.disconnect()
-        Result.success()
+        if (code in 200..299) Result.success() else Result.retry()
     } catch (_: Exception) {
         Result.retry()
     }

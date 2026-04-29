@@ -9,7 +9,11 @@ import 'package:trusted_time/trusted_time.dart';
 /// callback handle persisted in `SharedPreferences`/`UserDefaults` resolves.
 @pragma('vm:entry-point')
 void trustedTimeBackgroundCallback() {
-  TrustedTime.runBackgroundSync();
+  // The host callback signature is `void Function()`, so it cannot await
+  // the returned Future. `unawaited(...)` makes the fire-and-forget intent
+  // explicit and keeps `unawaited_futures` clean if a host copy/pastes
+  // this pattern into an async context.
+  unawaited(TrustedTime.runBackgroundSync());
 }
 
 Future<void> main() async {

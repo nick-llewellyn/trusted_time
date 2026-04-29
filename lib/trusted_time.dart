@@ -211,9 +211,14 @@ abstract final class TrustedTime {
   /// [runBackgroundSync]:
   ///
   /// ```dart
+  /// import 'dart:async';
+  ///
   /// @pragma('vm:entry-point')
   /// void trustedTimeBackgroundCallback() {
-  ///   TrustedTime.runBackgroundSync();
+  ///   // Host callback is `void Function()`, so awaiting is not possible;
+  ///   // `unawaited(...)` makes the fire-and-forget intent explicit and
+  ///   // keeps the `unawaited_futures` lint clean for hosts that adopt it.
+  ///   unawaited(TrustedTime.runBackgroundSync());
   /// }
   ///
   /// void main() {
