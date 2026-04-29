@@ -17,8 +17,9 @@ public typealias TrustedTimePluginRegistrantCallback = (FlutterEngine) -> Void
 ///      <string>com.trustedtime.backgroundsync</string>
 ///    </array>
 ///    ```
-///    Without this entry, `BGTaskScheduler.shared.register(...)` will fail
-///    silently and background syncs will not fire.
+///    Without this entry, `BGTaskScheduler.shared.register(...)` returns
+///    `false` and background syncs will not fire. The plugin logs this via
+///    `NSLog` so the misconfiguration shows up in the device console.
 /// 2. Wire `GeneratedPluginRegistrant` into the headless engine path from
 ///    your `AppDelegate`:
 ///    ```swift
@@ -35,6 +36,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     private var clockObservers: [NSObjectProtocol] = []
     private let bgTaskId = "com.trustedtime.backgroundsync"
     private var bgRegistered = false
+    private var bgRegistrationSucceeded = false
     private var bgIntervalHours = 24
     private var headlessEngine: FlutterEngine?
     private var bgChannel: FlutterMethodChannel?
@@ -98,9 +100,24 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     /// Registers the BGAppRefreshTask once, then schedules the next execution.
     /// Subsequent calls reuse the existing registration; the interval is
     /// read from [bgIntervalHours] inside the handler closure.
+    ///
+    /// `BGTaskScheduler.register(...)` returns `false` when the task
+    /// identifier is missing from the host app's
+    /// `BGTaskSchedulerPermittedIdentifiers` Info.plist entry, or when a
+    /// handler is already registered for it. Since Apple does not permit
+    /// re-registering the same identifier on the same instance, we record
+    /// the attempt unconditionally (`bgRegistered`) but only proceed to
+    /// schedule a request when registration actually succeeded
+    /// (`bgRegistrationSucceeded`). Submitting a request for an
+    /// unregistered identifier would silently fail inside `try?` and waste
+    /// every subsequent `enableBackgroundSync` call.
     private func registerBgSync() {
         if !bgRegistered {
-            BGTaskScheduler.shared.register(forTaskWithIdentifier: bgTaskId, using: nil) { [weak self] task in
+            bgRegistered = true
+            let registered = BGTaskScheduler.shared.register(
+                forTaskWithIdentifier: bgTaskId,
+                using: nil
+            ) { [weak self] task in
                 guard let self = self else {
                     // Plugin instance was deallocated between registration and
                     // the OS firing this task — no work was performed, so report
@@ -115,9 +132,25 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
                 }
                 self.performBackgroundSync(task: task)
             }
-            bgRegistered = true
+            bgRegistrationSucceeded = registered
+            if !registered {
+                // Surface the misconfiguration via NSLog so it shows up in
+                // device logs / Xcode console; the host app cannot recover at
+                // runtime (Info.plist is read at launch), so retrying would
+                // be useless. The most common cause is a missing
+                // `BGTaskSchedulerPermittedIdentifiers` entry — see the
+                // class-level docs above.
+                NSLog(
+                    "[TrustedTime] BGTaskScheduler.register returned false for "
+                    + "identifier '\(bgTaskId)'. Background sync will not fire. "
+                    + "Add the identifier to BGTaskSchedulerPermittedIdentifiers "
+                    + "in the host app's Info.plist."
+                )
+            }
         }
-        scheduleNextBgSync()
+        if bgRegistrationSucceeded {
+            scheduleNextBgSync()
+        }
     }
 
     private func scheduleNextBgSync() {
