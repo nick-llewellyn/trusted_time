@@ -9,11 +9,15 @@ import 'package:trusted_time/src/models.dart';
 import 'package:trusted_time/src/monotonic_clock.dart';
 
 /// Integration-style verification of the headless background-sync
-/// unit-of-work, exercising the public [runBackgroundSync] entrypoint
-/// against a pre-seeded stale anchor.
+/// unit-of-work, exercising the internal [runBackgroundSync] function
+/// (from `package:trusted_time/src/background_sync.dart`) against a
+/// pre-seeded stale anchor with an injected fixed clock and store.
 ///
-/// **Scope**: this test pins the contract that [runBackgroundSync]
+/// **Scope**: this test pins the contract that the unit-of-work
 /// advances [TrustAnchor.networkUtcMs] in the persisted store. It does
+/// **not** exercise [TrustedTime.runBackgroundSync] (the public API
+/// that also issues the `notifyBackgroundComplete` channel call — that
+/// path is covered in `test/background_sync_test.dart`), and it does
 /// **not** drive the real OS scheduler because that requires a device
 /// and is platform-specific:
 ///

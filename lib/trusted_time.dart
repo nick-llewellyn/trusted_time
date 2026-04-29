@@ -236,6 +236,11 @@ abstract final class TrustedTime {
     void Function() callback,
   ) async {
     if (_override != null) return;
+    // Defensive: host apps are expected to call this from `main()` after
+    // `WidgetsFlutterBinding.ensureInitialized()`, but the method-channel
+    // invoke below requires bindings regardless. Keep symmetric with
+    // [runBackgroundSync] which initializes bindings unconditionally.
+    WidgetsFlutterBinding.ensureInitialized();
     final handle = PluginUtilities.getCallbackHandle(callback);
     if (handle == null) {
       throw ArgumentError.value(

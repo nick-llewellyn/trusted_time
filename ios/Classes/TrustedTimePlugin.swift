@@ -122,38 +122,81 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     /// handle is present, falls back to a connectivity-only HTTPS HEAD
     /// probe otherwise.
     private func performBackgroundSync(task: BGTask) {
-        let handle = UserDefaults.standard.object(forKey: TrustedTimePlugin.kHandleKey) as? Int64
-        guard let handle = handle, handle != 0,
+        // UserDefaults stores the int64 handle as an NSNumber; reading it
+        // back as `as? Int64` does not bridge through NSNumber and would
+        // silently return nil, forcing every fire down the connectivity
+        // fallback path even when a callback is registered.
+        let raw = UserDefaults.standard.object(forKey: TrustedTimePlugin.kHandleKey) as? NSNumber
+        guard let handle = raw?.int64Value, handle != 0,
               let callbackInfo = FlutterCallbackCache.lookupCallbackInformation(handle) else {
             performConnectivityFallback(task: task)
             return
         }
 
-        // BGAppRefreshTask grants ~30s; we wire the expirationHandler so a
-        // hung Dart callback does not stall the OS scheduler.
-        pendingTask = task
+        // BGAppRefreshTask grants ~30s; the expirationHandler ensures a
+        // hung Dart callback does not stall the OS scheduler. Hop to main
+        // for teardown because FlutterEngine lifecycle is main-thread-only.
         task.expirationHandler = { [weak self] in
-            self?.finishHeadlessSync(success: false, expired: true)
+            DispatchQueue.main.async {
+                self?.finishHeadlessSync(success: false, expired: true)
+            }
         }
 
-        let engine = FlutterEngine(name: "TrustedTimeBackgroundEngine", project: nil, allowHeadlessExecution: true)
-        headlessEngine = engine
-        engine.run(withEntrypoint: callbackInfo.callbackName, libraryURI: callbackInfo.callbackLibraryPath)
-        TrustedTimePlugin.pluginRegistrantCallback?(engine)
+        // FlutterEngine creation, plugin registration, channel-handler
+        // setup, and engine.run must all happen on the main thread;
+        // BGTaskScheduler dispatches its launch handler on a background
+        // queue.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else {
+                task.setTaskCompleted(success: false)
+                return
+            }
+            self.pendingTask = task
 
-        bgChannel = FlutterMethodChannel(
-            name: "trusted_time/background",
-            binaryMessenger: engine.binaryMessenger
-        )
-        bgChannel?.setMethodCallHandler { [weak self] call, result in
-            self?.handle(call, result: result)
+            let engine = FlutterEngine(
+                name: "TrustedTimeBackgroundEngine",
+                project: nil,
+                allowHeadlessExecution: true
+            )
+            self.headlessEngine = engine
+
+            // Plugins (notably flutter_secure_storage, required for anchor
+            // persistence) and the background method-channel handler must
+            // be wired up BEFORE the Dart entrypoint runs. Otherwise the
+            // entrypoint races against MissingPluginException on plugin
+            // calls or on notifyBackgroundComplete.
+            TrustedTimePlugin.pluginRegistrantCallback?(engine)
+
+            let channel = FlutterMethodChannel(
+                name: "trusted_time/background",
+                binaryMessenger: engine.binaryMessenger
+            )
+            channel.setMethodCallHandler { [weak self] call, result in
+                self?.handle(call, result: result)
+            }
+            self.bgChannel = channel
+
+            let started = engine.run(
+                withEntrypoint: callbackInfo.callbackName,
+                libraryURI: callbackInfo.callbackLibraryPath
+            )
+            if !started {
+                self.finishHeadlessSync(success: false)
+            }
         }
     }
 
     /// Tears down the headless engine and signals OS task completion.
     /// Idempotent: a second call (e.g. from the expiration handler racing
-    /// with notifyBackgroundComplete) is a no-op.
+    /// with notifyBackgroundComplete) is a no-op. Always runs on main
+    /// because FlutterEngine teardown is main-thread-only.
     private func finishHeadlessSync(success: Bool, expired: Bool = false) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.finishHeadlessSync(success: success, expired: expired)
+            }
+            return
+        }
         guard let task = pendingTask else { return }
         pendingTask = nil
         bgChannel?.setMethodCallHandler(nil)
