@@ -92,8 +92,14 @@ jobs:
       - name: Run tests
         run: flutter test --exclude-tags network --coverage
 
+      # OIDC token (id-token: write) is consumed only by this step. Skip on
+      # PRs from forks where the token would still be issued but no trusted
+      # context exists; pushes to main and same-repo PRs continue to upload.
       - name: Upload coverage to Codecov
-        if: matrix.flutter == '3.41.7'
+        if: >-
+          matrix.flutter == '3.41.7' &&
+          (github.event_name == 'push' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
         uses: codecov/codecov-action@v5
         with:
           files: coverage/lcov.info
