@@ -3,7 +3,7 @@
 Initial public release of `trusted_time_nts` — an independently maintained, NTS-augmented fork of [`trusted_time`](https://pub.dev/packages/trusted_time) by `Sahad2701`. Renamed for distinct ownership on pub.dev and an independent release cadence; the original work is acknowledged with thanks.
 
 **Core engine**
-- Tamper-resistant UTC clock anchored to a hardware monotonic baseline (`SystemClock.elapsedRealtime` on Android, `ProcessInfo.systemUptime` on iOS, `CLOCK_BOOTTIME` on Linux/macOS, equivalent counters on Windows; `performance.now()` on web).
+- Tamper-resistant UTC clock anchored to a hardware monotonic baseline (`SystemClock.elapsedRealtime` on Android, `ProcessInfo.systemUptime` on iOS/macOS, `CLOCK_BOOTTIME` on Linux, `GetTickCount64` on Windows; `performance.now()` on web).
 - Multi-source Marzullo intersection across NTP, HTTPS-Date, and (optional) NTS samples; lower-endpoint-priority tie-breaking and overlap-depth tracking.
 - Encrypted persistence of the trust anchor via `flutter_secure_storage`, surviving cold restarts.
 - Synchronous `TrustedTime.now()` / `nowEstimated()` access with sub-microsecond overhead after warm-up.
