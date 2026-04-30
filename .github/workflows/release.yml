@@ -71,6 +71,39 @@ jobs:
             exit 1
           fi
 
+      # Extracted early so a missing or empty `## X.Y.Z` section blocks
+      # the run before we publish to pub.dev (publication is irreversible).
+      # The awk script pulls the body between `## X.Y.Z` and the next
+      # `## ` heading; `^## ` matches exactly two hashes followed by a
+      # space, so `### Public API` subheadings inside the section are
+      # preserved verbatim. Exits non-zero if the section is missing
+      # (`END { if (!found) exit 1 }`); the bash guard below catches the
+      # subtler case of a header with no body.
+      - name: Extract CHANGELOG section
+        id: changelog
+        run: |
+          tag_version="${GITHUB_REF#refs/tags/v}"
+          notes="$(awk -v ver="$tag_version" '
+            /^## / {
+              if (found) exit
+              if ($2 == ver) { found=1; next }
+            }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md)" || {
+            echo "::error::CHANGELOG.md has no '## $tag_version' section. Add release notes before tagging."
+            exit 1
+          }
+          if [ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+            echo "::error::CHANGELOG.md '## $tag_version' section is empty. Add release notes before tagging."
+            exit 1
+          fi
+          {
+            echo "notes<<EOF"
+            echo "$notes"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Resolve package dependencies
         run: flutter pub get
 
@@ -89,30 +122,9 @@ jobs:
       # happens via the OIDC env vars (ACTIONS_ID_TOKEN_REQUEST_URL /
       # _TOKEN) that the `id-token: write` permission injects. Until
       # trusted publishing is configured on pub.dev, this step fails
-      # with an auth error and the release notes step is skipped.
+      # with an auth error.
       - name: Publish to pub.dev
         run: flutter pub publish --force
-
-      # Pull the section between `## X.Y.Z` and the next `## ` heading
-      # out of CHANGELOG.md for the GitHub Release body. `^## ` matches
-      # exactly two hashes followed by a space, so `### Public API`
-      # subheadings inside the section are preserved verbatim.
-      - name: Extract CHANGELOG section
-        id: changelog
-        run: |
-          tag_version="${GITHUB_REF#refs/tags/v}"
-          notes="$(awk -v ver="$tag_version" '
-            /^## / {
-              if (found) exit
-              if ($2 == ver) { found=1; next }
-            }
-            found { print }
-          ' CHANGELOG.md)"
-          {
-            echo "notes<<EOF"
-            echo "$notes"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
