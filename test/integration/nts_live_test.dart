@@ -3,8 +3,8 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/sources/nts_source_io.dart';
+import 'package:trusted_time_nts/src/models.dart';
+import 'package:trusted_time_nts/src/sources/nts_source_io.dart';
 
 /// Live NTS integration test. Tagged `network`; skipped by default
 /// because it requires outbound TCP/4460 + UDP/123 connectivity and the

@@ -22,7 +22,7 @@
 /// });
 /// ```
 ///
-/// See the [README](https://pub.dev/packages/trusted_time) for full
+/// See the [README](https://pub.dev/packages/trusted_time_nts) for full
 /// documentation and advanced configuration.
 library;
 
@@ -267,7 +267,7 @@ abstract final class TrustedTime {
   /// passes a closure on those platforms will not see [ArgumentError]
   /// either; the dev-time validation only runs where the registered
   /// callback could actually be invoked. In unit tests that have not
-  /// mocked the `trusted_time/background` method channel, the resulting
+  /// mocked the `trusted_time_nts/background` method channel, the resulting
   /// [MissingPluginException] is also swallowed so hosts can call this
   /// unconditionally from shared startup code.
   static Future<void> registerBackgroundCallback(
@@ -391,7 +391,7 @@ abstract final class TrustedTime {
     return result;
   }
 
-  static const _bgChannel = MethodChannel('trusted_time/background');
+  static const _bgChannel = MethodChannel('trusted_time_nts/background');
 
   /// Returns trusted local time in a specific IANA timezone.
   ///

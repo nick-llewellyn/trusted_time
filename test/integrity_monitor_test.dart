@@ -1,8 +1,8 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/integrity_monitor.dart';
-import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/monotonic_clock.dart';
+import 'package:trusted_time_nts/src/integrity_monitor.dart';
+import 'package:trusted_time_nts/src/models.dart';
+import 'package:trusted_time_nts/src/monotonic_clock.dart';
 
 class FakeMonotonicClock implements MonotonicClock {
   int value = 1000;
@@ -18,7 +18,7 @@ void main() {
   // attach() (which calls receiveBroadcastStream()) doesn't throw
   // MissingPluginException. This does NOT simulate native event delivery
   // — it only allows the Dart-side logic to be tested in isolation.
-  const integrityChannel = MethodChannel('trusted_time/integrity');
+  const integrityChannel = MethodChannel('trusted_time_nts/integrity');
   TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
       .setMockMethodCallHandler(integrityChannel, (call) async => null);
 

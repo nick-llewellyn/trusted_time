@@ -1,12 +1,12 @@
-#include "include/trusted_time/trusted_time_plugin_c_api.h"
+#include "include/trusted_time_nts/trusted_time_nts_plugin_c_api.h"
 
 #include <flutter/plugin_registrar_windows.h>
 
-#include "trusted_time_plugin.h"
+#include "trusted_time_nts_plugin.h"
 
-void TrustedTimePluginCApiRegisterWithRegistrar(
+void TrustedTimeNtsPluginCApiRegisterWithRegistrar(
     FlutterDesktopPluginRegistrarRef registrar) {
-  trusted_time::TrustedTimePlugin::RegisterWithRegistrar(
+  trusted_time_nts::TrustedTimeNtsPlugin::RegisterWithRegistrar(
       flutter::PluginRegistrarManager::GetInstance()
           ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar));
 }

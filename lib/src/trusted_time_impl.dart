@@ -246,7 +246,7 @@ final class TrustedTimeImpl {
     _retryTimer = Timer(delay, _performSync);
   }
 
-  static const _bgChannel = MethodChannel('trusted_time/background');
+  static const _bgChannel = MethodChannel('trusted_time_nts/background');
 
   Future<void> _invokeBackgroundSync(Duration interval) async {
     try {

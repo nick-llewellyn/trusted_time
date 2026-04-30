@@ -1,11 +1,11 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/anchor_store.dart';
-import 'package:trusted_time/src/background_sync.dart';
-import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/monotonic_clock.dart';
-import 'package:trusted_time/trusted_time.dart' as public_api;
+import 'package:trusted_time_nts/src/anchor_store.dart';
+import 'package:trusted_time_nts/src/background_sync.dart';
+import 'package:trusted_time_nts/src/models.dart';
+import 'package:trusted_time_nts/src/monotonic_clock.dart';
+import 'package:trusted_time_nts/trusted_time_nts.dart' as public_api;
 
 class _FakeMonotonicClock implements MonotonicClock {
   _FakeMonotonicClock(this.value);
@@ -123,7 +123,7 @@ void main() {
   });
 
   group('TrustedTime.registerBackgroundCallback', () {
-    const channel = MethodChannel('trusted_time/background');
+    const channel = MethodChannel('trusted_time_nts/background');
     final calls = <MethodCall>[];
 
     setUp(() {
@@ -208,7 +208,7 @@ void main() {
   });
 
   group('TrustedTime.runBackgroundSync', () {
-    const channel = MethodChannel('trusted_time/background');
+    const channel = MethodChannel('trusted_time_nts/background');
     final consensusUtc = DateTime.utc(2026, 1, 15, 10);
     final calls = <MethodCall>[];
 

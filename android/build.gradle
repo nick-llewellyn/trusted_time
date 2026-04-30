@@ -1,4 +1,4 @@
-group = "com.trustedtime.trusted_time"
+group = "com.nicklewellyn.trusted_time_nts"
 version = "1.0-SNAPSHOT"
 
 buildscript {
@@ -25,7 +25,7 @@ apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
 
 android {
-    namespace = "com.trustedtime.trusted_time"
+    namespace = "com.nicklewellyn.trusted_time_nts"
 
     compileSdk = 36
 

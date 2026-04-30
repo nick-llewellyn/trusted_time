@@ -10,14 +10,14 @@ import 'package:web/web.dart' as web;
 /// **Important**: `performance.now()` is session-relative — it resets to
 /// zero on every page load. This means trust anchors cannot survive page
 /// refreshes; the engine will perform a fresh network sync on each load.
-class TrustedTimeWebPlugin {
+class TrustedTimeNtsWebPlugin {
   static void registerWith(Registrar registrar) {
     const MethodChannel(
-      'trusted_time/monotonic',
+      'trusted_time_nts/monotonic',
     ).setMethodCallHandler(_handleMonotonic);
 
     const MethodChannel(
-      'trusted_time/background',
+      'trusted_time_nts/background',
     ).setMethodCallHandler(_handleBackground);
   }
 

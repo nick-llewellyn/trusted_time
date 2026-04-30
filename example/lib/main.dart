@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:trusted_time/trusted_time.dart';
+import 'package:trusted_time_nts/trusted_time_nts.dart';
 
 /// Top-level entrypoint invoked from a headless [FlutterEngine] when the OS
 /// scheduler (Android `WorkManager` / iOS `BGAppRefreshTask`) fires the

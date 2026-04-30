@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/trusted_time.dart';
+import 'package:trusted_time_nts/trusted_time_nts.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -16,7 +16,7 @@ void main() {
       });
 
   // Mock monotonic uptime channel.
-  const monotonicChannel = MethodChannel('trusted_time/monotonic');
+  const monotonicChannel = MethodChannel('trusted_time_nts/monotonic');
   TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
       .setMockMethodCallHandler(monotonicChannel, (call) async {
         if (call.method == 'getUptimeMs') return 1000;
@@ -24,7 +24,7 @@ void main() {
       });
 
   // Mock background task channel.
-  const backgroundChannel = MethodChannel('trusted_time/background');
+  const backgroundChannel = MethodChannel('trusted_time_nts/background');
   TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
       .setMockMethodCallHandler(backgroundChannel, (call) async {
         return null;
@@ -32,7 +32,7 @@ void main() {
 
   // Mock integrity events channel.
   const integrityChannel = MethodChannel(
-    'trusted_time/integrity',
+    'trusted_time_nts/integrity',
   ); // Note: EventChannel uses same underlying messenger.
   TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
       .setMockMethodCallHandler(integrityChannel, (call) async {

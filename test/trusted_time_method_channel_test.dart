@@ -1,11 +1,11 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/monotonic_clock.dart';
+import 'package:trusted_time_nts/src/monotonic_clock.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const channel = MethodChannel('trusted_time/monotonic');
+  const channel = MethodChannel('trusted_time_nts/monotonic');
 
   group('PlatformMonotonicClock', () {
     setUp(() {

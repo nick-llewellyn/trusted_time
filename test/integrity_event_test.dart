@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/integrity_event.dart';
-import 'package:trusted_time/src/trusted_time_estimate.dart';
+import 'package:trusted_time_nts/src/integrity_event.dart';
+import 'package:trusted_time_nts/src/trusted_time_estimate.dart';
 
 void main() {
   group('IntegrityEvent', () {

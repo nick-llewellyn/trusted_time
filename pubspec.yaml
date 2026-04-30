@@ -1,10 +1,10 @@
-name: trusted_time
-description: Tamper-proof, high-precision network time for Flutter. Anchored to hardware monotonic clocks to prevent system-time manipulation.
-version: 2.0.2
-homepage: https://github.com/Sahad2701/trusted_time
-repository: https://github.com/Sahad2701/trusted_time
-issue_tracker: https://github.com/Sahad2701/trusted_time/issues
-documentation: https://pub.dev/documentation/trusted_time/latest/
+name: trusted_time_nts
+description: Tamper-proof, high-precision network time for Flutter with optional NTS (RFC 8915) authenticated NTP. Anchored to hardware monotonic clocks to prevent system-time manipulation.
+version: 1.0.0
+homepage: https://github.com/nick-llewellyn/trusted_time
+repository: https://github.com/nick-llewellyn/trusted_time
+issue_tracker: https://github.com/nick-llewellyn/trusted_time/issues
+documentation: https://pub.dev/documentation/trusted_time_nts/latest/
 
 topics:
   - time
@@ -41,17 +41,17 @@ flutter:
   plugin:
     platforms:
       android:
-        package: com.trustedtime.trusted_time
-        pluginClass: TrustedTimePlugin
+        package: com.nicklewellyn.trusted_time_nts
+        pluginClass: TrustedTimeNtsPlugin
       ios:
-        pluginClass: TrustedTimePlugin
+        pluginClass: TrustedTimeNtsPlugin
       macos:
-        pluginClass: TrustedTimePlugin
+        pluginClass: TrustedTimeNtsPlugin
       windows:
-        pluginClass: TrustedTimePlugin
+        pluginClass: TrustedTimeNtsPlugin
       linux:
-        pluginClass: TrustedTimePlugin
+        pluginClass: TrustedTimeNtsPlugin
       web:
-        pluginClass: TrustedTimeWebPlugin
-        fileName: trusted_time_web.dart
+        pluginClass: TrustedTimeNtsWebPlugin
+        fileName: trusted_time_nts_web.dart
 

@@ -5,7 +5,7 @@
 cmake_minimum_required(VERSION 3.14)
 
 # Project-level configuration.
-set(PROJECT_NAME "trusted_time")
+set(PROJECT_NAME "trusted_time_nts")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
@@ -14,19 +14,19 @@ cmake_policy(VERSION 3.14...3.25)
 
 # This value is used when generating builds using this plugin, so it must
 # not be changed
-set(PLUGIN_NAME "trusted_time_plugin")
+set(PLUGIN_NAME "trusted_time_nts_plugin")
 
 # Any new source files that you add to the plugin should be added here.
 list(APPEND PLUGIN_SOURCES
-  "trusted_time_plugin.cpp"
-  "trusted_time_plugin.h"
+  "trusted_time_nts_plugin.cpp"
+  "trusted_time_nts_plugin.h"
 )
 
 # Define the plugin library target. Its name must not be changed (see comment
 # on PLUGIN_NAME above).
 add_library(${PLUGIN_NAME} SHARED
-  "include/trusted_time/trusted_time_plugin_c_api.h"
-  "trusted_time_plugin_c_api.cpp"
+  "include/trusted_time_nts/trusted_time_nts_plugin_c_api.h"
+  "trusted_time_nts_plugin_c_api.cpp"
   ${PLUGIN_SOURCES}
 )
 
@@ -51,7 +51,7 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
 # external build triggered from this build file.
-set(trusted_time_bundled_libraries
+set(trusted_time_nts_bundled_libraries
   ""
   PARENT_SCOPE
 )
@@ -81,7 +81,7 @@ FetchContent_MakeAvailable(googletest)
 # The plugin's C API is not very useful for unit testing, so build the sources
 # directly into the test binary rather than using the DLL.
 add_executable(${TEST_RUNNER}
-  test/trusted_time_plugin_test.cpp
+  test/trusted_time_nts_plugin_test.cpp
   ${PLUGIN_SOURCES}
 )
 apply_standard_settings(${TEST_RUNNER})

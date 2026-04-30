@@ -1,5 +1,5 @@
-#ifndef FLUTTER_PLUGIN_TRUSTED_TIME_PLUGIN_H_
-#define FLUTTER_PLUGIN_TRUSTED_TIME_PLUGIN_H_
+#ifndef FLUTTER_PLUGIN_TRUSTED_TIME_NTS_PLUGIN_H_
+#define FLUTTER_PLUGIN_TRUSTED_TIME_NTS_PLUGIN_H_
 
 // Any translation unit that includes this header needs HWND, UINT_PTR, and
 // DWORD_PTR, all of which are defined in windows.h. Relying on the includer
@@ -14,19 +14,19 @@
 
 #include <memory>
 
-namespace trusted_time {
+namespace trusted_time_nts {
 
-class TrustedTimePlugin : public flutter::Plugin {
+class TrustedTimeNtsPlugin : public flutter::Plugin {
 public:
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);
 
-  explicit TrustedTimePlugin(flutter::PluginRegistrarWindows *registrar);
+  explicit TrustedTimeNtsPlugin(flutter::PluginRegistrarWindows *registrar);
 
-  virtual ~TrustedTimePlugin();
+  virtual ~TrustedTimeNtsPlugin();
 
   // Disallow copy and assign.
-  TrustedTimePlugin(const TrustedTimePlugin &) = delete;
-  TrustedTimePlugin &operator=(const TrustedTimePlugin &) = delete;
+  TrustedTimeNtsPlugin(const TrustedTimeNtsPlugin &) = delete;
+  TrustedTimeNtsPlugin &operator=(const TrustedTimeNtsPlugin &) = delete;
 
   void HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue> &method_call,
@@ -58,6 +58,6 @@ private:
                                              DWORD_PTR dwRefData);
 };
 
-} // namespace trusted_time
+} // namespace trusted_time_nts
 
-#endif // FLUTTER_PLUGIN_TRUSTED_TIME_PLUGIN_H_
+#endif // FLUTTER_PLUGIN_TRUSTED_TIME_NTS_PLUGIN_H_
