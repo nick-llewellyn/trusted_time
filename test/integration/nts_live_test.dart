@@ -25,7 +25,10 @@ void main() {
         expect(sample.source.authenticated, isTrue);
         expect(sample.source.kind, TimeSourceKind.nts);
         expect(sample.source.host, 'time.cloudflare.com');
-        expect(sample.networkUtc.isAfter(DateTime.utc(2025)), isTrue);
+        expect(
+          sample.networkUtc.difference(DateTime.now().toUtc()).abs(),
+          lessThan(const Duration(minutes: 5)),
+        );
         expect(sample.roundTripTime.inSeconds, lessThan(5));
       },
       timeout: const Timeout(Duration(seconds: 15)),
@@ -39,7 +42,10 @@ void main() {
 
         expect(sample.source.authenticated, isTrue);
         expect(sample.source.kind, TimeSourceKind.nts);
-        expect(sample.networkUtc.isAfter(DateTime.utc(2025)), isTrue);
+        expect(
+          sample.networkUtc.difference(DateTime.now().toUtc()).abs(),
+          lessThan(const Duration(minutes: 5)),
+        );
       },
       timeout: const Timeout(Duration(seconds: 15)),
     );
