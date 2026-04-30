@@ -1,0 +1,18 @@
+# Test tags used in this package.
+#
+# Suites annotated with `@Tags(['network'])` (e.g.
+# test/integration/nts_live_test.dart) require live external NTS-KE
+# servers and a native-assets build of the `nts` package's Rust core
+# (libnts_rust.so / .dylib / .dll). They are skipped in CI by passing
+# `--exclude-tags network` to `flutter test`, since hosted Linux
+# runners don't build native-assets dylibs for plain library-package
+# tests.
+#
+# Suites annotated with `@Tags(['background'])` are pure-Dart
+# integration tests with mocked sources; they run in CI by default
+# and are tagged purely for filtering during local development.
+tags:
+  network:
+    skip: false
+  background:
+    skip: false

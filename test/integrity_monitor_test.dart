@@ -33,44 +33,53 @@ void main() {
 
     tearDown(() => monitor.dispose());
 
-    test('checkRebootOnWarmStart detects reboot when uptime < anchor', () async {
-      clock.value = 500;
-      final anchor = TrustAnchor(
-        networkUtcMs: DateTime.now().millisecondsSinceEpoch,
-        uptimeMs: 10000,
-        wallMs: DateTime.now().millisecondsSinceEpoch,
-        uncertaintyMs: 10,
-      );
-      final result = await monitor.checkRebootOnWarmStart(anchor);
-      expect(result.rebooted, isTrue);
-      expect(result.currentUptimeMs, 500);
-    });
+    test(
+      'checkRebootOnWarmStart detects reboot when uptime < anchor',
+      () async {
+        clock.value = 500;
+        final anchor = TrustAnchor(
+          networkUtcMs: DateTime.now().millisecondsSinceEpoch,
+          uptimeMs: 10000,
+          wallMs: DateTime.now().millisecondsSinceEpoch,
+          uncertaintyMs: 10,
+        );
+        final result = await monitor.checkRebootOnWarmStart(anchor);
+        expect(result.rebooted, isTrue);
+        expect(result.currentUptimeMs, 500);
+      },
+    );
 
-    test('checkRebootOnWarmStart returns false when uptime >= anchor', () async {
-      clock.value = 20000;
-      final anchor = TrustAnchor(
-        networkUtcMs: DateTime.now().millisecondsSinceEpoch,
-        uptimeMs: 10000,
-        wallMs: DateTime.now().millisecondsSinceEpoch,
-        uncertaintyMs: 10,
-      );
-      final result = await monitor.checkRebootOnWarmStart(anchor);
-      expect(result.rebooted, isFalse);
-      expect(result.currentUptimeMs, 20000);
-    });
+    test(
+      'checkRebootOnWarmStart returns false when uptime >= anchor',
+      () async {
+        clock.value = 20000;
+        final anchor = TrustAnchor(
+          networkUtcMs: DateTime.now().millisecondsSinceEpoch,
+          uptimeMs: 10000,
+          wallMs: DateTime.now().millisecondsSinceEpoch,
+          uncertaintyMs: 10,
+        );
+        final result = await monitor.checkRebootOnWarmStart(anchor);
+        expect(result.rebooted, isFalse);
+        expect(result.currentUptimeMs, 20000);
+      },
+    );
 
-    test('checkRebootOnWarmStart returns current uptime even when equal', () async {
-      clock.value = 10000;
-      final anchor = TrustAnchor(
-        networkUtcMs: DateTime.now().millisecondsSinceEpoch,
-        uptimeMs: 10000,
-        wallMs: DateTime.now().millisecondsSinceEpoch,
-        uncertaintyMs: 10,
-      );
-      final result = await monitor.checkRebootOnWarmStart(anchor);
-      expect(result.rebooted, isFalse);
-      expect(result.currentUptimeMs, 10000);
-    });
+    test(
+      'checkRebootOnWarmStart returns current uptime even when equal',
+      () async {
+        clock.value = 10000;
+        final anchor = TrustAnchor(
+          networkUtcMs: DateTime.now().millisecondsSinceEpoch,
+          uptimeMs: 10000,
+          wallMs: DateTime.now().millisecondsSinceEpoch,
+          uncertaintyMs: 10,
+        );
+        final result = await monitor.checkRebootOnWarmStart(anchor);
+        expect(result.rebooted, isFalse);
+        expect(result.currentUptimeMs, 10000);
+      },
+    );
 
     test('events stream is a broadcast stream', () {
       expect(monitor.events.isBroadcast, isTrue);

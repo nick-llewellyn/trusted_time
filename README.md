@@ -202,7 +202,7 @@ NTS is supported on iOS, Android, macOS, Linux, and Windows via the [`nts`](http
 
 ### Background sync (real headless refresh)
 
-When `enableBackgroundSync` is paired with a registered host-app callback, TrustedTime spins up a headless `FlutterEngine` from the OS scheduler (Android `WorkManager`, iOS `BGAppRefreshTask`), runs a real Marzullo-quorum sync, and persists a fresh `TrustAnchor` — so the next foreground launch warm-restores from current data without a network round-trip. See [ADR 0002](docs/adr/0002-headless-background-sync.md) for the full design.
+When `enableBackgroundSync` is paired with a registered host-app callback, TrustedTime spins up a headless `FlutterEngine` from the OS scheduler (Android `WorkManager`, iOS `BGAppRefreshTask`), runs a real Marzullo-quorum sync, and persists a fresh `TrustAnchor` — so the next foreground launch warm-restores from current data without a network round-trip. See [ADR 0002](doc/adr/0002-headless-background-sync.md) for the full design.
 
 ```dart
 import 'dart:async';

@@ -42,7 +42,10 @@ import 'package:timezone/timezone.dart' as tz;
 //   unit-of-work function reachable without shadowing the static
 //   `TrustedTime.runBackgroundSync` defined below.
 import 'src/background_sync.dart'
-    show BackgroundSyncFailure, BackgroundSyncSuccess, TrustedTimeBackgroundResult;
+    show
+        BackgroundSyncFailure,
+        BackgroundSyncSuccess,
+        TrustedTimeBackgroundResult;
 import 'src/background_sync.dart' as bg show runBackgroundSync;
 import 'src/exceptions.dart';
 import 'src/integrity_event.dart';

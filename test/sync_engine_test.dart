@@ -106,17 +106,21 @@ void main() {
           _FakeTimeSource(id: 'b', networkUtc: baseTime, shouldThrow: true),
         ],
       );
-      await expectLater(engine.sync(), throwsA(isA<TrustedTimeSyncException>()));
+      await expectLater(
+        engine.sync(),
+        throwsA(isA<TrustedTimeSyncException>()),
+      );
     });
 
     test('throws when quorum cannot be reached (single source)', () async {
       final engine = SyncEngine.withSources(
         config: config,
-        sources: [
-          _FakeTimeSource(id: 'a', networkUtc: baseTime),
-        ],
+        sources: [_FakeTimeSource(id: 'a', networkUtc: baseTime)],
       );
-      await expectLater(engine.sync(), throwsA(isA<TrustedTimeSyncException>()));
+      await expectLater(
+        engine.sync(),
+        throwsA(isA<TrustedTimeSyncException>()),
+      );
     });
 
     test('filters out samples exceeding maxLatency', () async {
@@ -142,7 +146,10 @@ void main() {
         ],
       );
       // Only one sample survives the latency filter — quorum fails.
-      await expectLater(engine.sync(), throwsA(isA<TrustedTimeSyncException>()));
+      await expectLater(
+        engine.sync(),
+        throwsA(isA<TrustedTimeSyncException>()),
+      );
     });
   });
 }

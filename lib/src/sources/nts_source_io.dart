@@ -28,16 +28,15 @@ const Duration _defaultBurstSpacing = Duration(milliseconds: 100);
 /// native bridge. Keeping the named-parameter signature identical to
 /// [ntsQuery] means we can pass the function reference directly as the
 /// default — no adapter wrapper needed.
-typedef NtsQueryFn = Future<NtsTimeSample> Function({
-  required NtsServerSpec spec,
-  required int timeoutMs,
-});
+typedef NtsQueryFn =
+    Future<NtsTimeSample> Function({
+      required NtsServerSpec spec,
+      required int timeoutMs,
+    });
 
 /// Test seam: the shape of `package:nts`'s [ntsWarmCookies] function.
-typedef NtsWarmCookiesFn = Future<int> Function({
-  required NtsServerSpec spec,
-  required int timeoutMs,
-});
+typedef NtsWarmCookiesFn =
+    Future<int> Function({required NtsServerSpec spec, required int timeoutMs});
 
 /// Lazy, idempotent `RustLib.init()` guard.
 ///

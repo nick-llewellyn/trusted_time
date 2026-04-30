@@ -65,63 +65,67 @@ void main() {
       expect(source.id, 'nts:time.cloudflare.com');
     });
 
-    test('selected sample is marked authenticated and carries stratum',
-        () async {
-      final source = NtsSource(
-        'time.cloudflare.com',
-        burstSize: 1,
-        burstSpacing: Duration.zero,
-        clock: _FakeMonotonicClock(123456),
-        query: ({required spec, required timeoutMs}) async => _sample(
-          utcUnixMicros: 1700000000123456,
-          roundTripMicros: 12000,
-          serverStratum: 3,
-        ),
-        warmCookies: _noopWarm,
-      );
+    test(
+      'selected sample is marked authenticated and carries stratum',
+      () async {
+        final source = NtsSource(
+          'time.cloudflare.com',
+          burstSize: 1,
+          burstSpacing: Duration.zero,
+          clock: _FakeMonotonicClock(123456),
+          query: ({required spec, required timeoutMs}) async => _sample(
+            utcUnixMicros: 1700000000123456,
+            roundTripMicros: 12000,
+            serverStratum: 3,
+          ),
+          warmCookies: _noopWarm,
+        );
 
-      final sample = await source.fetch();
+        final sample = await source.fetch();
 
-      expect(sample.source.authenticated, isTrue);
-      expect(sample.source.kind, TimeSourceKind.nts);
-      expect(sample.source.id, 'nts:time.cloudflare.com');
-      expect(sample.source.host, 'time.cloudflare.com');
-      expect(sample.source.stratum, 3);
-      // T3 (1700000000123456) + RTT/2 (6000) — symmetric-path estimator
-      // for UTC at the instant of receipt.
-      expect(
-        sample.networkUtc,
-        DateTime.fromMicrosecondsSinceEpoch(1700000000129456, isUtc: true),
-      );
-      expect(sample.roundTripTime, const Duration(microseconds: 12000));
-      expect(sample.uncertainty, const Duration(microseconds: 6000));
-    });
+        expect(sample.source.authenticated, isTrue);
+        expect(sample.source.kind, TimeSourceKind.nts);
+        expect(sample.source.id, 'nts:time.cloudflare.com');
+        expect(sample.source.host, 'time.cloudflare.com');
+        expect(sample.source.stratum, 3);
+        // T3 (1700000000123456) + RTT/2 (6000) — symmetric-path estimator
+        // for UTC at the instant of receipt.
+        expect(
+          sample.networkUtc,
+          DateTime.fromMicrosecondsSinceEpoch(1700000000129456, isUtc: true),
+        );
+        expect(sample.roundTripTime, const Duration(microseconds: 12000));
+        expect(sample.uncertainty, const Duration(microseconds: 6000));
+      },
+    );
 
-    test('forwards configured host, port, and timeout to the query function',
-        () async {
-      NtsServerSpec? receivedSpec;
-      int? receivedTimeoutMs;
-      final source = NtsSource(
-        'nts.example.org',
-        port: 4461,
-        timeout: const Duration(milliseconds: 1500),
-        burstSize: 1,
-        burstSpacing: Duration.zero,
-        clock: _FakeMonotonicClock(0),
-        query: ({required spec, required timeoutMs}) async {
-          receivedSpec = spec;
-          receivedTimeoutMs = timeoutMs;
-          return _sample();
-        },
-        warmCookies: _noopWarm,
-      );
+    test(
+      'forwards configured host, port, and timeout to the query function',
+      () async {
+        NtsServerSpec? receivedSpec;
+        int? receivedTimeoutMs;
+        final source = NtsSource(
+          'nts.example.org',
+          port: 4461,
+          timeout: const Duration(milliseconds: 1500),
+          burstSize: 1,
+          burstSpacing: Duration.zero,
+          clock: _FakeMonotonicClock(0),
+          query: ({required spec, required timeoutMs}) async {
+            receivedSpec = spec;
+            receivedTimeoutMs = timeoutMs;
+            return _sample();
+          },
+          warmCookies: _noopWarm,
+        );
 
-      await source.fetch();
+        await source.fetch();
 
-      expect(receivedSpec?.host, 'nts.example.org');
-      expect(receivedSpec?.port, 4461);
-      expect(receivedTimeoutMs, 1500);
-    });
+        expect(receivedSpec?.host, 'nts.example.org');
+        expect(receivedSpec?.port, 4461);
+        expect(receivedTimeoutMs, 1500);
+      },
+    );
 
     test('default port is the IANA NTS-KE port (4460)', () async {
       NtsServerSpec? receivedSpec;
@@ -142,8 +146,7 @@ void main() {
       expect(receivedSpec?.port, 4460);
     });
 
-    test('clock filter selects the lowest-RTD sample from a burst',
-        () async {
+    test('clock filter selects the lowest-RTD sample from a burst', () async {
       // Burst of 4 samples with RTDs varying across an order of magnitude.
       // Sample index 2 (the 5000us one) should win.
       final rtds = [25000, 18000, 5000, 12000];
@@ -185,67 +188,71 @@ void main() {
       expect(sample.source.authenticated, isTrue);
     });
 
-    test('captured monotonic anchor matches the selected sample, not the last',
-        () async {
-      // Lowest-RTD sample is index 1; its monotonic capture is 200ms.
-      // Monotonic readings happen *after* each query, so the anchor
-      // forwarded must be the 2nd reading, not the 4th (last).
-      final rtds = [9000, 4000, 11000, 7000];
-      var i = 0;
-      final clock = _ScriptedMonotonicClock([100, 200, 300, 400]);
-      final source = NtsSource(
-        'nts.example.org',
-        burstSize: 4,
-        burstSpacing: Duration.zero,
-        clock: clock,
-        query: ({required spec, required timeoutMs}) async {
-          final s = _sample(roundTripMicros: rtds[i]);
-          i++;
-          return s;
-        },
-        warmCookies: _noopWarm,
-      );
+    test(
+      'captured monotonic anchor matches the selected sample, not the last',
+      () async {
+        // Lowest-RTD sample is index 1; its monotonic capture is 200ms.
+        // Monotonic readings happen *after* each query, so the anchor
+        // forwarded must be the 2nd reading, not the 4th (last).
+        final rtds = [9000, 4000, 11000, 7000];
+        var i = 0;
+        final clock = _ScriptedMonotonicClock([100, 200, 300, 400]);
+        final source = NtsSource(
+          'nts.example.org',
+          burstSize: 4,
+          burstSpacing: Duration.zero,
+          clock: clock,
+          query: ({required spec, required timeoutMs}) async {
+            final s = _sample(roundTripMicros: rtds[i]);
+            i++;
+            return s;
+          },
+          warmCookies: _noopWarm,
+        );
 
-      final sample = await source.fetch();
+        final sample = await source.fetch();
 
-      expect(sample.capturedMonotonicMs, 200);
-      // All 4 monotonic reads happened (one per successful query).
-      expect(clock.reads, [100, 200, 300, 400]);
-    });
+        expect(sample.capturedMonotonicMs, 200);
+        // All 4 monotonic reads happened (one per successful query).
+        expect(clock.reads, [100, 200, 300, 400]);
+      },
+    );
 
-    test('tolerates partial failures and selects best surviving sample',
-        () async {
-      // 4-sample burst: indices 0 and 2 fail; surviving samples are
-      // index 1 (RTD 9000us) and index 3 (RTD 5000us). Index 3 wins.
-      final results = <NtsTimeSample?>[
-        null, // throw
-        _sample(roundTripMicros: 9000, utcUnixMicros: 1700000000000001),
-        null, // throw
-        _sample(roundTripMicros: 5000, utcUnixMicros: 1700000000000003),
-      ];
-      var i = 0;
-      final source = NtsSource(
-        'flaky.example.org',
-        burstSize: 4,
-        burstSpacing: Duration.zero,
-        clock: _ScriptedMonotonicClock([100, 200]),
-        query: ({required spec, required timeoutMs}) async {
-          final r = results[i++];
-          if (r == null) throw const NtsError.timeout();
-          return r;
-        },
-        warmCookies: _noopWarm,
-      );
+    test(
+      'tolerates partial failures and selects best surviving sample',
+      () async {
+        // 4-sample burst: indices 0 and 2 fail; surviving samples are
+        // index 1 (RTD 9000us) and index 3 (RTD 5000us). Index 3 wins.
+        final results = <NtsTimeSample?>[
+          null, // throw
+          _sample(roundTripMicros: 9000, utcUnixMicros: 1700000000000001),
+          null, // throw
+          _sample(roundTripMicros: 5000, utcUnixMicros: 1700000000000003),
+        ];
+        var i = 0;
+        final source = NtsSource(
+          'flaky.example.org',
+          burstSize: 4,
+          burstSpacing: Duration.zero,
+          clock: _ScriptedMonotonicClock([100, 200]),
+          query: ({required spec, required timeoutMs}) async {
+            final r = results[i++];
+            if (r == null) throw const NtsError.timeout();
+            return r;
+          },
+          warmCookies: _noopWarm,
+        );
 
-      final sample = await source.fetch();
+        final sample = await source.fetch();
 
-      expect(sample.roundTripTime, const Duration(microseconds: 5000));
-      // T3 (1700000000000003) + RTT/2 (2500) for the selected sample.
-      expect(
-        sample.networkUtc,
-        DateTime.fromMicrosecondsSinceEpoch(1700000000002503, isUtc: true),
-      );
-    });
+        expect(sample.roundTripTime, const Duration(microseconds: 5000));
+        // T3 (1700000000000003) + RTT/2 (2500) for the selected sample.
+        expect(
+          sample.networkUtc,
+          DateTime.fromMicrosecondsSinceEpoch(1700000000002503, isUtc: true),
+        );
+      },
+    );
 
     test('throws the last NtsError when every burst query fails', () async {
       var calls = 0;
@@ -265,10 +272,7 @@ void main() {
         warmCookies: _noopWarm,
       );
 
-      await expectLater(
-        source.fetch(),
-        throwsA(isA<NtsError_Timeout>()),
-      );
+      await expectLater(source.fetch(), throwsA(isA<NtsError_Timeout>()));
       expect(calls, 3);
     });
 
@@ -321,8 +325,7 @@ void main() {
       expect(sample.source.authenticated, isTrue);
     });
 
-    test('non-NtsError exceptions are not caught by the burst loop',
-        () async {
+    test('non-NtsError exceptions are not caught by the burst loop', () async {
       // A clock failure must surface immediately rather than being
       // silently retried — the burst loop only tolerates NtsError.
       final source = NtsSource(
@@ -337,8 +340,7 @@ void main() {
       await expectLater(source.fetch(), throwsA(isA<RangeError>()));
     });
 
-    test('networkUtc adds half-RTT to T3 (symmetric-path estimator)',
-        () async {
+    test('networkUtc adds half-RTT to T3 (symmetric-path estimator)', () async {
       // The Rust layer returns the raw server transmit timestamp T3 plus
       // the wall-clock RTT (T4-T1). The source must forward UTC-at-receipt
       // = T3 + RTT/2 so the engine can pin it to capturedMonotonicMs (≈T4)

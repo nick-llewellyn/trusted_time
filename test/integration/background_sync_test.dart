@@ -40,51 +40,53 @@ void main() {
     final consensusUtc = DateTime.utc(2026, 6, 1, 12);
     final staleUtc = DateTime.utc(2026, 1, 1, 0);
 
-    test('advances persisted anchor.networkUtcMs from a stale baseline',
-        () async {
-      final store = InMemoryAnchorStorage();
+    test(
+      'advances persisted anchor.networkUtcMs from a stale baseline',
+      () async {
+        final store = InMemoryAnchorStorage();
 
-      // Seed a stale anchor mimicking what TrustedTimeImpl.init would
-      // have written during a previous foreground session.
-      final stale = TrustAnchor(
-        networkUtcMs: staleUtc.millisecondsSinceEpoch,
-        uptimeMs: 1000,
-        wallMs: staleUtc.millisecondsSinceEpoch,
-        uncertaintyMs: 50,
-      );
-      await store.save(stale);
+        // Seed a stale anchor mimicking what TrustedTimeImpl.init would
+        // have written during a previous foreground session.
+        final stale = TrustAnchor(
+          networkUtcMs: staleUtc.millisecondsSinceEpoch,
+          uptimeMs: 1000,
+          wallMs: staleUtc.millisecondsSinceEpoch,
+          uncertaintyMs: 50,
+        );
+        await store.save(stale);
 
-      final result = await runBackgroundSync(
-        config: TrustedTimeConfig(
-          ntpServers: const [],
-          httpsSources: const [],
-          ntsServers: const [],
-          minimumQuorum: 2,
-          additionalSources: [
-            _StubSource(idValue: 'stub-a', utc: consensusUtc),
-            _StubSource(
-              idValue: 'stub-b',
-              utc: consensusUtc.add(const Duration(milliseconds: 8)),
-            ),
-          ],
-        ),
-        store: store,
-        clock: _StubClock(7000),
-      );
+        final result = await runBackgroundSync(
+          config: TrustedTimeConfig(
+            ntpServers: const [],
+            httpsSources: const [],
+            ntsServers: const [],
+            minimumQuorum: 2,
+            additionalSources: [
+              _StubSource(idValue: 'stub-a', utc: consensusUtc),
+              _StubSource(
+                idValue: 'stub-b',
+                utc: consensusUtc.add(const Duration(milliseconds: 8)),
+              ),
+            ],
+          ),
+          store: store,
+          clock: _StubClock(7000),
+        );
 
-      expect(result, isA<BackgroundSyncSuccess>());
-      final after = await store.load();
-      expect(after, isNotNull);
-      expect(
-        after!.networkUtcMs,
-        greaterThan(stale.networkUtcMs),
-        reason: 'Background sync did not advance the persisted anchor.',
-      );
-      expect(
-        after.networkUtcMs,
-        closeTo(consensusUtc.millisecondsSinceEpoch, 100),
-      );
-    });
+        expect(result, isA<BackgroundSyncSuccess>());
+        final after = await store.load();
+        expect(after, isNotNull);
+        expect(
+          after!.networkUtcMs,
+          greaterThan(stale.networkUtcMs),
+          reason: 'Background sync did not advance the persisted anchor.',
+        );
+        expect(
+          after.networkUtcMs,
+          closeTo(consensusUtc.millisecondsSinceEpoch, 100),
+        );
+      },
+    );
 
     test('leaves persisted anchor untouched when sync fails', () async {
       final store = InMemoryAnchorStorage();
