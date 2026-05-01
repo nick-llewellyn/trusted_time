@@ -25,15 +25,15 @@ void main() {
 
   group('TrustedTimeConfig equality', () {
     test('configs with same servers are equal', () {
-      const a = TrustedTimeConfig(ntpServers: ['time.google.com']);
-      const b = TrustedTimeConfig(ntpServers: ['time.google.com']);
+      const a = TrustedTimeConfig(ntsServers: ['time.cloudflare.com']);
+      const b = TrustedTimeConfig(ntsServers: ['time.cloudflare.com']);
       expect(a, equals(b));
       expect(a.hashCode, equals(b.hashCode));
     });
 
-    test('configs with different ntpServers are NOT equal', () {
-      const a = TrustedTimeConfig(ntpServers: ['time.google.com']);
-      const b = TrustedTimeConfig(ntpServers: ['pool.ntp.org']);
+    test('configs with different ntsServers are NOT equal', () {
+      const a = TrustedTimeConfig(ntsServers: ['time.cloudflare.com']);
+      const b = TrustedTimeConfig(ntsServers: ['nts.netnod.se']);
       expect(a, isNot(equals(b)));
     });
 

@@ -2,7 +2,6 @@ import 'package:http/http.dart' as http;
 import '../models.dart';
 import '../monotonic_clock.dart';
 
-export 'ntp_source_stub.dart' if (dart.library.io) 'ntp_source_io.dart';
 export 'nts_source_stub.dart' if (dart.library.io) 'nts_source_io.dart';
 
 /// Fetches UTC time from an HTTPS endpoint's `Date` response header.

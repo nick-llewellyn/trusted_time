@@ -104,9 +104,6 @@ final class TrustAnchor {
 
 /// Identifies the broad category of a time-authority source.
 enum TimeSourceKind {
-  /// Network Time Protocol (UDP).
-  ntp,
-
   /// Network Time Security (RFC 8915) — authenticated NTPv4 over UDP
   /// with TLS-derived AEAD keys.
   nts,
@@ -221,13 +218,13 @@ final class TimeSample {
 /// Contract for implementing custom time-authority providers.
 ///
 /// Implement this interface to add enterprise or custom time sources
-/// (e.g., a company-internal NTP server or a proprietary time API)
-/// to the TrustedTime consensus pool.
+/// (e.g., a company-internal time API or a proprietary signed-time
+/// service) to the TrustedTime consensus pool.
 ///
 /// ```dart
 /// class MyTimeSource implements TrustedTimeSource {
 ///   @override
-///   String get id => 'my-company-ntp';
+///   String get id => 'my-company-time';
 ///
 ///   @override
 ///   Future<TimeSample> fetch() async {
@@ -237,7 +234,7 @@ final class TimeSample {
 /// ```
 abstract interface class TrustedTimeSource {
   /// A unique identifier for this source, used in debug logging and
-  /// consensus weighting (e.g., `'ntp:time.google.com'`).
+  /// consensus weighting (e.g., `'nts:time.cloudflare.com'`).
   String get id;
 
   /// Queries the remote time authority and returns a structured
@@ -272,15 +269,12 @@ final class TrustedTimeConfig {
   /// All parameters are optional and fall back to production-safe defaults.
   const TrustedTimeConfig({
     this.refreshInterval = const Duration(hours: 12),
-    this.ntpServers = const [
-      'time.google.com',
-      'time.cloudflare.com',
-      'pool.ntp.org',
-    ],
     this.ntsServers = const [],
     this.httpsSources = const [
       'https://www.google.com',
       'https://www.cloudflare.com',
+      'https://www.apple.com',
+      'https://www.microsoft.com',
     ],
     this.maxLatency = const Duration(seconds: 3),
     this.minimumQuorum = 2,
@@ -296,24 +290,27 @@ final class TrustedTimeConfig {
   /// more network bandwidth.
   final Duration refreshInterval;
 
-  /// NTP server hostnames to query via UDP.
-  ///
-  /// At least [minimumQuorum] servers should be listed for reliable
-  /// consensus. Defaults to Google, Cloudflare, and pool.ntp.org.
-  final List<String> ntpServers;
-
   /// NTS-KE server hostnames to query (RFC 8915), opt-in.
   ///
   /// Each entry is a hostname; the IANA-assigned default port `4460`
   /// is always used. Empty by default — the engine ignores NTS unless
   /// explicitly configured. Not supported on web (samples from these
   /// hosts will be silently dropped by the engine on browser builds).
+  ///
+  /// Configure NTS for cryptographically authenticated samples that
+  /// resist on-path attackers. Clear-text NTP is intentionally not
+  /// supported by this package — see ADR 0003.
   final List<String> ntsServers;
 
-  /// HTTPS URLs whose `Date` headers are used as a fallback time source.
+  /// HTTPS URLs whose `Date` headers are used as a TLS-anchored time
+  /// source.
   ///
-  /// This provides a universal fallback for environments where UDP (NTP)
-  /// traffic is blocked (e.g., corporate firewalls).
+  /// Defaults to four independent operators (Google, Cloudflare, Apple,
+  /// Microsoft) so that the default consensus pool tolerates a single
+  /// endpoint failure while still satisfying [minimumQuorum] of 2.
+  /// Each `Date` header is bound to a TLS handshake, so a network
+  /// attacker cannot forge it without a valid certificate; granularity
+  /// is one second.
   final List<String> httpsSources;
 
   /// Maximum acceptable round-trip latency for a single source query.
@@ -335,7 +332,7 @@ final class TrustedTimeConfig {
   final bool persistState;
 
   /// Additional custom [TrustedTimeSource] implementations to include
-  /// in the consensus pool alongside the built-in NTP and HTTPS sources.
+  /// in the consensus pool alongside the built-in NTS and HTTPS sources.
   final List<TrustedTimeSource> additionalSources;
 
   /// Estimated local oscillator drift rate in ms/ms.
@@ -357,7 +354,6 @@ final class TrustedTimeConfig {
       identical(this, other) ||
       other is TrustedTimeConfig &&
           refreshInterval == other.refreshInterval &&
-          listEquals(ntpServers, other.ntpServers) &&
           listEquals(ntsServers, other.ntsServers) &&
           listEquals(httpsSources, other.httpsSources) &&
           maxLatency == other.maxLatency &&
@@ -370,7 +366,6 @@ final class TrustedTimeConfig {
   @override
   int get hashCode => Object.hash(
     refreshInterval,
-    Object.hashAll(ntpServers),
     Object.hashAll(ntsServers),
     Object.hashAll(httpsSources),
     maxLatency,

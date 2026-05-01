@@ -4,14 +4,14 @@ Initial public release of `trusted_time_nts` — an independently maintained, NT
 
 **Core engine**
 - Tamper-resistant UTC clock anchored to a hardware monotonic baseline (`SystemClock.elapsedRealtime` on Android, `ProcessInfo.systemUptime` on iOS/macOS, `CLOCK_BOOTTIME` on Linux, `GetTickCount64` on Windows; `performance.now()` on web).
-- Multi-source Marzullo intersection across NTP, HTTPS-Date, and (optional) NTS samples; lower-endpoint-priority tie-breaking and overlap-depth tracking.
+- Multi-source Marzullo intersection across HTTPS-Date and (optional) NTS samples; lower-endpoint-priority tie-breaking and overlap-depth tracking. Clear-text NTP is intentionally not supported — see [`doc/adr/0003-removing-clear-text-ntp.md`](doc/adr/0003-removing-clear-text-ntp.md).
 - Encrypted persistence of the trust anchor via `flutter_secure_storage`, surviving cold restarts.
 - Synchronous `TrustedTime.now()` / `nowEstimated()` access with sub-microsecond overhead after warm-up.
 
 **Network Time Security (NTS, RFC 8915)**
 - `NtsSource` provides authenticated NTPv4 over UDP with TLS-derived AEAD keys via [`package:nts`](https://pub.dev/packages/nts).
 - Opt-in via `TrustedTimeConfig.ntsServers`; IANA port `4460` is fixed.
-- `TimeSourceMetadata.authenticated` distinguishes cryptographically authenticated samples from clear-text NTP/HTTPS.
+- `TimeSourceMetadata.authenticated` distinguishes cryptographically authenticated NTS samples from TLS-anchored HTTPS-Date samples.
 - Half-RTT (`T3 + RTT/2`) adjustment applied so NTS samples honour the `TimeSample` UTC-at-receipt contract used by Marzullo consensus.
 - Web is stubbed cleanly: NTS sources are silently skipped on the web platform.
 - See [`doc/adr/0001-nts-integration-strategy.md`](doc/adr/0001-nts-integration-strategy.md) for the design rationale.

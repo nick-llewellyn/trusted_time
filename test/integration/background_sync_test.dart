@@ -57,7 +57,6 @@ void main() {
 
         final result = await runBackgroundSync(
           config: TrustedTimeConfig(
-            ntpServers: const [],
             httpsSources: const [],
             ntsServers: const [],
             minimumQuorum: 2,
@@ -100,7 +99,6 @@ void main() {
 
       final result = await runBackgroundSync(
         config: TrustedTimeConfig(
-          ntpServers: const [],
           httpsSources: const [],
           ntsServers: const [],
           minimumQuorum: 2,
