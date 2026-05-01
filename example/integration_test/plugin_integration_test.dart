@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 
-import 'package:trusted_time/trusted_time.dart';
+import 'package:trusted_time_nts/trusted_time_nts.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();

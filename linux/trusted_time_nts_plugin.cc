@@ -1,4 +1,4 @@
-#include "include/trusted_time/trusted_time_plugin.h"
+#include "include/trusted_time_nts/trusted_time_nts_plugin.h"
 #include <atomic>
 #include <cstring>
 #include <flutter_linux/flutter_linux.h>
@@ -9,11 +9,11 @@
 #include <thread>
 #include <unistd.h>
 
-#include "trusted_time_plugin_private.h"
+#include "trusted_time_nts_plugin_private.h"
 
-#define TRUSTED_TIME_PLUGIN(obj)                                               \
-  (G_TYPE_CHECK_INSTANCE_CAST((obj), trusted_time_plugin_get_type(),           \
-                              TrustedTimePlugin))
+#define TRUSTED_TIME_NTS_PLUGIN(obj)                                               \
+  (G_TYPE_CHECK_INSTANCE_CAST((obj), trusted_time_nts_plugin_get_type(),           \
+                              TrustedTimeNtsPlugin))
 
 // PluginContext
 // Owns the background thread and the timerfd. All members except event_channel
@@ -28,12 +28,12 @@ struct PluginContext {
   FlEventChannel *event_channel = nullptr;
 };
 
-struct _TrustedTimePlugin {
+struct _TrustedTimeNtsPlugin {
   GObject parent_instance;
   PluginContext *context;
 };
 
-G_DEFINE_TYPE(TrustedTimePlugin, trusted_time_plugin, g_object_get_type())
+G_DEFINE_TYPE(TrustedTimeNtsPlugin, trusted_time_nts_plugin, g_object_get_type())
 
 // GLib idle callback — emits the clockJumped event on the main thread
 
@@ -142,7 +142,7 @@ static void background_worker(PluginContext *context) {
 
 static FlMethodErrorResponse *listen_cb(FlEventChannel *channel, FlValue *args,
                                         gpointer user_data) {
-  TrustedTimePlugin *plugin = TRUSTED_TIME_PLUGIN(user_data);
+  TrustedTimeNtsPlugin *plugin = TRUSTED_TIME_NTS_PLUGIN(user_data);
   PluginContext *context = plugin->context;
 
   // Idempotency guard — ignore a second listen while already subscribed.
@@ -167,7 +167,7 @@ static FlMethodErrorResponse *listen_cb(FlEventChannel *channel, FlValue *args,
 
 static FlMethodErrorResponse *cancel_cb(FlEventChannel *channel, FlValue *args,
                                         gpointer user_data) {
-  TrustedTimePlugin *plugin = TRUSTED_TIME_PLUGIN(user_data);
+  TrustedTimeNtsPlugin *plugin = TRUSTED_TIME_NTS_PLUGIN(user_data);
   PluginContext *context = plugin->context;
 
   if (!context->is_listening) {
@@ -194,8 +194,8 @@ static FlMethodErrorResponse *cancel_cb(FlEventChannel *channel, FlValue *args,
 
 // GObject lifecycle
 
-static void trusted_time_plugin_dispose(GObject *object) {
-  TrustedTimePlugin *self = TRUSTED_TIME_PLUGIN(object);
+static void trusted_time_nts_plugin_dispose(GObject *object) {
+  TrustedTimeNtsPlugin *self = TRUSTED_TIME_NTS_PLUGIN(object);
   if (self->context) {
     // Reuse the same teardown logic as cancel_cb.
     if (self->context->is_listening) {
@@ -214,14 +214,14 @@ static void trusted_time_plugin_dispose(GObject *object) {
     delete self->context;
     self->context = nullptr;
   }
-  G_OBJECT_CLASS(trusted_time_plugin_parent_class)->dispose(object);
+  G_OBJECT_CLASS(trusted_time_nts_plugin_parent_class)->dispose(object);
 }
 
-static void trusted_time_plugin_class_init(TrustedTimePluginClass *klass) {
-  G_OBJECT_CLASS(klass)->dispose = trusted_time_plugin_dispose;
+static void trusted_time_nts_plugin_class_init(TrustedTimeNtsPluginClass *klass) {
+  G_OBJECT_CLASS(klass)->dispose = trusted_time_nts_plugin_dispose;
 }
 
-static void trusted_time_plugin_init(TrustedTimePlugin *self) {
+static void trusted_time_nts_plugin_init(TrustedTimeNtsPlugin *self) {
   self->context = new PluginContext();
 }
 
@@ -266,7 +266,7 @@ static void method_call_cb(FlMethodChannel *channel, FlMethodCall *method_call,
   fl_method_call_respond(method_call, response, nullptr);
 }
 
-// Exposed for unit testing (see trusted_time_plugin_private.h).
+// Exposed for unit testing (see trusted_time_nts_plugin_private.h).
 FlMethodResponse *get_platform_version() {
   struct utsname uname_data = {};
   uname(&uname_data);
@@ -277,30 +277,30 @@ FlMethodResponse *get_platform_version() {
 
 // Plugin registration
 
-void trusted_time_plugin_register_with_registrar(FlPluginRegistrar *registrar) {
-  TrustedTimePlugin *plugin = TRUSTED_TIME_PLUGIN(
-      g_object_new(trusted_time_plugin_get_type(), nullptr));
+void trusted_time_nts_plugin_register_with_registrar(FlPluginRegistrar *registrar) {
+  TrustedTimeNtsPlugin *plugin = TRUSTED_TIME_NTS_PLUGIN(
+      g_object_new(trusted_time_nts_plugin_get_type(), nullptr));
 
   g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
 
   // Monotonic clock channel.
   g_autoptr(FlMethodChannel) monotonic_channel =
       fl_method_channel_new(fl_plugin_registrar_get_messenger(registrar),
-                            "trusted_time/monotonic", FL_METHOD_CODEC(codec));
+                            "trusted_time_nts/monotonic", FL_METHOD_CODEC(codec));
   fl_method_channel_set_method_call_handler(
       monotonic_channel, method_call_cb, g_object_ref(plugin), g_object_unref);
 
   // Background sync channel (stub).
   g_autoptr(FlMethodChannel) bg_channel =
       fl_method_channel_new(fl_plugin_registrar_get_messenger(registrar),
-                            "trusted_time/background", FL_METHOD_CODEC(codec));
+                            "trusted_time_nts/background", FL_METHOD_CODEC(codec));
   fl_method_channel_set_method_call_handler(
       bg_channel, method_call_cb, g_object_ref(plugin), g_object_unref);
 
   // Integrity event channel.
   plugin->context->event_channel =
       fl_event_channel_new(fl_plugin_registrar_get_messenger(registrar),
-                           "trusted_time/integrity", FL_METHOD_CODEC(codec));
+                           "trusted_time_nts/integrity", FL_METHOD_CODEC(codec));
   fl_event_channel_set_stream_handlers(plugin->context->event_channel,
                                        listen_cb, cancel_cb,
                                        g_object_ref(plugin), g_object_unref);

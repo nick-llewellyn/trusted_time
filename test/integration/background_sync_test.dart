@@ -3,14 +3,14 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/anchor_store.dart';
-import 'package:trusted_time/src/background_sync.dart';
-import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/monotonic_clock.dart';
+import 'package:trusted_time_nts/src/anchor_store.dart';
+import 'package:trusted_time_nts/src/background_sync.dart';
+import 'package:trusted_time_nts/src/models.dart';
+import 'package:trusted_time_nts/src/monotonic_clock.dart';
 
 /// Integration-style verification of the headless background-sync
 /// unit-of-work, exercising the internal [runBackgroundSync] function
-/// (from `package:trusted_time/src/background_sync.dart`) against a
+/// (from `package:trusted_time_nts/src/background_sync.dart`) against a
 /// pre-seeded stale anchor with an injected fixed clock and store.
 ///
 /// **Scope**: this test pins the contract that the unit-of-work
@@ -28,7 +28,7 @@ import 'package:trusted_time/src/monotonic_clock.dart';
 ///   logs for the `notifyBackgroundComplete` channel call.
 /// - iOS: in Xcode with the simulator paused, run
 ///   `e -l objc -- (void)[[BGTaskScheduler sharedScheduler]
-///   _simulateLaunchForTaskWithIdentifier:@"com.trustedtime.backgroundsync"]`
+///   _simulateLaunchForTaskWithIdentifier:@"com.nicklewellyn.trusted_time_nts.backgroundsync"]`
 ///   and observe the headless engine spinning up.
 ///
 /// The unit-of-work boundary proven here is what those manual steps

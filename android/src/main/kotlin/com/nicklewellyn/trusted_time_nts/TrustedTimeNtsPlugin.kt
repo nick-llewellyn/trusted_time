@@ -1,4 +1,4 @@
-package com.trustedtime.trusted_time
+package com.nicklewellyn.trusted_time_nts
 
 import android.content.Context
 import android.os.SystemClock
@@ -25,7 +25,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.TimeUnit
 
 /** Main entry point for the TrustedTime Android plugin. */
-class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
+class TrustedTimeNtsPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     private lateinit var methodChannel: MethodChannel
     private lateinit var backgroundChannel: MethodChannel
@@ -35,13 +35,13 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         context = binding.applicationContext
 
-        methodChannel = MethodChannel(binding.binaryMessenger, "trusted_time/monotonic")
+        methodChannel = MethodChannel(binding.binaryMessenger, "trusted_time_nts/monotonic")
         methodChannel.setMethodCallHandler(this)
 
-        backgroundChannel = MethodChannel(binding.binaryMessenger, "trusted_time/background")
+        backgroundChannel = MethodChannel(binding.binaryMessenger, "trusted_time_nts/background")
         backgroundChannel.setMethodCallHandler(this)
 
-        integrityChannel = EventChannel(binding.binaryMessenger, "trusted_time/integrity")
+        integrityChannel = EventChannel(binding.binaryMessenger, "trusted_time_nts/integrity")
         integrityChannel.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(args: Any?, sink: EventChannel.EventSink) =
                 IntegrityWatcher.attach(context, sink)
@@ -88,7 +88,7 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .build()
         WorkManager.getInstance(context)
-            .enqueueUniquePeriodicWork("trusted_time_sync", ExistingPeriodicWorkPolicy.UPDATE, request)
+            .enqueueUniquePeriodicWork("trusted_time_nts_sync", ExistingPeriodicWorkPolicy.UPDATE, request)
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -98,9 +98,9 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     }
 
     companion object {
-        internal const val PREFS = "trusted_time_prefs"
+        internal const val PREFS = "trusted_time_nts_prefs"
         internal const val KEY_HANDLE = "tt_bg_callback_handle"
-        internal const val BG_CHANNEL = "trusted_time/background"
+        internal const val BG_CHANNEL = "trusted_time_nts/background"
     }
 }
 
@@ -111,7 +111,7 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
  * `TrustedTime.registerBackgroundCallback`, this worker spins up a headless
  * [FlutterEngine], invokes that callback (which is expected to call
  * `TrustedTime.runBackgroundSync()`), and waits for completion via the
- * `trusted_time/background.notifyBackgroundComplete` method-channel call.
+ * `trusted_time_nts/background.notifyBackgroundComplete` method-channel call.
  *
  * If no callback is registered, this falls back to a connectivity-only
  * HTTPS HEAD probe, preserving the pre-2.x behaviour for integrators that
@@ -121,9 +121,9 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
 
     override suspend fun doWork(): Result {
         val prefs = applicationContext.getSharedPreferences(
-            TrustedTimePlugin.PREFS, Context.MODE_PRIVATE,
+            TrustedTimeNtsPlugin.PREFS, Context.MODE_PRIVATE,
         )
-        val handle = prefs.getLong(TrustedTimePlugin.KEY_HANDLE, 0L)
+        val handle = prefs.getLong(TrustedTimeNtsPlugin.KEY_HANDLE, 0L)
         if (handle == 0L) return runConnectivityFallback()
 
         val callbackInfo = FlutterCallbackInformation.lookupCallbackInformation(handle)
@@ -154,7 +154,7 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
             // (each FlutterEngine has its own messenger).
             val workerChannel = MethodChannel(
                 engine.dartExecutor.binaryMessenger,
-                TrustedTimePlugin.BG_CHANNEL,
+                TrustedTimeNtsPlugin.BG_CHANNEL,
             )
             workerChannel.setMethodCallHandler { call, result ->
                 if (call.method == "notifyBackgroundComplete") {

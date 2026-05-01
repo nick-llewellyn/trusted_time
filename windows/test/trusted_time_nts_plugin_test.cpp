@@ -8,9 +8,9 @@
 #include <string>
 #include <variant>
 
-#include "trusted_time_plugin.h"
+#include "trusted_time_nts_plugin.h"
 
-namespace trusted_time {
+namespace trusted_time_nts {
 namespace test {
 
 namespace {
@@ -22,10 +22,10 @@ using flutter::MethodResultFunctions;
 
 }  // namespace
 
-TEST(TrustedTimePlugin, GetPlatformVersion) {
+TEST(TrustedTimeNtsPlugin, GetPlatformVersion) {
   // Pass nullptr — HandleMethodCall does not dereference registrar_ for
   // getPlatformVersion or getUptimeMs, only for HandleOnListen (window handle).
-  TrustedTimePlugin plugin(nullptr);
+  TrustedTimeNtsPlugin plugin(nullptr);
 
   std::string result_string;
   plugin.HandleMethodCall(
@@ -39,8 +39,8 @@ TEST(TrustedTimePlugin, GetPlatformVersion) {
   EXPECT_TRUE(result_string.rfind("Windows ", 0) == 0);
 }
 
-TEST(TrustedTimePlugin, GetUptimeMs) {
-  TrustedTimePlugin plugin(nullptr);
+TEST(TrustedTimeNtsPlugin, GetUptimeMs) {
+  TrustedTimeNtsPlugin plugin(nullptr);
 
   int64_t uptime_ms = 0;
   plugin.HandleMethodCall(
@@ -55,4 +55,4 @@ TEST(TrustedTimePlugin, GetUptimeMs) {
 }
 
 }  // namespace test
-}  // namespace trusted_time
+}  // namespace trusted_time_nts

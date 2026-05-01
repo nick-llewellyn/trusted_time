@@ -3,7 +3,7 @@ import UIKit
 import XCTest
 
 
-@testable import trusted_time
+@testable import trusted_time_nts
 
 // This demonstrates a simple unit test of the Swift portion of this plugin's implementation.
 //
@@ -12,7 +12,7 @@ import XCTest
 class RunnerTests: XCTestCase {
 
   func testGetPlatformVersion() {
-    let plugin = TrustedTimePlugin()
+    let plugin = TrustedTimeNtsPlugin()
 
     let call = FlutterMethodCall(methodName: "getPlatformVersion", arguments: [])
 

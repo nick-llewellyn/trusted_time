@@ -5,7 +5,7 @@ import BackgroundTasks
 /// Closure that registers the host app's plugins onto a headless
 /// [FlutterEngine] so the Dart background callback can use plugins like
 /// `flutter_secure_storage` (required for anchor persistence).
-public typealias TrustedTimePluginRegistrantCallback = (FlutterEngine) -> Void
+public typealias TrustedTimeNtsPluginRegistrantCallback = (FlutterEngine) -> Void
 
 /// Entry point and event coordinator for the TrustedTime iOS plugin.
 ///
@@ -14,7 +14,7 @@ public typealias TrustedTimePluginRegistrantCallback = (FlutterEngine) -> Void
 ///    ```xml
 ///    <key>BGTaskSchedulerPermittedIdentifiers</key>
 ///    <array>
-///      <string>com.trustedtime.backgroundsync</string>
+///      <string>com.nicklewellyn.trusted_time_nts.backgroundsync</string>
 ///    </array>
 ///    ```
 ///    Without this entry, `BGTaskScheduler.shared.submit(...)` throws
@@ -25,22 +25,22 @@ public typealias TrustedTimePluginRegistrantCallback = (FlutterEngine) -> Void
 ///    `BGTaskScheduler.shared.register(...)` returns `false`, although
 ///    that return value alone is not treated as fatal because it also
 ///    occurs benignly when the identifier was already registered by an
-///    earlier `TrustedTimePlugin` instance in the same process.
+///    earlier `TrustedTimeNtsPlugin` instance in the same process.
 /// 2. Wire `GeneratedPluginRegistrant` into the headless engine path from
 ///    your `AppDelegate`:
 ///    ```swift
-///    TrustedTimePlugin.setPluginRegistrantCallback { engine in
+///    TrustedTimeNtsPlugin.setPluginRegistrantCallback { engine in
 ///      GeneratedPluginRegistrant.register(with: engine)
 ///    }
 ///    ```
 ///    Without this, the headless engine will run but other plugins
 ///    (notably `flutter_secure_storage`) will be unavailable and the
 ///    persisted anchor write will fail.
-public class TrustedTimePlugin: NSObject, FlutterPlugin {
+public class TrustedTimeNtsPlugin: NSObject, FlutterPlugin {
 
     private var integrityEventSink: FlutterEventSink?
     private var clockObservers: [NSObjectProtocol] = []
-    private let bgTaskId = "com.trustedtime.backgroundsync"
+    private let bgTaskId = "com.nicklewellyn.trusted_time_nts.backgroundsync"
     private var bgRegistered = false
     private var bgIntervalHours = 24
     private var headlessEngine: FlutterEngine?
@@ -48,29 +48,29 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     private var pendingTask: BGTask?
     private var pendingTaskCompleted = false
 
-    fileprivate static let kHandleKey = "com.trustedtime.bgCallbackHandle"
-    fileprivate static var pluginRegistrantCallback: TrustedTimePluginRegistrantCallback?
+    fileprivate static let kHandleKey = "com.nicklewellyn.trusted_time_nts.bgCallbackHandle"
+    fileprivate static var pluginRegistrantCallback: TrustedTimeNtsPluginRegistrantCallback?
 
     /// Registers a callback that wires the host app's
     /// `GeneratedPluginRegistrant` onto a headless [FlutterEngine]. Call
     /// this once from your `AppDelegate` before `runApp` (typically in
     /// `application(_:didFinishLaunchingWithOptions:)`).
     public static func setPluginRegistrantCallback(
-        _ callback: @escaping TrustedTimePluginRegistrantCallback
+        _ callback: @escaping TrustedTimeNtsPluginRegistrantCallback
     ) {
         pluginRegistrantCallback = callback
     }
 
     public static func register(with registrar: FlutterPluginRegistrar) {
-        let instance = TrustedTimePlugin()
+        let instance = TrustedTimeNtsPlugin()
 
-        FlutterMethodChannel(name: "trusted_time/monotonic", binaryMessenger: registrar.messenger())
+        FlutterMethodChannel(name: "trusted_time_nts/monotonic", binaryMessenger: registrar.messenger())
             .setMethodCallHandler(instance.handle)
 
-        FlutterMethodChannel(name: "trusted_time/background", binaryMessenger: registrar.messenger())
+        FlutterMethodChannel(name: "trusted_time_nts/background", binaryMessenger: registrar.messenger())
             .setMethodCallHandler(instance.handle)
 
-        FlutterEventChannel(name: "trusted_time/integrity", binaryMessenger: registrar.messenger())
+        FlutterEventChannel(name: "trusted_time_nts/integrity", binaryMessenger: registrar.messenger())
             .setStreamHandler(instance)
     }
 
@@ -91,7 +91,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
                 result(FlutterError(code: "INVALID_ARGS", message: "handle is required", details: nil))
                 return
             }
-            UserDefaults.standard.set(handle, forKey: TrustedTimePlugin.kHandleKey)
+            UserDefaults.standard.set(handle, forKey: TrustedTimeNtsPlugin.kHandleKey)
             result(nil)
         case "notifyBackgroundComplete":
             let success = ((call.arguments as? [String: Any])?["success"] as? Bool) ?? false
@@ -112,7 +112,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     ///       `BGTaskSchedulerPermittedIdentifiers` Info.plist entry
     ///       (host-app misconfiguration), or
     ///   (b) the identifier has already been registered earlier in the
-    ///       same process by another `TrustedTimePlugin` instance — for
+    ///       same process by another `TrustedTimeNtsPlugin` instance — for
     ///       example in an add-to-app or multi-`FlutterEngine` setup.
     /// We log the condition so case (a) is visible in device logs, and
     /// we always proceed to `scheduleNextBgSync()` regardless. Under
@@ -185,7 +185,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         // back as `as? Int64` does not bridge through NSNumber and would
         // silently return nil, forcing every fire down the connectivity
         // fallback path even when a callback is registered.
-        let raw = UserDefaults.standard.object(forKey: TrustedTimePlugin.kHandleKey) as? NSNumber
+        let raw = UserDefaults.standard.object(forKey: TrustedTimeNtsPlugin.kHandleKey) as? NSNumber
         guard let handle = raw?.int64Value, handle != 0,
               let callbackInfo = FlutterCallbackCache.lookupCallbackInformation(handle) else {
             performConnectivityFallback(task: task)
@@ -200,7 +200,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         // budget on a no-op. Fall back to the connectivity probe so the
         // run still reports a sensible outcome to BGTaskScheduler instead
         // of repeatedly retrying a misconfigured engine.
-        guard TrustedTimePlugin.pluginRegistrantCallback != nil else {
+        guard TrustedTimeNtsPlugin.pluginRegistrantCallback != nil else {
             performConnectivityFallback(task: task)
             return
         }
@@ -246,10 +246,10 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
             // be wired up BEFORE the Dart entrypoint runs. Otherwise the
             // entrypoint races against MissingPluginException on plugin
             // calls or on notifyBackgroundComplete.
-            TrustedTimePlugin.pluginRegistrantCallback?(engine)
+            TrustedTimeNtsPlugin.pluginRegistrantCallback?(engine)
 
             let channel = FlutterMethodChannel(
-                name: "trusted_time/background",
+                name: "trusted_time_nts/background",
                 binaryMessenger: engine.binaryMessenger
             )
             channel.setMethodCallHandler { [weak self] call, result in
@@ -334,7 +334,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     }
 }
 
-extension TrustedTimePlugin: FlutterStreamHandler {
+extension TrustedTimeNtsPlugin: FlutterStreamHandler {
 
     public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
         integrityEventSink = events

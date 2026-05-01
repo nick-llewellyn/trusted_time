@@ -47,7 +47,7 @@
 	<true/>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.trustedtime.backgroundsync</string>
+		<string>com.nicklewellyn.trusted_time_nts.backgroundsync</string>
 	</array>
 </dict>
 </plist>

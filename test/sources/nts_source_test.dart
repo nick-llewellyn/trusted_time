@@ -3,9 +3,9 @@ library;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nts/nts.dart';
-import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/monotonic_clock.dart';
-import 'package:trusted_time/src/sources/nts_source_io.dart';
+import 'package:trusted_time_nts/src/models.dart';
+import 'package:trusted_time_nts/src/monotonic_clock.dart';
+import 'package:trusted_time_nts/src/sources/nts_source_io.dart';
 
 class _FakeMonotonicClock implements MonotonicClock {
   _FakeMonotonicClock(this.value);

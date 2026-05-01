@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/exceptions.dart';
-import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/sync_engine.dart';
+import 'package:trusted_time_nts/src/exceptions.dart';
+import 'package:trusted_time_nts/src/models.dart';
+import 'package:trusted_time_nts/src/sync_engine.dart';
 
 class _FakeTimeSource implements TrustedTimeSource {
   _FakeTimeSource({

@@ -1,4 +1,4 @@
-package com.trustedtime.trusted_time
+package com.nicklewellyn.trusted_time_nts
 
 import android.content.BroadcastReceiver
 import android.content.Context

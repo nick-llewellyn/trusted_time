@@ -11,7 +11,7 @@ abstract interface class MonotonicClock {
 /// Production implementation using native OS kernel timers via
 /// platform channels.
 final class PlatformMonotonicClock implements MonotonicClock {
-  static const _channel = MethodChannel('trusted_time/monotonic');
+  static const _channel = MethodChannel('trusted_time_nts/monotonic');
 
   @override
   Future<int> uptimeMs() async {

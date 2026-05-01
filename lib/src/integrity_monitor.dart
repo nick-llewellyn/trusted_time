@@ -11,7 +11,7 @@ final class IntegrityMonitor {
 
   final MonotonicClock _clock;
   final _controller = StreamController<IntegrityEvent>.broadcast();
-  static const _channel = EventChannel('trusted_time/integrity');
+  static const _channel = EventChannel('trusted_time_nts/integrity');
 
   StreamSubscription<dynamic>? _nativeSub;
   TrustAnchor? _anchor;

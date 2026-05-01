@@ -1,21 +1,21 @@
 import FlutterMacOS
 import Foundation
 
-public class TrustedTimePlugin: NSObject, FlutterPlugin {
+public class TrustedTimeNtsPlugin: NSObject, FlutterPlugin {
 
     private var integrityEventSink: FlutterEventSink?
     private var clockObservers: [NSObjectProtocol] = []
 
     public static func register(with registrar: FlutterPluginRegistrar) {
-        let instance = TrustedTimePlugin()
+        let instance = TrustedTimeNtsPlugin()
 
-        FlutterMethodChannel(name: "trusted_time/monotonic", binaryMessenger: registrar.messenger)
+        FlutterMethodChannel(name: "trusted_time_nts/monotonic", binaryMessenger: registrar.messenger)
             .setMethodCallHandler(instance.handle)
 
-        FlutterMethodChannel(name: "trusted_time/background", binaryMessenger: registrar.messenger)
+        FlutterMethodChannel(name: "trusted_time_nts/background", binaryMessenger: registrar.messenger)
             .setMethodCallHandler(instance.handle)
 
-        FlutterEventChannel(name: "trusted_time/integrity", binaryMessenger: registrar.messenger)
+        FlutterEventChannel(name: "trusted_time_nts/integrity", binaryMessenger: registrar.messenger)
             .setStreamHandler(instance)
     }
 
@@ -31,7 +31,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     }
 }
 
-extension TrustedTimePlugin: FlutterStreamHandler {
+extension TrustedTimeNtsPlugin: FlutterStreamHandler {
 
     public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
         integrityEventSink = events

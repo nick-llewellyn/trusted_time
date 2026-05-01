@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/marzullo.dart';
+import 'package:trusted_time_nts/src/marzullo.dart';
 
 void main() {
   group('MarzulloEngine', () {

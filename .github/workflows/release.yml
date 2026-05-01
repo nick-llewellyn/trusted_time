@@ -5,7 +5,7 @@
 #   1. First publish must be done manually with `flutter pub publish`
 #      from a maintainer's machine -- pub.dev only exposes the trusted-
 #      publisher UI after a package exists.
-#   2. At https://pub.dev/packages/trusted_time/admin, enable
+#   2. At https://pub.dev/packages/trusted_time_nts/admin, enable
 #      automated publishing pointing at this repo and this exact
 #      workflow file path (`.github/workflows/release.yml`).
 #

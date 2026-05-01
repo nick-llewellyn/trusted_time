@@ -1,6 +1,6 @@
 import Flutter
 import UIKit
-import trusted_time
+import trusted_time_nts
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
@@ -12,7 +12,7 @@ import trusted_time
     // TrustedTime spins up for background syncs. Without this, plugins
     // such as flutter_secure_storage are unavailable in the BG isolate
     // and the persisted anchor write would fail.
-    TrustedTimePlugin.setPluginRegistrantCallback { engine in
+    TrustedTimeNtsPlugin.setPluginRegistrantCallback { engine in
       GeneratedPluginRegistrant.register(with: engine)
     }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)

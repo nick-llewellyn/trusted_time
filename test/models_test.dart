@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/exceptions.dart';
-import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/marzullo.dart';
+import 'package:trusted_time_nts/src/exceptions.dart';
+import 'package:trusted_time_nts/src/models.dart';
+import 'package:trusted_time_nts/src/marzullo.dart';
 
 void main() {
   group('TrustedTimeSyncException', () {

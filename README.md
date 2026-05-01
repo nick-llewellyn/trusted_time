@@ -1,11 +1,13 @@
-# TrustedTime
+# trusted_time_nts
 
-[![pub package](https://img.shields.io/pub/v/trusted_time.svg)](https://pub.dev/packages/trusted_time)
-[![Build Status](https://github.com/Sahad2701/trusted_time/actions/workflows/ci.yml/badge.svg)](https://github.com/Sahad2701/trusted_time/actions)
+[![pub package](https://img.shields.io/pub/v/trusted_time_nts.svg)](https://pub.dev/packages/trusted_time_nts)
+[![Build Status](https://github.com/nick-llewellyn/trusted_time/actions/workflows/ci.yml/badge.svg)](https://github.com/nick-llewellyn/trusted_time/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20Web%20%7C%20Desktop-blue.svg)](https://pub.dev/packages/trusted_time)
+[![Platforms](https://img.shields.io/badge/platforms-Android%20%7C%20iOS%20%7C%20Web%20%7C%20Desktop-blue.svg)](https://pub.dev/packages/trusted_time_nts)
 
-**TrustedTime** is a high-integrity, production-grade time guardian for Flutter. It provides a UTC clock anchored to hardware monotonic oscillators, ensuring your app's temporal logic remains correct even if the user manipulates the system clock. With optional Network Time Security ([NTS, RFC 8915](https://datatracker.ietf.org/doc/html/rfc8915)), the network samples themselves are also cryptographically authenticated end-to-end against on-path attackers.
+**trusted_time_nts** is a high-integrity, production-grade time guardian for Flutter. It provides a UTC clock anchored to hardware monotonic oscillators, ensuring your app's temporal logic remains correct even if the user manipulates the system clock. With optional Network Time Security ([NTS, RFC 8915](https://datatracker.ietf.org/doc/html/rfc8915)), the network samples themselves are also cryptographically authenticated end-to-end against on-path attackers.
+
+> This package is an independently maintained fork of [`trusted_time`](https://pub.dev/packages/trusted_time) by `Sahad2701`, published under a distinct name to enable an authenticated-NTP (NTS) integration path and a separate release cadence. See [CHANGELOG](CHANGELOG.md) for the consolidated initial-release notes and attribution.
 
 [Architecture](ARCHITECTURE.md) • [Contributing](CONTRIBUTING.md) • [Security](SECURITY.md) • [Changelog](CHANGELOG.md)
 
@@ -58,10 +60,10 @@ TrustedTime solves this by providing a **secure virtual clock** that:
 
 ## Installation
 
-Add **TrustedTime** to your `pubspec.yaml` via CLI:
+Add **trusted_time_nts** to your `pubspec.yaml` via CLI:
 
 ```bash
-flutter pub add trusted_time
+flutter pub add trusted_time_nts
 ```
 
 ### Platform-Specific Setup
@@ -208,7 +210,7 @@ When `enableBackgroundSync` is paired with a registered host-app callback, Trust
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:trusted_time/trusted_time.dart';
+import 'package:trusted_time_nts/trusted_time_nts.dart';
 
 @pragma('vm:entry-point')
 void trustedTimeBackgroundCallback() {
@@ -237,16 +239,16 @@ void main() async {
   ```xml
   <key>BGTaskSchedulerPermittedIdentifiers</key>
   <array>
-    <string>com.trustedtime.backgroundsync</string>
+    <string>com.nicklewellyn.trusted_time_nts.backgroundsync</string>
   </array>
   ```
 
   And register the host's plugin registrant onto the headless engine in `AppDelegate.swift`:
 
   ```swift
-  import trusted_time
+  import trusted_time_nts
   // inside application(_:didFinishLaunchingWithOptions:):
-  TrustedTimePlugin.setPluginRegistrantCallback { engine in
+  TrustedTimeNtsPlugin.setPluginRegistrantCallback { engine in
     GeneratedPluginRegistrant.register(with: engine)
   }
   ```

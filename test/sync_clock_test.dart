@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/monotonic_clock.dart';
+import 'package:trusted_time_nts/src/monotonic_clock.dart';
 
 void main() {
   group('SyncClock', () {

@@ -1,4 +1,4 @@
-#include "trusted_time_plugin.h"
+#include "trusted_time_nts_plugin.h"
 
 // windows.h is already included via the header (FIX W1), but listing it here
 // explicitly keeps the .cpp self-documenting and harmless (include guards
@@ -21,18 +21,18 @@
 // invokes then deletes.
 #define WM_POST_LAMBDA (WM_USER + 100)
 
-namespace trusted_time {
+namespace trusted_time_nts {
 
 // Registration
 // static
-void TrustedTimePlugin::RegisterWithRegistrar(
+void TrustedTimeNtsPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows *registrar) {
-  auto plugin = std::make_unique<TrustedTimePlugin>(registrar);
+  auto plugin = std::make_unique<TrustedTimeNtsPlugin>(registrar);
 
   // Monotonic clock channel.
   auto monotonic_channel =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-          registrar->messenger(), "trusted_time/monotonic",
+          registrar->messenger(), "trusted_time_nts/monotonic",
           &flutter::StandardMethodCodec::GetInstance());
   monotonic_channel->SetMethodCallHandler(
       [plugin_pointer = plugin.get()](const auto &call, auto result) {
@@ -44,7 +44,7 @@ void TrustedTimePlugin::RegisterWithRegistrar(
   // permissions this plugin does not hold).
   auto background_channel =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-          registrar->messenger(), "trusted_time/background",
+          registrar->messenger(), "trusted_time_nts/background",
           &flutter::StandardMethodCodec::GetInstance());
   background_channel->SetMethodCallHandler(
       [plugin_pointer = plugin.get()](const auto &call, auto result) {
@@ -54,7 +54,7 @@ void TrustedTimePlugin::RegisterWithRegistrar(
   // Integrity event channel.
   auto event_channel =
       std::make_unique<flutter::EventChannel<flutter::EncodableValue>>(
-          registrar->messenger(), "trusted_time/integrity",
+          registrar->messenger(), "trusted_time_nts/integrity",
           &flutter::StandardMethodCodec::GetInstance());
   event_channel->SetStreamHandler(
       std::make_unique<
@@ -74,12 +74,12 @@ void TrustedTimePlugin::RegisterWithRegistrar(
 }
 
 // Constructor / destructor
-TrustedTimePlugin::TrustedTimePlugin(flutter::PluginRegistrarWindows *registrar)
+TrustedTimeNtsPlugin::TrustedTimeNtsPlugin(flutter::PluginRegistrarWindows *registrar)
     : registrar_(registrar),
       // FIX W3/W4: initialise the alive flag to true.
       alive_(std::make_shared<bool>(true)) {}
 
-TrustedTimePlugin::~TrustedTimePlugin() {
+TrustedTimeNtsPlugin::~TrustedTimeNtsPlugin() {
   // FIX W3/W4: signal all in-flight lambdas that the plugin is gone.
   // Any WM_POST_LAMBDA messages still queued will check this flag before
   // touching plugin state, so they safely no-op. The lambda heap objects
@@ -92,7 +92,7 @@ TrustedTimePlugin::~TrustedTimePlugin() {
   }
 }
 
-void TrustedTimePlugin::HandleMethodCall(
+void TrustedTimeNtsPlugin::HandleMethodCall(
     const flutter::MethodCall<flutter::EncodableValue> &method_call,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   if (method_call.method_name() == "getPlatformVersion") {
@@ -115,7 +115,7 @@ void TrustedTimePlugin::HandleMethodCall(
 }
 
 std::unique_ptr<flutter::StreamHandlerError<flutter::EncodableValue>>
-TrustedTimePlugin::HandleOnListen(
+TrustedTimeNtsPlugin::HandleOnListen(
     const flutter::EncodableValue *arguments,
     std::unique_ptr<flutter::EventSink<flutter::EncodableValue>> &&events) {
   // FIX W2: guard against a second listen call while already subscribed.
@@ -167,7 +167,7 @@ TrustedTimePlugin::HandleOnListen(
 }
 
 std::unique_ptr<flutter::StreamHandlerError<flutter::EncodableValue>>
-TrustedTimePlugin::HandleOnCancel(const flutter::EncodableValue *arguments) {
+TrustedTimeNtsPlugin::HandleOnCancel(const flutter::EncodableValue *arguments) {
   // Drain the event sink first. Resetting it means any lambda that fires
   // between now and when the WM_POST_LAMBDA is dispatched will check alive_
   // and see event_sink_ is null, preventing a use-after-free.
@@ -181,7 +181,7 @@ TrustedTimePlugin::HandleOnCancel(const flutter::EncodableValue *arguments) {
 }
 
 // static
-LRESULT CALLBACK TrustedTimePlugin::SubclassWindowProc(HWND hWnd, UINT uMsg,
+LRESULT CALLBACK TrustedTimeNtsPlugin::SubclassWindowProc(HWND hWnd, UINT uMsg,
                                                        WPARAM wParam,
                                                        LPARAM lParam,
                                                        UINT_PTR uIdSubclass,
@@ -198,8 +198,8 @@ LRESULT CALLBACK TrustedTimePlugin::SubclassWindowProc(HWND hWnd, UINT uMsg,
   }
 
   if (uMsg == WM_TIMECHANGE) {
-    TrustedTimePlugin *plugin =
-        reinterpret_cast<TrustedTimePlugin *>(dwRefData);
+    TrustedTimeNtsPlugin *plugin =
+        reinterpret_cast<TrustedTimeNtsPlugin *>(dwRefData);
 
     if (plugin) {
       // FIX W3/W4: capture the alive flag by value (shared_ptr copy, ref-count
@@ -229,4 +229,4 @@ LRESULT CALLBACK TrustedTimePlugin::SubclassWindowProc(HWND hWnd, UINT uMsg,
   return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
-} // namespace trusted_time
+} // namespace trusted_time_nts
