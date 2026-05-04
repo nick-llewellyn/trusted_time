@@ -264,6 +264,102 @@ void main() {
     });
 
     test(
+      'distinguishes "all over-latency" from "no source responded"',
+      () async {
+        // Every source returns a sample (no fetch failures), but every
+        // RTT exceeds `maxLatency`. The `rawSamples.isEmpty` branch is
+        // shared with the genuine no-response case, so without the
+        // dedicated latency diagnostic the user would see "Every
+        // configured time source failed to respond." — misleading,
+        // because every source *did* respond. The error must instead
+        // name `maxLatency` as the cause and report the responded
+        // count so the caller can distinguish a network outage from a
+        // tightly configured latency budget.
+        const tightConfig = TrustedTimeConfig(
+          httpsSources: [],
+          minimumQuorum: 2,
+          maxLatency: Duration(milliseconds: 50),
+        );
+        final engine = SyncEngine.withSources(
+          config: tightConfig,
+          sources: [
+            _FakeTimeSource(
+              id: 'a',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: 200),
+            ),
+            _FakeTimeSource(
+              id: 'b',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: 500),
+            ),
+          ],
+        );
+
+        try {
+          await engine.sync();
+          fail('expected TrustedTimeSyncException');
+        } on TrustedTimeSyncException catch (e) {
+          // Must NOT use the no-response wording.
+          expect(e.message, isNot(contains('failed to respond')));
+          // Must name the latency cause and the configured budget.
+          expect(e.message, contains('maxLatency=50'));
+          // Must report how many sources responded.
+          expect(e.message, matches(RegExp(r'\b2\b.*responded')));
+        }
+      },
+    );
+
+    test(
+      'quorum-failure message includes latency drops alongside invalid count',
+      () async {
+        // Three sources: one good (eligible), one over-latency (dropped
+        // upstream), one negative-RTT (rejected as invalid). With
+        // `minimumQuorum=2` the engine fails at quorum and the
+        // diagnostic must surface BOTH causes so the caller can tell
+        // why their otherwise-healthy run came up short — a regression
+        // that elided latency drops would falsely suggest the only
+        // problem was malformed data.
+        const tightConfig = TrustedTimeConfig(
+          httpsSources: [],
+          minimumQuorum: 2,
+          maxLatency: Duration(milliseconds: 50),
+        );
+        final engine = SyncEngine.withSources(
+          config: tightConfig,
+          sources: [
+            _FakeTimeSource(
+              id: 'good',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: 20),
+            ),
+            _FakeTimeSource(
+              id: 'late',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: 500),
+            ),
+            _FakeTimeSource(
+              id: 'broken',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: -10),
+            ),
+          ],
+        );
+
+        try {
+          await engine.sync();
+          fail('expected TrustedTimeSyncException');
+        } on TrustedTimeSyncException catch (e) {
+          expect(e.message, contains('Quorum not reached'));
+          expect(e.message, matches(RegExp(r'\b1\b.*eligible')));
+          expect(e.message, matches(RegExp(r'1 rejected')));
+          expect(e.message, contains('1 dropped'));
+          expect(e.message, contains('maxLatency=50'));
+        }
+      },
+    );
+
+    test(
       'anchor uptime comes from a consensus participant, not a fast outlier',
       () async {
         // Three sources, minimumQuorum=2. `good1` and `good2` agree on
@@ -281,6 +377,13 @@ void main() {
         // estimation and persistence, so a regression that returned
         // good1's uptime but outlier's capturedAt would still corrupt
         // the anchor's wall reference.
+        //
+        // good1's RTT (50 ms) is strictly less than good2's (100 ms)
+        // so the lowest-RTT-among-participants rule has a unique
+        // winner — without that gap the test would silently rely on
+        // the reducer's tie-break order ("first wins on ties"), and a
+        // harmless tie-break refactor could regress the assertion
+        // even with outlier exclusion still working correctly.
         final good1WallAt = DateTime.utc(2024, 6, 15, 12, 0, 1);
         final good2WallAt = DateTime.utc(2024, 6, 15, 12, 0, 2);
         final outlierWallAt = DateTime.utc(2024, 6, 15, 12, 0, 3);
@@ -290,7 +393,7 @@ void main() {
             _FakeTimeSource(
               id: 'good1',
               networkUtc: baseTime,
-              roundTripTime: const Duration(milliseconds: 100),
+              roundTripTime: const Duration(milliseconds: 50),
               capturedMonotonicMs: 5000,
               capturedAt: good1WallAt,
             ),

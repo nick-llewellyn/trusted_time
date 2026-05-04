@@ -205,9 +205,11 @@ final class TimeSample {
   /// cannot be reached after rejection, the engine throws
   /// `TrustedTimeSyncException` with a diagnostic that reports the
   /// eligible-vs-rejected counts among samples that survived latency
-  /// filtering (e.g. `0 eligible (2 rejected as invalid)` when both
-  /// surviving samples violated the contract; samples dropped earlier
-  /// for exceeding `maxLatency` are not counted on either side).
+  /// filtering, alongside any latency drops (e.g.
+  /// `0 eligible (2 rejected as invalid; 1 dropped for exceeding
+  /// maxLatency=...)`). When *every* response was over-latency the
+  /// engine raises a dedicated message naming the latency cause,
+  /// rather than the generic "every source failed to respond".
   final Duration roundTripTime;
 
   /// Estimated uncertainty (half-RTT by default; sources with tighter

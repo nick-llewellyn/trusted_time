@@ -59,10 +59,25 @@ final class SyncEngine {
   /// Throws [TrustedTimeSyncException] if no sources respond or if quorum
   /// cannot be reached.
   Future<TrustAnchor> sync() async {
-    final rawSamples = await _queryConcurrently();
+    final query = await _queryConcurrently();
+    final rawSamples = query.eligible;
     if (rawSamples.isEmpty) {
-      throw const TrustedTimeSyncException(
-        'Every configured time source failed to respond.',
+      // No sample survived latency filtering. Two distinct failure
+      // modes share this branch and need different diagnostics: every
+      // source genuinely failed to respond (network down, all hosts
+      // unreachable), or every responding source returned a sample
+      // whose RTT exceeded `maxLatency` (network up but congested,
+      // or `maxLatency` set too tight). Conflating the two as "failed
+      // to respond" hides the real cause from callers.
+      if (query.responded == 0) {
+        throw const TrustedTimeSyncException(
+          'Every configured time source failed to respond.',
+        );
+      }
+      final word = query.responded == 1 ? 'source' : 'sources';
+      throw TrustedTimeSyncException(
+        '${query.responded} $word responded but every sample exceeded '
+        'maxLatency=${_config.maxLatency.inMilliseconds} ms.',
       );
     }
 
@@ -73,11 +88,10 @@ final class SyncEngine {
     // reduction below — pinning the anchor's monotonic/wall reference
     // to a sample that never participated in consensus. Filtering once
     // here keeps consensus, anchor selection, and the quorum-failure
-    // message in agreement on the eligible sample set. If every
-    // surviving sample is malformed the standard quorum-failure path
-    // below reports `0 eligible / N rejected`, which is more accurate
-    // than a dedicated message would be (sources dropped for exceeding
-    // `maxLatency` are already filtered upstream and never reach here).
+    // message in agreement on the eligible sample set. Latency drops
+    // are accounted for separately via `query.droppedForLatency` so
+    // that the quorum-failure message can surface the real cause when
+    // some sources were too late and some were malformed.
     final samples = rawSamples
         .where((s) => !s.roundTripTime.isNegative)
         .toList(growable: false);
@@ -97,14 +111,18 @@ final class SyncEngine {
     final result = _engine.resolve(marzulloSamples);
     if (result == null) {
       final eligible = samples.length;
-      final rejected = rawSamples.length - eligible;
+      final invalid = rawSamples.length - eligible;
+      final droppedForLatency = query.droppedForLatency;
       final eligibleWord = eligible == 1 ? 'sample' : 'samples';
-      final rejectedNote = rejected > 0
-          ? ' ($rejected rejected as invalid)'
-          : '';
+      final notes = <String>[
+        if (invalid > 0) '$invalid rejected as invalid',
+        if (droppedForLatency > 0)
+          '$droppedForLatency dropped for exceeding '
+              'maxLatency=${_config.maxLatency.inMilliseconds} ms',
+      ];
+      final notesPart = notes.isEmpty ? '' : ' (${notes.join('; ')})';
       throw TrustedTimeSyncException(
-        'Quorum not reached: got $eligible eligible $eligibleWord'
-        '$rejectedNote, '
+        'Quorum not reached: got $eligible eligible $eligibleWord$notesPart, '
         'need ${_config.minimumQuorum} for intersection.',
       );
     }
@@ -144,16 +162,34 @@ final class SyncEngine {
   }
 
   /// Queries all sources concurrently and filters by max latency.
-  Future<List<TimeSample>> _queryConcurrently() async {
+  ///
+  /// Returns the latency-eligible samples alongside two diagnostic
+  /// counts: how many sources actually returned a [TimeSample]
+  /// (regardless of latency), and how many of those responses were
+  /// dropped for exceeding [TrustedTimeConfig.maxLatency]. Both counts
+  /// are needed by [sync] to distinguish "no source responded" from
+  /// "every source responded but every sample was too late" — the two
+  /// failure modes share an empty `eligible` list but warrant
+  /// different diagnostics.
+  Future<({List<TimeSample> eligible, int responded, int droppedForLatency})>
+  _queryConcurrently() async {
     final results = await Future.wait(_sources.map(_querySafe));
-    return results
-        .whereType<TimeSample>()
-        .where(
-          (s) =>
-              s.roundTripTime.inMilliseconds <=
-              _config.maxLatency.inMilliseconds,
-        )
-        .toList();
+    final responses = results.whereType<TimeSample>().toList(growable: false);
+    final maxLatencyMs = _config.maxLatency.inMilliseconds;
+    final eligible = <TimeSample>[];
+    var droppedForLatency = 0;
+    for (final s in responses) {
+      if (s.roundTripTime.inMilliseconds <= maxLatencyMs) {
+        eligible.add(s);
+      } else {
+        droppedForLatency++;
+      }
+    }
+    return (
+      eligible: eligible,
+      responded: responses.length,
+      droppedForLatency: droppedForLatency,
+    );
   }
 
   /// Wraps a source query in a try-catch with timeout enforcement.
