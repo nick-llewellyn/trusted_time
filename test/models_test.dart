@@ -72,6 +72,9 @@ void main() {
       final t = DateTime.utc(2024, 1, 1, 12);
       final tMs = t.millisecondsSinceEpoch;
 
+      // A=[t-10, t+10] (centre t, ±10 ms) and B=[t+10, t+30] (centre t+20,
+      // ±10 ms) touch at exactly t+10. Closed-interval semantics requires
+      // depth=2 at the touch, collapsing consensus to that single point.
       final result = engine.resolve([
         SourceSample(sourceId: 'a', utc: t, roundTripMs: 20),
         SourceSample(
@@ -83,6 +86,9 @@ void main() {
 
       expect(result, isNotNull);
       expect(result!.participantCount, 2);
+      expect(result.utc.millisecondsSinceEpoch, tMs + 10);
+      // Zero-width consensus floored at 1 ms.
+      expect(result.uncertaintyMs, 1);
     });
 
     test('non-overlapping intervals return null', () {

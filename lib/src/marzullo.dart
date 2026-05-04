@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 
 @immutable
@@ -43,8 +45,8 @@ final class MarzulloEngine {
       final center = s.utc.millisecondsSinceEpoch;
       final u = s.uncertaintyMs;
       endpoints
-        ..add(_Endpoint(center - u, _EndpointType.lower))
-        ..add(_Endpoint(center + u, _EndpointType.upper));
+        ..add(_Endpoint(center - u, _EndpointType.lower, s))
+        ..add(_Endpoint(center + u, _EndpointType.upper, s));
     }
 
     // Sort by time; at equal times, lower endpoints come first so overlap
@@ -60,20 +62,28 @@ final class MarzulloEngine {
     int? bestEnd;
     var overlap = 0;
 
+    final activeSourceIds = <String>{};
+    var bestSourceIdCount = 0;
+
     for (final ep in endpoints) {
       if (ep.type == _EndpointType.lower) {
         overlap++;
+        activeSourceIds.add(ep.sample.sourceId);
         if (overlap > best) {
           best = overlap;
           bestStart = ep.timeMs;
           // #7: Reset bestEnd when we find a new maximum overlap depth.
           // The correct closing endpoint hasn't been encountered yet.
           bestEnd = null;
+          // Snapshot unique-source-ID count at the best moment so
+          // participantCount reports authorities, not raw overlap depth.
+          bestSourceIdCount = activeSourceIds.length;
         }
       } else {
         if (overlap == best && bestStart != null && bestEnd == null) {
           bestEnd = ep.timeMs;
         }
+        activeSourceIds.remove(ep.sample.sourceId);
         overlap--;
       }
     }
@@ -87,18 +97,20 @@ final class MarzulloEngine {
 
     return ConsensusResult(
       utc: DateTime.fromMillisecondsSinceEpoch(midMs, isUtc: true),
-      uncertaintyMs: uncertaintyMs,
-      participantCount: best,
+      // 1 ms floor prevents downstream divide-by-zero and signals the
+      // best-case precision honestly even when intervals coincide exactly.
+      uncertaintyMs: max(1, uncertaintyMs),
+      participantCount: bestSourceIdCount,
     );
   }
 }
 
 enum _EndpointType { lower, upper }
 
-/// #17: Removed dead `sourceId` field — not used by the algorithm.
 final class _Endpoint {
-  const _Endpoint(this.timeMs, this.type);
+  const _Endpoint(this.timeMs, this.type, this.sample);
 
   final int timeMs;
   final _EndpointType type;
+  final SourceSample sample;
 }

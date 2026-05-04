@@ -78,5 +78,63 @@ void main() {
 
       expect(result, isNull);
     });
+
+    test('closed-interval semantics: touching intervals share endpoint', () {
+      // A=[base-10, base+10] (centre base, ±10 ms) and B=[base+10, base+30]
+      // (centre base+20, ±10 ms) touch at exactly base+10. Closed-interval
+      // semantics requires depth=2 at that point, so consensus is the
+      // zero-width interval anchored at the touch.
+      final result = engine.resolve([
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(
+          sourceId: 'b',
+          utc: DateTime.fromMillisecondsSinceEpoch(baseMs + 20, isUtc: true),
+          roundTripMs: 20,
+        ),
+      ]);
+
+      expect(result, isNotNull);
+      expect(result!.participantCount, 2);
+      // Midpoint of the zero-width consensus window sits exactly on the
+      // shared endpoint.
+      expect(result.utc.millisecondsSinceEpoch, baseMs + 10);
+      // Zero-width raw interval is floored to 1 ms by the engine.
+      expect(result.uncertaintyMs, 1);
+    });
+
+    test('participantCount reports unique source IDs, not overlap depth', () {
+      // Two samples from the same source overlap heavily. The raw overlap
+      // depth at the intersection is 2, but only one authority is present.
+      final result = engine.resolve([
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(
+          sourceId: 'a',
+          utc: baseTime.add(const Duration(milliseconds: 2)),
+          roundTripMs: 20,
+        ),
+        SourceSample(
+          sourceId: 'b',
+          utc: baseTime.add(const Duration(milliseconds: 1)),
+          roundTripMs: 20,
+        ),
+      ]);
+
+      expect(result, isNotNull);
+      // Three samples overlap at the centre but only two unique sources.
+      expect(result!.participantCount, 2);
+    });
+
+    test('uncertainty is floored at 1 ms when intervals coincide exactly', () {
+      // Two samples with identical centres and identical roundTrips collapse
+      // to a zero-width consensus interval. The 1 ms floor prevents
+      // downstream divide-by-zero and honestly signals best-case precision.
+      final result = engine.resolve([
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 0),
+        SourceSample(sourceId: 'b', utc: baseTime, roundTripMs: 0),
+      ]);
+
+      expect(result, isNotNull);
+      expect(result!.uncertaintyMs, 1);
+    });
   });
 }
