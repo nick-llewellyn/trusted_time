@@ -4,17 +4,27 @@ import 'package:flutter/foundation.dart';
 
 @immutable
 final class SourceSample {
+  /// Constructs a sample for the Marzullo sweep.
+  ///
+  /// [uncertaintyMs] defaults to `roundTripMs ~/ 2` when omitted, which
+  /// matches the historical RTT/2 derivation used by `HttpsSource` and
+  /// the test fakes. Custom sources (notably NTS, which has access to
+  /// the server's stratum + dispersion fields) may pass a tighter
+  /// explicit value: `TimeSample.uncertainty` is plumbed through
+  /// `SyncEngine` to this parameter so consensus intervals honour the
+  /// advertised bound rather than falling back to a generic round-trip
+  /// estimate.
   const SourceSample({
     required this.sourceId,
     required this.utc,
     required this.roundTripMs,
-  });
+    int? uncertaintyMs,
+  }) : uncertaintyMs = uncertaintyMs ?? roundTripMs ~/ 2;
 
   final String sourceId;
   final DateTime utc;
   final int roundTripMs;
-
-  int get uncertaintyMs => roundTripMs ~/ 2;
+  final int uncertaintyMs;
 }
 
 @immutable
@@ -57,16 +67,20 @@ final class MarzulloEngine {
 
   ConsensusResult? resolve(List<SourceSample> samples) {
     // Defence in depth: SyncEngine is expected to drop samples whose
-    // source reports a negative round-trip time before reaching this
-    // method (so anchor selection, error messaging, and consensus all
-    // see the same filtered set). The check is repeated here because
-    // MarzulloEngine takes SourceSample directly and any future caller
-    // that bypasses SyncEngine must not be able to crash the sweep:
-    // a negative roundTripMs produces a negative uncertaintyMs which
-    // inverts the interval, sorts the upper endpoint before its lower
-    // endpoint, and would otherwise hit `activeSourceCounts[id]!` for
-    // an id that was never inserted.
-    final valid = samples.where((s) => s.roundTripMs >= 0).toList();
+    // source reports a negative round-trip time or negative uncertainty
+    // before reaching this method (so anchor selection, error messaging,
+    // and consensus all see the same filtered set). The check is repeated
+    // here because MarzulloEngine takes SourceSample directly and any
+    // future caller that bypasses SyncEngine must not be able to crash
+    // the sweep: a negative `uncertaintyMs` inverts the interval, sorts
+    // the upper endpoint before its lower endpoint, and would otherwise
+    // hit `activeSourceCounts[id]!` for an id that was never inserted.
+    // RTT is checked alongside because it survives into anchor selection
+    // (lowest-RTT-among-participants) and a negative value there would
+    // win unfairly.
+    final valid = samples
+        .where((s) => s.roundTripMs >= 0 && s.uncertaintyMs >= 0)
+        .toList();
     if (valid.length < minimumQuorum) return null;
 
     final endpoints = <_Endpoint>[];

@@ -205,15 +205,29 @@ final class TimeSample {
   /// cannot be reached after rejection, the engine throws
   /// `TrustedTimeSyncException` with a diagnostic that reports the
   /// eligible-vs-rejected counts among samples that survived latency
-  /// filtering, alongside any latency drops (e.g.
+  /// filtering, alongside any latency drops and timeouts (e.g.
   /// `0 eligible (2 rejected as invalid; 1 dropped for exceeding
-  /// maxLatency=...)`). When *every* response was over-latency the
-  /// engine raises a dedicated message naming the latency cause,
+  /// maxLatency=...; 1 timed out at maxLatency=...)`). When *every*
+  /// response was over-latency the engine raises a dedicated message
+  /// describing the cause: a pure-timeout run reports
+  /// `N source(s) timed out after maxLatency=X ms`, a pure post-hoc
+  /// run reports `N source(s) responded but every sample exceeded
+  /// maxLatency=X ms`, and a mixed run breaks down both buckets —
   /// rather than the generic "every source failed to respond".
   final Duration roundTripTime;
 
-  /// Estimated uncertainty (half-RTT by default; sources with tighter
-  /// internal estimates may report less).
+  /// Confidence half-width of [networkUtc].
+  ///
+  /// Defaults to half of [roundTripTime] for built-in sources, but a
+  /// custom source with access to tighter information (e.g. NTS
+  /// exposing the server's stratum and root dispersion) may report a
+  /// smaller value. The sync engine plumbs this directly into the
+  /// Marzullo consensus interval `[networkUtc - uncertainty,
+  /// networkUtc + uncertainty]` — it does **not** re-derive intervals
+  /// from [roundTripTime], so an advertised tighter bound is honoured
+  /// during the intersection sweep. Must be non-negative; samples
+  /// reporting a negative uncertainty are rejected alongside negative-
+  /// RTT samples for the same defence-in-depth reasons.
   final Duration uncertainty;
 
   /// Device monotonic uptime in milliseconds, captured the instant the

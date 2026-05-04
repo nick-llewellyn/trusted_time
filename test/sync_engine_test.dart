@@ -8,16 +8,31 @@ class _FakeTimeSource implements TrustedTimeSource {
     required String id,
     required this.networkUtc,
     this.roundTripTime = const Duration(milliseconds: 20),
+    this.uncertainty,
     this.capturedMonotonicMs = 1000,
     this.shouldThrow = false,
+    this.fetchDelay,
     this.capturedAt,
   }) : _id = id;
 
   final String _id;
   final DateTime networkUtc;
   final Duration roundTripTime;
+  // Optional explicit override for `TimeSample.uncertainty`. When null,
+  // falls back to the historical RTT/2 derivation so existing tests that
+  // do not care about uncertainty wiring keep their original behaviour.
+  // Tests that exercise the "uncertainty drives Marzullo intervals"
+  // contract pass a value tighter than RTT/2 and assert that the
+  // engine honours it.
+  final Duration? uncertainty;
   final int capturedMonotonicMs;
   final bool shouldThrow;
+  // Optional pre-response delay. Tests that need to exercise the real
+  // `Future.timeout(maxLatency)` path in `_querySafe` set this to a
+  // value greater than `maxLatency` so `fetch()` is killed before
+  // returning a `TimeSample` — the production case for built-in
+  // HTTPS/NTS sources when the network is slow but reachable.
+  final Duration? fetchDelay;
   // Optional fixed capturedAt so tests asserting `anchor.wallMs` can pin
   // a deterministic value. When null, falls back to wall-clock now() for
   // tests that only care about `uptimeMs` / consensus shape.
@@ -29,10 +44,15 @@ class _FakeTimeSource implements TrustedTimeSource {
   @override
   Future<TimeSample> fetch() async {
     if (shouldThrow) throw Exception('fake source failure');
+    if (fetchDelay != null) {
+      await Future<void>.delayed(fetchDelay!);
+    }
     return TimeSample(
       networkUtc: networkUtc,
       roundTripTime: roundTripTime,
-      uncertainty: Duration(milliseconds: roundTripTime.inMilliseconds ~/ 2),
+      uncertainty:
+          uncertainty ??
+          Duration(milliseconds: roundTripTime.inMilliseconds ~/ 2),
       capturedMonotonicMs: capturedMonotonicMs,
       source: TimeSourceMetadata(kind: TimeSourceKind.custom, id: _id),
       capturedAt: capturedAt ?? DateTime.now().toUtc(),
@@ -356,6 +376,116 @@ void main() {
           expect(e.message, contains('1 dropped'));
           expect(e.message, contains('maxLatency=50'));
         }
+      },
+    );
+
+    test(
+      'real Future.timeout drops produce the over-latency diagnostic',
+      () async {
+        // Production case: built-in HTTPS/NTS sources are wrapped in
+        // `source.fetch().timeout(maxLatency)` inside `_querySafe`, so
+        // a genuinely slow network round trip is killed by the timeout
+        // *before* a TimeSample is returned. Without splitting timeouts
+        // from generic failures the engine reports "Every configured
+        // time source failed to respond." — false, because the sources
+        // were reachable but slower than the configured budget. The
+        // fake source delays past `maxLatency` so the real timeout
+        // path fires (no synthetic high-RTT TimeSample), pinning the
+        // production-case fix rather than just the post-hoc filter
+        // that the previous regression covered.
+        const tightConfig = TrustedTimeConfig(
+          httpsSources: [],
+          minimumQuorum: 2,
+          maxLatency: Duration(milliseconds: 50),
+        );
+        final engine = SyncEngine.withSources(
+          config: tightConfig,
+          sources: [
+            _FakeTimeSource(
+              id: 'slow1',
+              networkUtc: baseTime,
+              fetchDelay: const Duration(milliseconds: 200),
+            ),
+            _FakeTimeSource(
+              id: 'slow2',
+              networkUtc: baseTime,
+              fetchDelay: const Duration(milliseconds: 200),
+            ),
+          ],
+        );
+
+        try {
+          await engine.sync();
+          fail('expected TrustedTimeSyncException');
+        } on TrustedTimeSyncException catch (e) {
+          expect(e.message, isNot(contains('failed to respond')));
+          expect(e.message, contains('timed out'));
+          expect(e.message, contains('maxLatency=50'));
+          expect(e.message, matches(RegExp(r'\b2\b.*timed out')));
+        }
+      },
+    );
+
+    test(
+      'TimeSample.uncertainty drives Marzullo intervals, not RTT/2',
+      () async {
+        // Custom-source contract from `TimeSample.uncertainty` dartdoc:
+        // sources with tighter internal estimates may report less than
+        // RTT/2 (NTS exposes server stratum + dispersion, for example).
+        // Previously `sync()` rebuilt Marzullo intervals from
+        // `roundTripTime.inMilliseconds`, silently ignoring an advertised
+        // tighter bound. This test pins the new wiring by constructing a
+        // scenario where RTT/2 would include `c` in consensus but the
+        // advertised uncertainty excludes it:
+        //
+        //   - a@base, RTT=100 ms, uncertainty=10 ms (RTT/2 would be 50)
+        //   - b@base, RTT=200 ms, uncertainty=10 ms (RTT/2 would be 100)
+        //   - c@base+50, RTT=20 ms, uncertainty=10 ms (RTT/2 would be 10)
+        //
+        // With RTT/2: a=[base-50,+50], b=[base-100,+100], c=[base+40,+60].
+        // a∩b∩c = [base+40,+50] — three participants, lowest-RTT pick = c
+        // (RTT 20), so anchor.uptimeMs would be c's monotonic (1).
+        //
+        // With advertised uncertainty: a=b=[base-10,+10], c=[base+40,+60].
+        // a∩b = [base-10,+10], c disjoint — two participants, lowest-RTT
+        // pick = a (RTT 100 < b's 200), so anchor.uptimeMs == 5000.
+        //
+        // The assertion `expect(anchor.uptimeMs, 5000)` therefore fails
+        // both under the previous RTT/2 derivation (would be 1) and
+        // under any future regression that re-derives intervals from
+        // RTT instead of reading `TimeSample.uncertainty`.
+        final aWallAt = DateTime.utc(2024, 6, 15, 12, 0, 1);
+        final engine = SyncEngine.withSources(
+          config: config,
+          sources: [
+            _FakeTimeSource(
+              id: 'a',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: 100),
+              uncertainty: const Duration(milliseconds: 10),
+              capturedMonotonicMs: 5000,
+              capturedAt: aWallAt,
+            ),
+            _FakeTimeSource(
+              id: 'b',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: 200),
+              uncertainty: const Duration(milliseconds: 10),
+              capturedMonotonicMs: 9000,
+            ),
+            _FakeTimeSource(
+              id: 'c',
+              networkUtc: baseTime.add(const Duration(milliseconds: 50)),
+              roundTripTime: const Duration(milliseconds: 20),
+              uncertainty: const Duration(milliseconds: 10),
+              capturedMonotonicMs: 1,
+            ),
+          ],
+        );
+
+        final anchor = await engine.sync();
+        expect(anchor.uptimeMs, 5000);
+        expect(anchor.wallMs, aWallAt.millisecondsSinceEpoch);
       },
     );
 
