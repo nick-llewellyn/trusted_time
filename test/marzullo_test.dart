@@ -140,6 +140,33 @@ void main() {
       expect(result!.uncertaintyMs, 1);
     });
 
+    test('uncertainty is floored at 1 ms for sub-2 ms non-zero windows', () {
+      // The floor applies to any consensus window narrower than 2 ms,
+      // not just zero-width intersections, because `(bestEnd - bestStart)
+      // ~/ 2` truncates a 1 ms-wide raw window to 0 before `max(1, ...)`
+      // runs. The previous test pinned the zero-width case; this one
+      // pins the 1 ms-wide non-zero case so a future refactor that
+      // narrowed the floor to `width == 0` would visibly regress here.
+      //   a: centre base+0 ms, rtt 4 ms -> [base-2, base+2]
+      //   b: centre base+3 ms, rtt 4 ms -> [base+1, base+5]
+      //   intersection: [base+1, base+2] -> raw width 1 ms, midpoint
+      //   base+1 (after `(1 + 2) ~/ 2`).
+      final result = engine.resolve([
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 4),
+        SourceSample(
+          sourceId: 'b',
+          utc: baseTime.add(const Duration(milliseconds: 3)),
+          roundTripMs: 4,
+        ),
+      ]);
+
+      expect(result, isNotNull);
+      // Confirm the raw window is genuinely 1 ms wide (not zero) by
+      // pinning the truncated midpoint.
+      expect(result!.utc.millisecondsSinceEpoch, baseMs + 1);
+      expect(result.uncertaintyMs, 1);
+    });
+
     test('participantCount tracks source multiplicity across reopened '
         'intervals', () {
       // Source `a` contributes two intervals; a1 closes well before a2
@@ -241,6 +268,57 @@ void main() {
       expect(result!.participantCount, 3);
       // Best window is [base+22, base+28]; midpoint at base+25.
       expect(result.utc.millisecondsSinceEpoch, baseMs + 25);
+    });
+
+    test('participants are identified by midpoint containment, not sweep '
+        'snapshot at bestStart', () {
+      // Same-source handoff during the winning window: a1 is active at
+      // bestStart but its interval ends *before* the consensus midpoint
+      // while a2 (also from `a`) covers the rest of the window. Because
+      // a2 is still active when a1 closes, the multiset sweep does not
+      // see the unique-source count drop, so a snapshot taken at
+      // bestStart would include {a1, a2, b}. Midpoint containment
+      // correctly excludes a1 (its interval does not contain the
+      // midpoint) and reports {a2, b} as participants — exactly the
+      // samples whose reported UTC is consistent with consensus.
+      //
+      //   a1: centre base+0 ms, rtt  2 ms -> [base-1, base+1 ]
+      //   a2: centre base+5 ms, rtt 10 ms -> [base+0, base+10]
+      //   b : centre base+5 ms, rtt 10 ms -> [base+0, base+10]
+      //
+      // Sweep: best=2 unique sources at base+0 (bestStart). a1 closes
+      // at base+1 — multiset 'a' drops 2->1, unique stays 2. a2 and b
+      // close together at base+10 — unique drops below 2 -> bestEnd.
+      // midpoint = (0 + 10) / 2 = 5; uncertaintyMs = 5.
+      // Containment check `|s.utc - 5| <= s.u`:
+      //   a1: |0 - 5| = 5 > 1  -> EXCLUDED
+      //   a2: |5 - 5| = 0 <= 5 -> INCLUDED
+      //   b : |5 - 5| = 0 <= 5 -> INCLUDED
+      //
+      // A regression that snapshotted active samples at bestStart (or
+      // any moment in [bestStart, midpoint)) would still pass tests
+      // that only check participant *count*, because unique-source
+      // count is 2 throughout the window. This test pins identity,
+      // not just count.
+      final a1 = SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 2);
+      final a2 = SourceSample(
+        sourceId: 'a',
+        utc: baseTime.add(const Duration(milliseconds: 5)),
+        roundTripMs: 10,
+      );
+      final b = SourceSample(
+        sourceId: 'b',
+        utc: baseTime.add(const Duration(milliseconds: 5)),
+        roundTripMs: 10,
+      );
+      final result = engine.resolve([a1, a2, b]);
+
+      expect(result, isNotNull);
+      expect(result!.utc.millisecondsSinceEpoch, baseMs + 5);
+      expect(result.participantCount, 2);
+      // Identity pin: a snapshot at bestStart would include a1 here.
+      expect(result.participants, {a2, b});
+      expect(result.participants.contains(a1), isFalse);
     });
 
     test('returns null when raw overlap meets quorum but unique sources '

@@ -10,6 +10,7 @@ class _FakeTimeSource implements TrustedTimeSource {
     this.roundTripTime = const Duration(milliseconds: 20),
     this.capturedMonotonicMs = 1000,
     this.shouldThrow = false,
+    this.capturedAt,
   }) : _id = id;
 
   final String _id;
@@ -17,6 +18,10 @@ class _FakeTimeSource implements TrustedTimeSource {
   final Duration roundTripTime;
   final int capturedMonotonicMs;
   final bool shouldThrow;
+  // Optional fixed capturedAt so tests asserting `anchor.wallMs` can pin
+  // a deterministic value. When null, falls back to wall-clock now() for
+  // tests that only care about `uptimeMs` / consensus shape.
+  final DateTime? capturedAt;
 
   @override
   String get id => _id;
@@ -30,7 +35,7 @@ class _FakeTimeSource implements TrustedTimeSource {
       uncertainty: Duration(milliseconds: roundTripTime.inMilliseconds ~/ 2),
       capturedMonotonicMs: capturedMonotonicMs,
       source: TimeSourceMetadata(kind: TimeSourceKind.custom, id: _id),
-      capturedAt: DateTime.now().toUtc(),
+      capturedAt: capturedAt ?? DateTime.now().toUtc(),
     );
   }
 }
@@ -271,7 +276,14 @@ void main() {
         // and pin `anchor.uptimeMs` to its capture monotonic — a
         // capture instant that had nothing to say about consensus UTC.
         // With participant filtering the anchor must come from `good1`
-        // (lowest RTT among participants).
+        // (lowest RTT among participants), pinning *both* uptimeMs and
+        // wallMs to good1's capture instants — wallMs covers offline
+        // estimation and persistence, so a regression that returned
+        // good1's uptime but outlier's capturedAt would still corrupt
+        // the anchor's wall reference.
+        final good1WallAt = DateTime.utc(2024, 6, 15, 12, 0, 1);
+        final good2WallAt = DateTime.utc(2024, 6, 15, 12, 0, 2);
+        final outlierWallAt = DateTime.utc(2024, 6, 15, 12, 0, 3);
         final engine = SyncEngine.withSources(
           config: config,
           sources: [
@@ -280,24 +292,28 @@ void main() {
               networkUtc: baseTime,
               roundTripTime: const Duration(milliseconds: 100),
               capturedMonotonicMs: 5000,
+              capturedAt: good1WallAt,
             ),
             _FakeTimeSource(
               id: 'good2',
               networkUtc: baseTime.add(const Duration(milliseconds: 20)),
               roundTripTime: const Duration(milliseconds: 100),
               capturedMonotonicMs: 9000,
+              capturedAt: good2WallAt,
             ),
             _FakeTimeSource(
               id: 'outlier',
               networkUtc: baseTime.add(const Duration(seconds: 1)),
               roundTripTime: const Duration(milliseconds: 10),
               capturedMonotonicMs: 1,
+              capturedAt: outlierWallAt,
             ),
           ],
         );
 
         final anchor = await engine.sync();
         expect(anchor.uptimeMs, 5000);
+        expect(anchor.wallMs, good1WallAt.millisecondsSinceEpoch);
       },
     );
 
@@ -315,7 +331,13 @@ void main() {
         // current contract) excludes the outlier even though another
         // sample from the same id participated in consensus, so the
         // anchor must come from the lowest-RTT *participant* (`good`,
-        // monotonic 5000).
+        // monotonic 5000). wallMs is asserted alongside uptimeMs so a
+        // regression that re-admitted the same-id outlier into the
+        // anchor pick can't sneak through by only producing the right
+        // monotonic.
+        final dupGoodWallAt = DateTime.utc(2024, 6, 15, 12, 0, 1);
+        final dupBadWallAt = DateTime.utc(2024, 6, 15, 12, 0, 2);
+        final goodWallAt = DateTime.utc(2024, 6, 15, 12, 0, 3);
         final engine = SyncEngine.withSources(
           config: config,
           sources: [
@@ -324,24 +346,28 @@ void main() {
               networkUtc: baseTime,
               roundTripTime: const Duration(milliseconds: 100),
               capturedMonotonicMs: 7000,
+              capturedAt: dupGoodWallAt,
             ),
             _FakeTimeSource(
               id: 'dup',
               networkUtc: baseTime.add(const Duration(seconds: 1)),
               roundTripTime: const Duration(milliseconds: 10),
               capturedMonotonicMs: 1,
+              capturedAt: dupBadWallAt,
             ),
             _FakeTimeSource(
               id: 'good',
               networkUtc: baseTime.add(const Duration(milliseconds: 20)),
               roundTripTime: const Duration(milliseconds: 50),
               capturedMonotonicMs: 5000,
+              capturedAt: goodWallAt,
             ),
           ],
         );
 
         final anchor = await engine.sync();
         expect(anchor.uptimeMs, 5000);
+        expect(anchor.wallMs, goodWallAt.millisecondsSinceEpoch);
       },
     );
   });
