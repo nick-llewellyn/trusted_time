@@ -197,6 +197,19 @@ final class TimeSample {
   final DateTime networkUtc;
 
   /// Measured round-trip latency to acquire this sample.
+  ///
+  /// Must be non-negative. The sync engine drops samples that violate
+  /// this contract from both the Marzullo intersection and the
+  /// lowest-RTT anchor reduction; if enough remaining sources still
+  /// agree, the sync succeeds without the malformed sample. If quorum
+  /// cannot be reached after rejection, the engine throws
+  /// `TrustedTimeSyncException` with a diagnostic that reports the
+  /// eligible-vs-rejected counts among samples that survived latency
+  /// filtering, alongside any latency drops (e.g.
+  /// `0 eligible (2 rejected as invalid; 1 dropped for exceeding
+  /// maxLatency=...)`). When *every* response was over-latency the
+  /// engine raises a dedicated message naming the latency cause,
+  /// rather than the generic "every source failed to respond".
   final Duration roundTripTime;
 
   /// Estimated uncertainty (half-RTT by default; sources with tighter
@@ -245,6 +258,10 @@ abstract interface class TrustedTimeSource {
   /// the response is received (before any aggregation) and should throw
   /// on failure rather than returning stale or estimated values — the
   /// sync engine handles failures gracefully.
+  ///
+  /// The returned [TimeSample.roundTripTime] must be non-negative; the
+  /// sync engine treats samples with a negative round-trip time as
+  /// invalid and excludes them from consensus and anchor selection.
   Future<TimeSample> fetch();
 }
 

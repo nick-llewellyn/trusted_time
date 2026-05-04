@@ -47,19 +47,58 @@ final class SyncEngine {
   ///
   /// Queries all configured time sources in parallel, filters by maximum
   /// latency, and uses Marzullo's algorithm to find the consensus interval.
-  /// The anchor's uptime is pinned to the lowest-RTT sample's captured
-  /// monotonic reference, avoiding drift from a post-aggregation re-sample.
+  /// The anchor's uptime is pinned to the captured monotonic reference of
+  /// the lowest-RTT *consensus participant* — the lowest-RTT sample whose
+  /// uncertainty interval contained the consensus midpoint. Filtering on
+  /// participation (rather than on every eligible response) keeps a fast
+  /// outlier whose interval missed the intersection from winning the
+  /// reduction, even when another sample from the same source did
+  /// participate. Pinning at receipt avoids drift from a post-aggregation
+  /// re-sample.
   ///
   /// Throws [TrustedTimeSyncException] if no sources respond or if quorum
   /// cannot be reached.
   Future<TrustAnchor> sync() async {
-    final samples = await _queryConcurrently();
-    if (samples.isEmpty) {
-      throw const TrustedTimeSyncException(
-        'Every configured time source failed to respond.',
+    final query = await _queryConcurrently();
+    final rawSamples = query.eligible;
+    if (rawSamples.isEmpty) {
+      // No sample survived latency filtering. Two distinct failure
+      // modes share this branch and need different diagnostics: every
+      // source genuinely failed to respond (network down, all hosts
+      // unreachable), or every responding source returned a sample
+      // whose RTT exceeded `maxLatency` (network up but congested,
+      // or `maxLatency` set too tight). Conflating the two as "failed
+      // to respond" hides the real cause from callers.
+      if (query.responded == 0) {
+        throw const TrustedTimeSyncException(
+          'Every configured time source failed to respond.',
+        );
+      }
+      final word = query.responded == 1 ? 'source' : 'sources';
+      throw TrustedTimeSyncException(
+        '${query.responded} $word responded but every sample exceeded '
+        'maxLatency=${_config.maxLatency.inMilliseconds} ms.',
       );
     }
 
+    // Reject samples whose source returned a negative round-trip time:
+    // the documented `TimeSample.roundTripTime` contract is non-negative,
+    // and admitting a violator would (a) inject a negative uncertainty
+    // into the Marzullo sweep and crash it, and (b) win the lowest-RTT
+    // reduction below — pinning the anchor's monotonic/wall reference
+    // to a sample that never participated in consensus. Filtering once
+    // here keeps consensus, anchor selection, and the quorum-failure
+    // message in agreement on the eligible sample set. Latency drops
+    // are accounted for separately via `query.droppedForLatency` so
+    // that the quorum-failure message can surface the real cause when
+    // some sources were too late and some were malformed.
+    final samples = rawSamples
+        .where((s) => !s.roundTripTime.isNegative)
+        .toList(growable: false);
+
+    // Build SourceSamples 1:1 with `samples` so that participating
+    // SourceSample instances returned by Marzullo can be mapped back
+    // to their TimeSamples by parallel index.
     final marzulloSamples = [
       for (final s in samples)
         SourceSample(
@@ -71,16 +110,39 @@ final class SyncEngine {
 
     final result = _engine.resolve(marzulloSamples);
     if (result == null) {
+      final eligible = samples.length;
+      final invalid = rawSamples.length - eligible;
+      final droppedForLatency = query.droppedForLatency;
+      final eligibleWord = eligible == 1 ? 'sample' : 'samples';
+      final notes = <String>[
+        if (invalid > 0) '$invalid rejected as invalid',
+        if (droppedForLatency > 0)
+          '$droppedForLatency dropped for exceeding '
+              'maxLatency=${_config.maxLatency.inMilliseconds} ms',
+      ];
+      final notesPart = notes.isEmpty ? '' : ' (${notes.join('; ')})';
       throw TrustedTimeSyncException(
-        'Quorum not reached: got ${samples.length} samples, '
+        'Quorum not reached: got $eligible eligible $eligibleWord$notesPart, '
         'need ${_config.minimumQuorum} for intersection.',
       );
     }
 
-    // Pin uptime to the lowest-RTT sample's captured monotonic — this is
-    // the tightest reference available, recorded the instant its response
-    // was received (not after slower siblings resolved).
-    final best = samples.reduce(
+    // Pin uptime to the lowest-RTT consensus participant — the tightest
+    // reference available among samples whose intervals were *inside*
+    // the Marzullo intersection, recorded the instant the response was
+    // received (not after slower siblings resolved). Filtering on
+    // SourceSample identity (rather than `source.id`) is what keeps a
+    // fast outlier — a sample whose interval missed the intersection
+    // entirely — from winning the lowest-RTT pick, even when another
+    // sample from the same source did participate (duplicate config,
+    // future burst sampling, etc.). By construction the participant
+    // set is non-empty (`minimumQuorum >= 1`) and every participant
+    // came from `marzulloSamples`, so the filtered list is non-empty.
+    final participantSamples = <TimeSample>[
+      for (var i = 0; i < samples.length; i++)
+        if (result.participants.contains(marzulloSamples[i])) samples[i],
+    ];
+    final best = participantSamples.reduce(
       (a, b) => a.roundTripTime <= b.roundTripTime ? a : b,
     );
 
@@ -100,16 +162,34 @@ final class SyncEngine {
   }
 
   /// Queries all sources concurrently and filters by max latency.
-  Future<List<TimeSample>> _queryConcurrently() async {
+  ///
+  /// Returns the latency-eligible samples alongside two diagnostic
+  /// counts: how many sources actually returned a [TimeSample]
+  /// (regardless of latency), and how many of those responses were
+  /// dropped for exceeding [TrustedTimeConfig.maxLatency]. Both counts
+  /// are needed by [sync] to distinguish "no source responded" from
+  /// "every source responded but every sample was too late" — the two
+  /// failure modes share an empty `eligible` list but warrant
+  /// different diagnostics.
+  Future<({List<TimeSample> eligible, int responded, int droppedForLatency})>
+  _queryConcurrently() async {
     final results = await Future.wait(_sources.map(_querySafe));
-    return results
-        .whereType<TimeSample>()
-        .where(
-          (s) =>
-              s.roundTripTime.inMilliseconds <=
-              _config.maxLatency.inMilliseconds,
-        )
-        .toList();
+    final responses = results.whereType<TimeSample>().toList(growable: false);
+    final maxLatencyMs = _config.maxLatency.inMilliseconds;
+    final eligible = <TimeSample>[];
+    var droppedForLatency = 0;
+    for (final s in responses) {
+      if (s.roundTripTime.inMilliseconds <= maxLatencyMs) {
+        eligible.add(s);
+      } else {
+        droppedForLatency++;
+      }
+    }
+    return (
+      eligible: eligible,
+      responded: responses.length,
+      droppedForLatency: droppedForLatency,
+    );
   }
 
   /// Wraps a source query in a try-catch with timeout enforcement.
