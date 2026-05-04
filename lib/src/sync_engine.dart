@@ -66,31 +66,25 @@ final class SyncEngine {
     final query = await _queryConcurrently();
     final rawSamples = query.eligible;
     if (rawSamples.isEmpty) {
-      // No sample survived latency filtering. Four distinct failure
-      // modes share this branch and need separate diagnostics so the
-      // caller can attribute the cause:
-      //
-      //   - every source failed outright (no TimeSample, no timeout):
-      //     network outage, DNS, refused connection.
-      //   - every source returned a sample over the latency budget
-      //     (post-hoc filter only): synthetic / instrumented sources,
-      //     or sources that don't honour the configured timeout.
-      //   - every source was killed by `Future.timeout(maxLatency)`
-      //     before producing a sample (timeout only): the common
-      //     production case for built-in HTTPS/NTS sources when the
-      //     network is slow but reachable.
-      //   - mixed: some timed out, some responded over budget.
-      //
-      // Conflating any of these as "failed to respond" — as the engine
-      // did historically — misleads callers about why a sync that was
-      // really an over-budget run came up empty.
-      if (query.responded == 0 && query.timedOut == 0) {
+      // No sample survived latency filtering. The empty-eligible path
+      // is reached by combinations of three disjoint outcome buckets
+      // (`responded`, `timedOut`, `failed`) and needs separate
+      // diagnostics so the caller can attribute the cause without
+      // parsing free-form prose. Conflating any of these as "failed
+      // to respond" — as the engine did historically — misleads
+      // callers about why a sync that was really an over-budget run
+      // came up empty, and silently re-attributing inner / outright
+      // failures to a budget timeout is just as bad. The four
+      // categorical branches below pin pure-fail, pure-timeout, and
+      // pure post-hoc cases by name, and a single multi-cause branch
+      // breaks down whichever buckets contributed for the rest.
+      if (query.responded == 0 && query.timedOut == 0 && query.failed > 0) {
         throw const TrustedTimeSyncException(
           'Every configured time source failed to respond.',
         );
       }
       final maxLatencyMs = _config.maxLatency.inMilliseconds;
-      if (query.responded == 0) {
+      if (query.responded == 0 && query.failed == 0) {
         // Pure-timeout case.
         final word = query.timedOut == 1 ? 'source' : 'sources';
         throw TrustedTimeSyncException(
@@ -98,22 +92,31 @@ final class SyncEngine {
           '$maxLatencyMs ms.',
         );
       }
-      if (query.timedOut == 0) {
-        // Pure post-hoc-filter case.
+      if (query.timedOut == 0 && query.failed == 0) {
+        // Pure post-hoc-filter case (every source returned a
+        // TimeSample, every RTT exceeded the budget).
         final word = query.responded == 1 ? 'source' : 'sources';
         throw TrustedTimeSyncException(
           '${query.responded} $word responded but every sample exceeded '
           'maxLatency=$maxLatencyMs ms.',
         );
       }
-      // Mixed case: cite both buckets so the caller can attribute the
-      // latency cause without parsing free-form prose.
-      final total = query.responded + query.timedOut;
+      // Multi-cause case: cite each bucket that contributed so the
+      // caller can attribute the cause without guessing whether a
+      // diagnosis omitted one.
+      final notes = <String>[
+        if (query.timedOut > 0)
+          '${query.timedOut} timed out at maxLatency='
+              '$maxLatencyMs ms',
+        if (query.responded > 0)
+          '${query.responded} responded with RTT > $maxLatencyMs ms',
+        if (query.failed > 0) '${query.failed} failed before responding',
+      ];
+      final total = query.timedOut + query.responded + query.failed;
       final word = total == 1 ? 'source' : 'sources';
       throw TrustedTimeSyncException(
-        '$total $word exceeded maxLatency=$maxLatencyMs ms '
-        '(${query.timedOut} timed out, ${query.responded} responded with '
-        'RTT > $maxLatencyMs ms).',
+        'No source produced an in-budget sample: $total $word '
+        '(${notes.join(', ')}).',
       );
     }
 
@@ -208,27 +211,34 @@ final class SyncEngine {
 
   /// Queries all sources concurrently and partitions outcomes.
   ///
-  /// Returns the latency-eligible samples alongside three diagnostic
-  /// counts: how many sources returned a [TimeSample] under the latency
-  /// budget (`responded`), how many returned a sample whose RTT exceeded
-  /// `maxLatency` (`droppedForLatency`), and how many were killed by the
-  /// per-fetch `timeout(maxLatency)` before producing a sample at all
-  /// (`timedOut`). All three counts are needed by [sync] to distinguish
-  /// the failure modes that otherwise share an empty `eligible` list:
+  /// Returns the latency-eligible samples alongside four diagnostic
+  /// counts that together account for every source the engine queried:
   ///
-  /// - everything failed outright (DNS, refused, parse error) → no
-  ///   timeouts, no responses.
-  /// - everything responded but with RTT > budget → post-hoc filter only.
-  /// - everything was killed at the budget by [Future.timeout] → timeout
-  ///   only; this is the *common* production case for built-in HTTPS/NTS
-  ///   sources and was previously misreported as "failed to respond".
-  /// - mixed → both counts non-zero.
+  /// - `responded`: returned a [TimeSample] regardless of its RTT.
+  ///   Includes both samples accepted into `eligible` and samples
+  ///   rejected by the `maxLatency` post-hoc filter.
+  /// - `droppedForLatency`: of those `responded`, how many had an RTT
+  ///   strictly greater than `maxLatency` and were therefore excluded
+  ///   from `eligible`. Always `<= responded`.
+  /// - `timedOut`: how many were killed by the outer
+  ///   `timeout(maxLatency)` wrapper in [_querySafe] before producing a
+  ///   sample. Distinct from `TimeoutException`s raised *inside*
+  ///   `source.fetch()` (e.g. an [HttpsSource]'s own per-request 3 s
+  ///   limit) — those are bucketed as `failed`.
+  /// - `failed`: returned no sample for any other reason (DNS, refused
+  ///   connection, parse error, an inner `TimeoutException`, etc.).
+  ///
+  /// `responded + timedOut + failed == _sources.length` by construction.
+  /// Without the `failed` bucket, mixed runs like "one source timed out,
+  /// one threw" would silently fall into the pure-timeout branch in
+  /// [sync] and misattribute the cause.
   Future<
     ({
       List<TimeSample> eligible,
       int responded,
       int droppedForLatency,
       int timedOut,
+      int failed,
     })
   >
   _queryConcurrently() async {
@@ -238,6 +248,7 @@ final class SyncEngine {
     var responded = 0;
     var droppedForLatency = 0;
     var timedOut = 0;
+    var failed = 0;
     for (final outcome in outcomes) {
       final sample = outcome.sample;
       if (sample != null) {
@@ -249,6 +260,8 @@ final class SyncEngine {
         }
       } else if (outcome.timedOut) {
         timedOut++;
+      } else {
+        failed++;
       }
     }
     return (
@@ -256,32 +269,46 @@ final class SyncEngine {
       responded: responded,
       droppedForLatency: droppedForLatency,
       timedOut: timedOut,
+      failed: failed,
     );
   }
 
   /// Wraps a source query in a try-catch with timeout enforcement.
   ///
   /// Returns a record carrying either the sample (if `fetch()` resolved
-  /// inside `maxLatency`) or a `timedOut` flag distinguishing the
-  /// `TimeoutException` raised by [Future.timeout] from arbitrary other
-  /// failures (DNS, refused connection, parse error, etc.). The split
-  /// matters for diagnostics: a slow real-world fetch is killed by the
-  /// timeout *before* a `TimeSample` is produced, so a generic null
-  /// return would leave `_queryConcurrently` unable to distinguish "the
-  /// network was too slow for the configured budget" from "every source
-  /// failed to respond" — and callers would see the latter when the
-  /// real cause was the former.
+  /// inside `maxLatency`) or a `timedOut` flag indicating the *outer*
+  /// `maxLatency` wrapper fired. The split matters for diagnostics: a
+  /// slow real-world fetch is killed by the timeout *before* a
+  /// `TimeSample` is produced, so a generic null return would leave
+  /// [_queryConcurrently] unable to distinguish "the network was too
+  /// slow for the configured budget" from "every source failed to
+  /// respond" — and callers would see the latter when the real cause
+  /// was the former.
+  ///
+  /// `TimeoutException`s thrown *inside* `source.fetch()` (for example,
+  /// [HttpsSource]'s hard-coded 3 s per-request HTTP timeouts) are
+  /// explicitly *not* attributed to the outer `maxLatency` wrapper —
+  /// otherwise, when `maxLatency` is larger than the inner deadline,
+  /// the diagnostic would name the configured budget as the cause when
+  /// a different timeout actually fired. To distinguish the two, the
+  /// outer `.timeout(...)` raises a private sentinel
+  /// ([_OuterTimeoutException]) via its `onTimeout` callback; only that
+  /// sentinel maps to `timedOut: true`. Inner `TimeoutException`s fall
+  /// through to the generic catch-all, joining the `failed` bucket.
   Future<({TimeSample? sample, bool timedOut})> _querySafe(
     TrustedTimeSource source,
   ) async {
     try {
-      final sample = await source.fetch().timeout(_config.maxLatency);
+      final sample = await source.fetch().timeout(
+        _config.maxLatency,
+        onTimeout: () => throw const _OuterTimeoutException(),
+      );
       return (sample: sample, timedOut: false);
-    } on TimeoutException catch (e) {
+    } on _OuterTimeoutException {
       if (kDebugMode) {
         debugPrint(
           '[TrustedTime] Source ${source.id} exceeded maxLatency='
-          '${_config.maxLatency.inMilliseconds} ms: $e',
+          '${_config.maxLatency.inMilliseconds} ms (outer timeout fired).',
         );
       }
       return (sample: null, timedOut: true);
@@ -292,4 +319,14 @@ final class SyncEngine {
       return (sample: null, timedOut: false);
     }
   }
+}
+
+/// Sentinel raised by [SyncEngine._querySafe]'s outer
+/// `timeout(maxLatency)` to distinguish a budget-induced kill from a
+/// `TimeoutException` raised inside `source.fetch()` (e.g. an
+/// [HttpsSource]'s own per-request HTTP timeouts). Only this sentinel
+/// is treated as a `maxLatency` timeout in the diagnostic split; inner
+/// `TimeoutException`s fall through to the generic failure bucket.
+final class _OuterTimeoutException implements Exception {
+  const _OuterTimeoutException();
 }

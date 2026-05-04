@@ -377,5 +377,59 @@ void main() {
         expect(result!.participantCount, 2);
       },
     );
+
+    test('rejects samples with negative explicit uncertaintyMs', () {
+      // `SourceSample.uncertaintyMs` is now an independent constructor
+      // parameter that defaults to `roundTripMs ~/ 2` when omitted, so
+      // a caller can supply a sane RTT alongside a negative explicit
+      // uncertainty — exactly what the SyncEngine does when wiring
+      // through `TimeSample.uncertainty`. A negative `uncertaintyMs`
+      // would invert the Marzullo interval (upper endpoint < lower
+      // endpoint) and crash the sweep on the same null-asserted map
+      // access that motivates the negative-RTT filter, so the
+      // defence-in-depth check on `uncertaintyMs >= 0` must reject it
+      // independently. With one good sample + quorum=2 the run must
+      // return null cleanly rather than throw.
+      final result = engine.resolve([
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(
+          sourceId: 'b',
+          utc: baseTime,
+          roundTripMs: 100,
+          uncertaintyMs: -5,
+        ),
+      ]);
+
+      expect(result, isNull);
+    });
+
+    test(
+      'ignores negative-uncertaintyMs samples but resolves on remaining valid ones',
+      () {
+        // Companion to the negative-RTT positive case: a malformed
+        // explicit uncertainty must not poison the consensus when
+        // enough other samples agree. Pairs `a` (RTT 20, default
+        // uncertainty 10) with `b` (RTT 30, default uncertainty 15);
+        // the third sample carries a negative explicit uncertainty
+        // and is filtered. Result must contain 2 participants.
+        final result = engine.resolve([
+          SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+          SourceSample(
+            sourceId: 'b',
+            utc: baseTime.add(const Duration(milliseconds: 5)),
+            roundTripMs: 30,
+          ),
+          SourceSample(
+            sourceId: 'c',
+            utc: baseTime,
+            roundTripMs: 50,
+            uncertaintyMs: -1,
+          ),
+        ]);
+
+        expect(result, isNotNull);
+        expect(result!.participantCount, 2);
+      },
+    );
   });
 }

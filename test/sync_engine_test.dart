@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time_nts/src/exceptions.dart';
 import 'package:trusted_time_nts/src/models.dart';
@@ -11,6 +13,7 @@ class _FakeTimeSource implements TrustedTimeSource {
     this.uncertainty,
     this.capturedMonotonicMs = 1000,
     this.shouldThrow = false,
+    this.throwInnerTimeout = false,
     this.fetchDelay,
     this.capturedAt,
   }) : _id = id;
@@ -27,6 +30,16 @@ class _FakeTimeSource implements TrustedTimeSource {
   final Duration? uncertainty;
   final int capturedMonotonicMs;
   final bool shouldThrow;
+  // Throws a `TimeoutException` *inside* `fetch()` rather than from the
+  // outer `.timeout(maxLatency)` wrapper in `_querySafe`. The two
+  // exception types reach `_querySafe` identically, so the engine must
+  // distinguish them by sentinel rather than by type — exercised by
+  // the "inner TimeoutException is bucketed as failed, not timed out"
+  // regression. Real-world equivalent: `HttpsSource` enforces its own
+  // hard-coded 3 s per-request HTTP timeouts independent of
+  // `maxLatency`, and a slow probe under a generous `maxLatency`
+  // would surface that inner timeout if the engine were not careful.
+  final bool throwInnerTimeout;
   // Optional pre-response delay. Tests that need to exercise the real
   // `Future.timeout(maxLatency)` path in `_querySafe` set this to a
   // value greater than `maxLatency` so `fetch()` is killed before
@@ -44,6 +57,9 @@ class _FakeTimeSource implements TrustedTimeSource {
   @override
   Future<TimeSample> fetch() async {
     if (shouldThrow) throw Exception('fake source failure');
+    if (throwInnerTimeout) {
+      throw TimeoutException('inner per-request timeout');
+    }
     if (fetchDelay != null) {
       await Future<void>.delayed(fetchDelay!);
     }
@@ -425,6 +441,154 @@ void main() {
         }
       },
     );
+
+    test(
+      'inner TimeoutException is bucketed as failed, not as a maxLatency timeout',
+      () async {
+        // Real-world equivalent: `HttpsSource` enforces its own hard-
+        // coded 3 s per-request HTTP timeouts independent of the
+        // configured `maxLatency`. When `maxLatency` is more generous
+        // than the inner deadline (e.g. 30 s configured, 3 s inner),
+        // a slow probe will surface a `TimeoutException` from inside
+        // `source.fetch()` — *not* from the outer `.timeout(maxLatency)`
+        // wrapper. Catching every `TimeoutException` as a
+        // `maxLatency` event would attribute the cause to the wrong
+        // budget. The engine distinguishes outer from inner timeouts
+        // via a private sentinel raised in the outer `onTimeout`
+        // callback, so only that sentinel maps to `timedOut`; inner
+        // `TimeoutException`s fall through to the generic `failed`
+        // bucket. This regression pins both the categorisation and
+        // the message wording.
+        const tightConfig = TrustedTimeConfig(
+          httpsSources: [],
+          minimumQuorum: 2,
+          maxLatency: Duration(milliseconds: 50),
+        );
+        final engine = SyncEngine.withSources(
+          config: tightConfig,
+          sources: [
+            _FakeTimeSource(
+              id: 'inner1',
+              networkUtc: baseTime,
+              throwInnerTimeout: true,
+            ),
+            _FakeTimeSource(
+              id: 'inner2',
+              networkUtc: baseTime,
+              throwInnerTimeout: true,
+            ),
+          ],
+        );
+
+        try {
+          await engine.sync();
+          fail('expected TrustedTimeSyncException');
+        } on TrustedTimeSyncException catch (e) {
+          // Two sources both threw `TimeoutException` *inside* fetch().
+          // They must reach the pure-failure branch ("Every configured
+          // time source failed to respond.") — not the pure-timeout
+          // branch which would falsely name maxLatency=50.
+          expect(e.message, contains('failed to respond'));
+          expect(e.message, isNot(contains('timed out')));
+          expect(e.message, isNot(contains('maxLatency=50')));
+        }
+      },
+    );
+
+    test(
+      'mixed timeout + outright failure produces multi-cause diagnostic',
+      () async {
+        // One source genuinely times out at the outer maxLatency
+        // wrapper, one source throws outright before responding. With
+        // only the {responded, droppedForLatency, timedOut} buckets a
+        // generic-exception drop would silently fall into the
+        // pure-timeout branch ("N source(s) timed out after
+        // maxLatency=...") and misattribute the half of the outage
+        // that wasn't a budget timeout to the budget. The engine now
+        // tracks `failed` as a separate bucket, and any combination
+        // of {timed out, responded over-budget, failed} reaches a
+        // multi-cause diagnostic that names each contributing bucket.
+        const tightConfig = TrustedTimeConfig(
+          httpsSources: [],
+          minimumQuorum: 2,
+          maxLatency: Duration(milliseconds: 50),
+        );
+        final engine = SyncEngine.withSources(
+          config: tightConfig,
+          sources: [
+            _FakeTimeSource(
+              id: 'slow',
+              networkUtc: baseTime,
+              fetchDelay: const Duration(milliseconds: 200),
+            ),
+            _FakeTimeSource(
+              id: 'broken',
+              networkUtc: baseTime,
+              shouldThrow: true,
+            ),
+          ],
+        );
+
+        try {
+          await engine.sync();
+          fail('expected TrustedTimeSyncException');
+        } on TrustedTimeSyncException catch (e) {
+          // Multi-cause framing — neither a pure-timeout nor a pure-
+          // failure message would name both buckets.
+          expect(e.message, contains('No source produced an in-budget sample'));
+          expect(e.message, contains('1 timed out'));
+          expect(e.message, contains('1 failed before responding'));
+          expect(e.message, contains('maxLatency=50'));
+          // Must NOT use the pure-timeout wording that would falsely
+          // attribute the entire outage to a budget timeout.
+          expect(
+            e.message,
+            isNot(matches(RegExp(r'\b1 source timed out after maxLatency'))),
+          );
+        }
+      },
+    );
+
+    test('rejects samples with negative TimeSample.uncertainty', () async {
+      // The non-negative-uncertainty contract is enforced separately
+      // from non-negative RTT — a custom source can violate one
+      // without the other (e.g. a misconfigured source advertising
+      // a negative dispersion alongside a sane RTT). Without an
+      // explicit filter on `TimeSample.uncertainty` in the
+      // SyncEngine, a negative value would (a) inject a negative
+      // interval width into the Marzullo sweep and crash it, and
+      // (b) win the lowest-RTT reduction, pinning the anchor's
+      // monotonic/wall reference to a sample that should never have
+      // participated. With one good source + minimumQuorum=2 the
+      // run must throw, and the diagnostic must surface the
+      // rejection count rather than silently elide the malformed
+      // sample.
+      final engine = SyncEngine.withSources(
+        config: config,
+        sources: [
+          _FakeTimeSource(
+            id: 'good',
+            networkUtc: baseTime,
+            roundTripTime: const Duration(milliseconds: 100),
+          ),
+          _FakeTimeSource(
+            id: 'bad',
+            networkUtc: baseTime,
+            roundTripTime: const Duration(milliseconds: 100),
+            uncertainty: const Duration(milliseconds: -1),
+          ),
+        ],
+      );
+
+      try {
+        await engine.sync();
+        fail('expected TrustedTimeSyncException');
+      } on TrustedTimeSyncException catch (e) {
+        expect(e.message, contains('Quorum not reached'));
+        expect(e.message, matches(RegExp(r'\b1\b.*eligible')));
+        expect(e.message, matches(RegExp(r'1 rejected')));
+      }
+    });
 
     test(
       'TimeSample.uncertainty drives Marzullo intervals, not RTT/2',

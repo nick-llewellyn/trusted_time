@@ -207,13 +207,17 @@ final class TimeSample {
   /// eligible-vs-rejected counts among samples that survived latency
   /// filtering, alongside any latency drops and timeouts (e.g.
   /// `0 eligible (2 rejected as invalid; 1 dropped for exceeding
-  /// maxLatency=...; 1 timed out at maxLatency=...)`). When *every*
-  /// response was over-latency the engine raises a dedicated message
-  /// describing the cause: a pure-timeout run reports
-  /// `N source(s) timed out after maxLatency=X ms`, a pure post-hoc
-  /// run reports `N source(s) responded but every sample exceeded
-  /// maxLatency=X ms`, and a mixed run breaks down both buckets —
-  /// rather than the generic "every source failed to respond".
+  /// maxLatency=...; 1 timed out at maxLatency=...)`). When *no*
+  /// sample reaches the eligible set the engine raises a categorical
+  /// diagnostic naming the cause: a pure outright-failure run reports
+  /// `Every configured time source failed to respond.`, a pure-timeout
+  /// run reports `N source(s) timed out after maxLatency=X ms`, and a
+  /// pure post-hoc run reports `N source(s) responded but every sample
+  /// exceeded maxLatency=X ms`. Runs whose outcomes span more than one
+  /// of `{timed out, responded over-budget, failed before responding}`
+  /// produce a multi-cause message that breaks down each contributing
+  /// bucket — so a mixed "one timed out / one threw" outage is never
+  /// silently rebadged as a pure-timeout cause.
   final Duration roundTripTime;
 
   /// Confidence half-width of [networkUtc].
