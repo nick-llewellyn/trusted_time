@@ -73,5 +73,11 @@ This trades a hand-rolled multi-platform crypto shim for a single Rust dependenc
 
 - **Option B (sibling `trusted_time_nts` package).** Rejected: the conditional-import stub achieves Option B's goal (web users unaffected) without splitting distribution. The sibling-package design adds version-coupling overhead for no practical isolation benefit, since the platform-channel layer is already part of the core package's plugin manifest.
 - **Pure-Dart TLS 1.3 implementation.** Rejected: enormous scope, ongoing security maintenance burden, and would still need an exporter implementation. Not viable.
-- **`package:basic_utils`-style approach using existing pub crypto.** Rejected: the Dart pub ecosystem does not currently provide a TLS 1.3 client with exporter access.
+- **`package:basic_utils`-style approach using existing pub crypto.** Rejected: the Dart pub ecosystem does not currently provide a TLS 1.3 client with exporter access. (See "Postscript: upstream 2.0.0 outcome" below for independent confirmation.)
 - **Defer NTS indefinitely; rely on HTTPS-`Date`.** Rejected: HTTPS-`Date` gives only second-level granularity and the server can lie freely (TLS authenticates server identity, not the `Date` header content). NTS is the only path to authenticated sub-second time on native.
+
+## Postscript: upstream 2.0.0 outcome (2026-05-04)
+
+Upstream `Sahad2701/trusted_time` shipped 2.0.0 on 2026-04-29 with NTS support implemented as **pure-Dart NTS-KE on top of `package:cryptography`** — the `package:basic_utils`-style approach this ADR rejected on RFC 5705 grounds. Upstream's own [CHANGELOG 2.0.0](https://github.com/Sahad2701/trusted_time/blob/main/CHANGELOG.md) labels the result a **"Cryptographic Preview"**, which is consistent with the constraint identified above: `dart:io.SecureSocket` does not expose the TLS keying-material exporter, and `package:cryptography` operates above the TLS layer, so a pure-Dart NTS-KE client running on the standard `dart:io` TLS stack cannot derive RFC 8915 §4.3-compliant C2S/S2C AEAD keys.
+
+This independent confirmation is treated as evidence that the rejection was sound rather than a reason to revisit it. The strategic implications (continue independent development; do not rebase onto upstream 2.0.0) are captured in ADR 0005. The technical exchange with the upstream maintainer about the RFC 5705 constraint and the FFI / Native-Assets trade-off is on [`Sahad2701/trusted_time#11`](https://github.com/Sahad2701/trusted_time/issues/11).
