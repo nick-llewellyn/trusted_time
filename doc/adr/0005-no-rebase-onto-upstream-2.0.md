@@ -3,7 +3,8 @@
 - Status: **Accepted**
 - Date: 2026-05-04
 - Tracking issue: `trusted_time-k5p`
-- Related: ADR 0001 (NTS integration strategy), ADR 0003 (removing clear-text NTP)
+- Supersedes: portions of ADR 0001 §"Alternatives considered" that rejected a sibling `trusted_time_nts` package on the assumption upstream would adopt the conditional-import-stub integration in core. After upstream shipped 2.0.0 along a different path (see Context and the postscript appended to ADR 0001), the sibling-package shape is the operational reality this ADR records — not a freshly-chosen distribution strategy.
+- Related: ADR 0001 (NTS integration strategy — historical context for the original RFC 5705 finding and the rejected alternatives), ADR 0003 (removing clear-text NTP)
 - Upstream outreach: [`Sahad2701/trusted_time#11`](https://github.com/Sahad2701/trusted_time/issues/11)
 
 ## Context
@@ -23,7 +24,7 @@ A side-by-side audit of the two implementations was performed on 2026-05-04. Con
 | Flutter floor | `>=3.29.0` | `>=3.38.0` |
 | HTTPS-Date default fan-out | 2 operators | 4 operators (ADR 0003) |
 | Confidence scoring, `requireSecure`, `TimeInterval`/`TimeSample` split, `timerfd`, `WM_TIMECHANGE` | Present | Independently present |
-| Adaptive thresholds, exponential cooldown, stability guard | Present | Cherry-pick candidates (`-381`, `-33l`, `-ads`) |
+| Adaptive thresholds, exponential cooldown, stability guard | Present | Cherry-pick candidates (`trusted_time-381`, `trusted_time-33l`, `trusted_time-ads`) |
 
 Upstream's "Cryptographic Preview" label is the load-bearing signal. RFC 8915 §4.3 requires that C2S/S2C AEAD keys be derived from the NTS-KE TLS session via the RFC 5705 keying-material exporter. `dart:io.SecureSocket` does not expose that exporter, and `package:cryptography` operates above the TLS layer, so a pure-Dart NTS-KE client running on the standard `dart:io` TLS stack cannot derive RFC-compliant keying material. ADR 0001 §"Alternatives considered" rejected this exact path for that reason.
 
