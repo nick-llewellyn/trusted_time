@@ -62,13 +62,19 @@ final class MarzulloEngine {
     int? bestEnd;
     var overlap = 0;
 
-    final activeSourceIds = <String>{};
+    // Multiset of currently-active source IDs. A plain Set would lose
+    // multiplicity if the same source contributes overlapping samples:
+    // when one of those samples closes its upper endpoint, set.remove
+    // would drop the source even though another of its intervals is
+    // still active, under-counting any later best-moment snapshot.
+    final activeSourceCounts = <String, int>{};
     var bestSourceIdCount = 0;
 
     for (final ep in endpoints) {
+      final id = ep.sample.sourceId;
       if (ep.type == _EndpointType.lower) {
         overlap++;
-        activeSourceIds.add(ep.sample.sourceId);
+        activeSourceCounts.update(id, (c) => c + 1, ifAbsent: () => 1);
         if (overlap > best) {
           best = overlap;
           bestStart = ep.timeMs;
@@ -77,18 +83,29 @@ final class MarzulloEngine {
           bestEnd = null;
           // Snapshot unique-source-ID count at the best moment so
           // participantCount reports authorities, not raw overlap depth.
-          bestSourceIdCount = activeSourceIds.length;
+          bestSourceIdCount = activeSourceCounts.length;
         }
       } else {
         if (overlap == best && bestStart != null && bestEnd == null) {
           bestEnd = ep.timeMs;
         }
-        activeSourceIds.remove(ep.sample.sourceId);
+        final newCount = activeSourceCounts[id]! - 1;
+        if (newCount == 0) {
+          activeSourceCounts.remove(id);
+        } else {
+          activeSourceCounts[id] = newCount;
+        }
         overlap--;
       }
     }
 
-    if (best < minimumQuorum || bestStart == null || bestEnd == null) {
+    // Gate on unique-source count, not raw overlap depth: minimumQuorum
+    // names distinct authorities, so two overlapping samples from one
+    // source must not satisfy a quorum of two. bestSourceIdCount is
+    // always <= best, making this strictly stronger than `best < ...`.
+    if (bestSourceIdCount < minimumQuorum ||
+        bestStart == null ||
+        bestEnd == null) {
       return null;
     }
 

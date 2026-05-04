@@ -136,5 +136,71 @@ void main() {
       expect(result, isNotNull);
       expect(result!.uncertaintyMs, 1);
     });
+
+    test(
+      'participantCount tracks source multiplicity across reopened '
+      'intervals',
+      () {
+        // Source `a` contributes two intervals; a1 closes well before a2
+        // does, but `a` is still active at the moment a new maximum
+        // overlap is reached. A naive Set<String> would drop `a` when a1
+        // closes (because Set has no notion of multiplicity), causing the
+        // snapshot at the best moment to under-count distinct sources.
+        //   a1: centre base+2  ms, rtt  4 ms -> [base+0,  base+4 ]
+        //   a2: centre base+11 ms, rtt 16 ms -> [base+3,  base+19]
+        //   b : centre base+11 ms, rtt  8 ms -> [base+7,  base+15]
+        //   c : centre base+9  ms, rtt  2 ms -> [base+8,  base+10]
+        // New best=3 at base+8 with three unique sources truly active.
+        final result = engine.resolve([
+          SourceSample(
+            sourceId: 'a',
+            utc: baseTime.add(const Duration(milliseconds: 2)),
+            roundTripMs: 4,
+          ),
+          SourceSample(
+            sourceId: 'a',
+            utc: baseTime.add(const Duration(milliseconds: 11)),
+            roundTripMs: 16,
+          ),
+          SourceSample(
+            sourceId: 'b',
+            utc: baseTime.add(const Duration(milliseconds: 11)),
+            roundTripMs: 8,
+          ),
+          SourceSample(
+            sourceId: 'c',
+            utc: baseTime.add(const Duration(milliseconds: 9)),
+            roundTripMs: 2,
+          ),
+        ]);
+
+        expect(result, isNotNull);
+        expect(result!.participantCount, 3);
+        // Best window is [base+8, base+10]; midpoint at base+9.
+        expect(result.utc.millisecondsSinceEpoch, baseMs + 9);
+      },
+    );
+
+    test(
+      'returns null when raw overlap meets quorum but unique sources '
+      'do not',
+      () {
+        // Two samples from the same `sourceId` overlap. Raw overlap depth
+        // at the intersection is 2 and matches minimumQuorum=2, but only
+        // one authority is present. The quorum contract names distinct
+        // sources, so this must return null even though the old
+        // depth-only gate would have admitted it.
+        final result = engine.resolve([
+          SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+          SourceSample(
+            sourceId: 'a',
+            utc: baseTime.add(const Duration(milliseconds: 5)),
+            roundTripMs: 20,
+          ),
+        ]);
+
+        expect(result, isNull);
+      },
+    );
   });
 }
