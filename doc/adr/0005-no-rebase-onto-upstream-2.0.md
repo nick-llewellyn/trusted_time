@@ -11,7 +11,7 @@
 
 `trusted_time_nts` was forked from `Sahad2701/trusted_time` at 1.0.5 (pre-NTS) to add Rust-backed RFC 8915 NTS and remove unauthenticated NTP from the default consensus pool. On 2026-04-29 upstream shipped `trusted_time` 2.0.0 (now at 2.0.2), which independently introduced NTS support, a `ConfidenceLevel` enum with exponential decay, adaptive consensus thresholds (3× median uncertainty), exponential source cooldown, a stability guard, Marzullo correctness fixes, a `requireSecure` parameter on `getTime()`, a `TimeInterval`/`TimeSample` type split, Linux `timerfd` integrity monitoring, and Windows `WM_TIMECHANGE` subclassing.
 
-A side-by-side audit of the two implementations was performed on 2026-05-04. The two projects diverge on the two security decisions that motivate this fork's existence (NTS transport and clear-text NTP), and the fork is missing most of upstream's 2.0.0 additions — they remain candidates for cherry-pick or independent port, not convergent implementations.
+A side-by-side audit of the two implementations was performed on 2026-05-04. The two projects diverge on the two security decisions that motivate this fork's existence (NTS transport and clear-text NTP). The fork is missing several of upstream's 2.0.0 additive consensus improvements (adaptive thresholds, exponential cooldown, stability guard, `ConfidenceLevel` enum decay shape, `requireSecure` parameter, `TimeInterval`/`TimeSample` split) and tracks them as cherry-pick or port candidates. A few items landed in both projects independently — most visibly Linux `timerfd`/Windows `WM_TIMECHANGE` clock-jump detection, present in the fork since PR #3 and in upstream since 2.0.0 — and these are tracked as convergent-shape audit items, not as gaps.
 
 ## Divergence
 
@@ -26,7 +26,7 @@ A side-by-side audit of the two implementations was performed on 2026-05-04. The
 | Confidence scoring | `ConfidenceLevel` enum (Low/Medium/High) with exponential decay | Continuous `double confidence` field with linear decay over wall-clock elapsed (different shape; port candidate `trusted_time-gbt`) |
 | `getTime({requireSecure})` | Present | Not present (port candidate `trusted_time-ejv`) |
 | `TimeInterval` / `TimeSample` split | Present | `TimeSample` only (port candidate `trusted_time-q7s`) |
-| Platform integrity monitoring | Linux `timerfd` + Windows `WM_TIMECHANGE` subclassing | Android `ACTION_TIME_CHANGED` + iOS notifications via `IntegrityWatcher` (different platforms; Linux/Windows additions tracked as `trusted_time-vlm`) |
+| Platform integrity monitoring | Linux `timerfd` (`TFD_TIMER_CANCEL_ON_SET`) + Windows `WM_TIMECHANGE` subclassing | Android `ACTION_TIME_CHANGED` + iOS `NSSystemClockDidChange` + Linux `timerfd` (`TFD_TIMER_CANCEL_ON_SET`) + Windows `WM_TIMECHANGE` subclass (broader platform coverage; convergent on Linux/Windows signal — implementation parameters audit `trusted_time-vlm`) |
 | Adaptive thresholds, exponential cooldown, stability guard | Present | Cherry-pick candidates (`trusted_time-381`, `trusted_time-33l`, `trusted_time-ads`) |
 | Marzullo correctness | Present | In-flight (`trusted_time-skj`, PR #7) |
 
@@ -48,7 +48,7 @@ Upstream's "Cryptographic Preview" label is the load-bearing signal. RFC 8915 §
 
 - The fork carries ongoing diff-management cost against upstream: each new upstream release must be audited for cherry-pickable improvements (and for incompatible additions — for example, further pure-Dart NTS work that would be wrong to port).
 - The two packages will continue to diverge on naming, defaults, and SDK floor. Consumers comparing them need a clear narrative; this ADR is part of that narrative, alongside the upstream outreach on `Sahad2701/trusted_time#11`.
-- Where the fork independently implements something upstream also added (continuous confidence scoring vs upstream's `ConfidenceLevel` enum; Android/iOS integrity monitoring vs upstream's Linux/Windows additions), the fork's parameters need periodic audit against upstream's to confirm it is not subtly weaker on any axis. Tracked alongside the port-candidate work in `trusted_time-gbt` (decay curve), and orthogonally in the platform-coverage backlog (`trusted_time-vlm` for Windows).
+- Where the fork independently implements something upstream also added (continuous `double confidence` decay vs upstream's `ConfidenceLevel` enum; Linux `timerfd` and Windows `WM_TIMECHANGE` integrity signals present in both projects), the fork's parameters need periodic audit against upstream's to confirm it is not subtly weaker on any axis. Tracked in `trusted_time-gbt` (decay curve) and `trusted_time-vlm` (Linux/Windows integrity-monitor parameter parity).
 
 ## Alternatives considered
 
@@ -58,8 +58,8 @@ Upstream's "Cryptographic Preview" label is the load-bearing signal. RFC 8915 §
 
 ## Tracking
 
-- Cherry-pick work: `trusted_time-skj` (Marzullo audit, in-flight as PR #7), `trusted_time-381` (adaptive thresholds), `trusted_time-33l` (exponential cooldown), `trusted_time-ads` (stability guard), `trusted_time-vlm` (Windows `WM_TIMECHANGE`).
+- Cherry-pick work: `trusted_time-skj` (Marzullo audit, in-flight as PR #7), `trusted_time-381` (adaptive thresholds), `trusted_time-33l` (exponential cooldown), `trusted_time-ads` (stability guard).
 - Port candidates (upstream-only today, not yet in fork): `trusted_time-ejv` (`requireSecure` parameter), `trusted_time-q7s` (`TimeInterval`/`TimeSample` split). Each requires a port + boundary tests, not just an audit of an existing fork implementation.
-- Convergent-shape audit (both projects implement, but with different shapes): `trusted_time-gbt` (fork's continuous `double confidence` linear decay vs upstream's `ConfidenceLevel` exponential decay — confirm fork is not less conservative).
+- Convergent-shape audit (both projects implement, but with different shapes or scope): `trusted_time-gbt` (fork's continuous `double confidence` linear decay vs upstream's `ConfidenceLevel` exponential decay — confirm fork is not less conservative); `trusted_time-vlm` (Linux `timerfd` + Windows `WM_TIMECHANGE` integrity signals already implemented in fork — confirm parameter parity with upstream's 2.0.0 implementation, then close).
 - ADR 0001 patch: `trusted_time-wyb`.
 - Upstream response monitoring: `trusted_time-1qx`.
