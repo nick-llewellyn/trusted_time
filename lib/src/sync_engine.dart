@@ -60,9 +60,24 @@ final class SyncEngine {
   /// from the same source did participate. Pinning at receipt avoids
   /// drift from a post-aggregation re-sample.
   ///
-  /// Throws [TrustedTimeSyncException] if no sources respond or if quorum
-  /// cannot be reached.
+  /// Throws [TrustedTimeSyncException] if no sources are configured, if
+  /// no sources respond, or if quorum cannot be reached.
   Future<TrustAnchor> sync() async {
+    // The empty-source configuration is its own failure mode: no
+    // queries were attempted, so the post-query diagnostic dispatch
+    // below — which is keyed on `responded`/`timedOut`/`failed` —
+    // would otherwise hit the pure-timeout branch with all counters
+    // at 0 and report "0 sources timed out after maxLatency=...". An
+    // engine constructed with no sources is a configuration bug, not
+    // a runtime budget miss; surface it explicitly so callers don't
+    // chase a phantom timeout.
+    if (_sources.isEmpty) {
+      throw const TrustedTimeSyncException(
+        'No time sources configured: provide at least one of '
+        'ntsServers, httpsSources, or additionalSources in '
+        'TrustedTimeConfig.',
+      );
+    }
     final query = await _queryConcurrently();
     final rawSamples = query.eligible;
     if (rawSamples.isEmpty) {
@@ -159,14 +174,23 @@ final class SyncEngine {
       final invalid = rawSamples.length - eligible;
       final droppedForLatency = query.droppedForLatency;
       final timedOut = query.timedOut;
+      final failed = query.failed;
       final maxLatencyMs = _config.maxLatency.inMilliseconds;
       final eligibleWord = eligible == 1 ? 'sample' : 'samples';
+      // Cite every contributing bucket so a reader can attribute the
+      // shortfall without re-deriving the source counts. Omitting
+      // `failed` would silently hide whichever sources never
+      // produced a sample (DNS, refused connection, parse error,
+      // inner request timeout) whenever at least one other sample
+      // survived latency filtering — exactly the runs where the
+      // quorum-failure path fires.
       final notes = <String>[
         if (invalid > 0) '$invalid rejected as invalid',
         if (droppedForLatency > 0)
           '$droppedForLatency dropped for exceeding '
               'maxLatency=$maxLatencyMs ms',
         if (timedOut > 0) '$timedOut timed out at maxLatency=$maxLatencyMs ms',
+        if (failed > 0) '$failed failed before responding',
       ];
       final notesPart = notes.isEmpty ? '' : ' (${notes.join('; ')})';
       throw TrustedTimeSyncException(

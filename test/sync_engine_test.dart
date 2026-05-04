@@ -152,6 +152,38 @@ void main() {
       );
     });
 
+    test(
+      'throws a configuration-shaped exception when no sources are configured',
+      () async {
+        // An engine constructed with zero sources is a configuration
+        // bug, not a runtime budget miss. Without an explicit guard,
+        // `_queryConcurrently()` returns all-zero counters and the
+        // pure-timeout branch in `sync()` reports
+        // `0 sources timed out after maxLatency=...` — a bogus
+        // diagnosis that points the caller at network behaviour
+        // rather than their own config. The empty-source guard must
+        // fire first and surface the real cause.
+        final engine = SyncEngine.withSources(
+          config: config,
+          sources: const <TrustedTimeSource>[],
+        );
+        try {
+          await engine.sync();
+          fail('expected TrustedTimeSyncException');
+        } on TrustedTimeSyncException catch (e) {
+          expect(e.message, contains('No time sources configured'));
+          expect(e.message, contains('ntsServers'));
+          expect(e.message, contains('httpsSources'));
+          expect(e.message, contains('additionalSources'));
+          // Regression guard: must NOT degenerate into the bogus
+          // "0 sources timed out" wording from the pure-timeout
+          // branch of the diagnostic dispatch.
+          expect(e.message, isNot(contains('timed out')));
+          expect(e.message, isNot(contains('maxLatency')));
+        }
+      },
+    );
+
     test('throws when quorum cannot be reached (single source)', () async {
       final engine = SyncEngine.withSources(
         config: config,
@@ -391,6 +423,56 @@ void main() {
           expect(e.message, matches(RegExp(r'1 rejected')));
           expect(e.message, contains('1 dropped'));
           expect(e.message, contains('maxLatency=50'));
+        }
+      },
+    );
+
+    test(
+      'quorum-failure message includes failed sources alongside invalid count',
+      () async {
+        // Three sources: one good (eligible), one negative-RTT
+        // (rejected as invalid), one outright failure (no sample
+        // returned). With `minimumQuorum=2` the engine fails at
+        // quorum and the diagnostic must surface the `failed` bucket
+        // alongside `invalid` — a regression that omitted `failed`
+        // from the parenthetical (as the previous wording did) would
+        // make a "1 eligible + 1 invalid + 1 fetch failure" run
+        // indistinguishable from "1 eligible + 1 invalid", silently
+        // hiding whichever sources never produced a sample at all.
+        const tightConfig = TrustedTimeConfig(
+          httpsSources: [],
+          minimumQuorum: 2,
+          maxLatency: Duration(milliseconds: 50),
+        );
+        final engine = SyncEngine.withSources(
+          config: tightConfig,
+          sources: [
+            _FakeTimeSource(
+              id: 'good',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: 20),
+            ),
+            _FakeTimeSource(
+              id: 'broken',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: -10),
+            ),
+            _FakeTimeSource(
+              id: 'down',
+              networkUtc: baseTime,
+              shouldThrow: true,
+            ),
+          ],
+        );
+
+        try {
+          await engine.sync();
+          fail('expected TrustedTimeSyncException');
+        } on TrustedTimeSyncException catch (e) {
+          expect(e.message, contains('Quorum not reached'));
+          expect(e.message, matches(RegExp(r'\b1\b.*eligible')));
+          expect(e.message, matches(RegExp(r'1 rejected')));
+          expect(e.message, contains('1 failed before responding'));
         }
       },
     );

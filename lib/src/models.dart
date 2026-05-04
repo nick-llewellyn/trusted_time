@@ -277,9 +277,17 @@ abstract interface class TrustedTimeSource {
   /// on failure rather than returning stale or estimated values — the
   /// sync engine handles failures gracefully.
   ///
-  /// The returned [TimeSample.roundTripTime] must be non-negative; the
-  /// sync engine treats samples with a negative round-trip time as
-  /// invalid and excludes them from consensus and anchor selection.
+  /// Both [TimeSample.roundTripTime] and [TimeSample.uncertainty] must
+  /// be non-negative. The sync engine excludes samples that violate
+  /// either contract from consensus and anchor selection — a negative
+  /// round-trip would invert the latency-eligibility check, and a
+  /// negative uncertainty would invert the Marzullo interval (upper
+  /// endpoint < lower endpoint) and crash the consensus sweep. Sources
+  /// that don't have a tighter bound to advertise should leave
+  /// `uncertainty` at its default (RTT/2); those that do (e.g. an NTS
+  /// source exposing the server's stratum and root dispersion) should
+  /// supply the tighter value, which the engine honours when building
+  /// each Marzullo interval.
   Future<TimeSample> fetch();
 }
 
