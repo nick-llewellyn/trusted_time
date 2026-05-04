@@ -72,8 +72,15 @@ final class SyncEngine {
         .where((s) => !s.roundTripTime.isNegative)
         .toList(growable: false);
     if (samples.isEmpty) {
+      // Reachable when every sample that survived `_queryConcurrently`
+      // (i.e. did not throw and did not exceed maxLatency) carried a
+      // contract-violating negative round-trip time. Sources that timed
+      // out or threw have already been dropped upstream, so the message
+      // says "responding" rather than "configured" \u2014 a mixed run with
+      // some timeouts and some malformed responses still attributes the
+      // failure honestly to the malformed responders.
       throw const TrustedTimeSyncException(
-        'Every configured time source returned an invalid sample '
+        'Every responding source returned an invalid sample '
         '(negative round-trip time violates the TimeSample contract).',
       );
     }
@@ -89,12 +96,14 @@ final class SyncEngine {
 
     final result = _engine.resolve(marzulloSamples);
     if (result == null) {
-      final rejected = rawSamples.length - samples.length;
+      final eligible = samples.length;
+      final rejected = rawSamples.length - eligible;
+      final eligibleWord = eligible == 1 ? 'sample' : 'samples';
       final rejectedNote = rejected > 0
           ? ' ($rejected rejected as invalid)'
           : '';
       throw TrustedTimeSyncException(
-        'Quorum not reached: got ${samples.length} eligible samples'
+        'Quorum not reached: got $eligible eligible $eligibleWord'
         '$rejectedNote, '
         'need ${_config.minimumQuorum} for intersection.',
       );

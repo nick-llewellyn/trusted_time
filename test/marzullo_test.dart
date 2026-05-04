@@ -126,8 +126,11 @@ void main() {
 
     test('uncertainty is floored at 1 ms when intervals coincide exactly', () {
       // Two samples with identical centres and identical roundTrips collapse
-      // to a zero-width consensus interval. The 1 ms floor prevents
-      // downstream divide-by-zero and honestly signals best-case precision.
+      // to a zero-width consensus interval. `TrustAnchor.uncertaintyMs` is
+      // public and consumers reason about confidence bounds against it; a
+      // reported `\u00b10 ms` would falsely advertise sub-millisecond consensus
+      // precision below any real clock's read jitter, so the engine floors
+      // the published value at 1 ms.
       final result = engine.resolve([
         SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 0),
         SourceSample(sourceId: 'b', utc: baseTime, roundTripMs: 0),

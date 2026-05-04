@@ -212,8 +212,14 @@ void main() {
           await engine.sync();
           fail('expected TrustedTimeSyncException');
         } on TrustedTimeSyncException catch (e) {
-          expect(e.message, contains('1 eligible samples'));
-          expect(e.message, contains('1 rejected as invalid'));
+          // Assert on structural facts (eligible count, rejected count,
+          // the words "eligible" and "rejected") rather than exact
+          // wording, so future grammar/format cleanups don't fail the
+          // test while the behaviour is unchanged.
+          expect(e.message, contains('eligible'));
+          expect(e.message, contains('rejected'));
+          expect(e.message, matches(RegExp(r'\b1\b.*eligible')));
+          expect(e.message, matches(RegExp(r'1 rejected')));
         }
       },
     );

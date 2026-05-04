@@ -198,12 +198,15 @@ final class TimeSample {
 
   /// Measured round-trip latency to acquire this sample.
   ///
-  /// Must be non-negative. The sync engine rejects samples that violate
-  /// this contract: a negative round-trip time would produce a negative
-  /// uncertainty estimate, invert the consensus interval, and exclude
-  /// the sample from both the Marzullo intersection and the lowest-RTT
-  /// anchor reduction. Custom [TrustedTimeSource] implementations that
-  /// return negative durations therefore lose quorum silently.
+  /// Must be non-negative. The sync engine drops samples that violate
+  /// this contract from both the Marzullo intersection and the
+  /// lowest-RTT anchor reduction; if enough remaining sources still
+  /// agree, the sync succeeds without the malformed sample. If quorum
+  /// fails because too many samples were rejected, the engine throws
+  /// `TrustedTimeSyncException` with a diagnostic that reports the
+  /// eligible-vs-rejected counts. If every responding source carries a
+  /// negative round-trip time, the engine throws an explicit
+  /// invalid-sample exception naming the contract that was violated.
   final Duration roundTripTime;
 
   /// Estimated uncertainty (half-RTT by default; sources with tighter
