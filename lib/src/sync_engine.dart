@@ -47,8 +47,14 @@ final class SyncEngine {
   ///
   /// Queries all configured time sources in parallel, filters by maximum
   /// latency, and uses Marzullo's algorithm to find the consensus interval.
-  /// The anchor's uptime is pinned to the lowest-RTT sample's captured
-  /// monotonic reference, avoiding drift from a post-aggregation re-sample.
+  /// The anchor's uptime is pinned to the captured monotonic reference of
+  /// the lowest-RTT *consensus participant* — the lowest-RTT sample whose
+  /// uncertainty interval contained the consensus midpoint. Filtering on
+  /// participation (rather than on every eligible response) keeps a fast
+  /// outlier whose interval missed the intersection from winning the
+  /// reduction, even when another sample from the same source did
+  /// participate. Pinning at receipt avoids drift from a post-aggregation
+  /// re-sample.
   ///
   /// Throws [TrustedTimeSyncException] if no sources respond or if quorum
   /// cannot be reached.

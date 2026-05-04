@@ -30,14 +30,21 @@ final class ConsensusResult {
   final int uncertaintyMs;
   final int participantCount;
 
-  /// The specific [SourceSample] instances whose intervals were active
-  /// at the moment of maximum overlap. Callers pinning a monotonic/wall
-  /// reference must restrict themselves to *these* samples — a fast
-  /// outlier excluded from the intersection has nothing to say about
-  /// consensus UTC, even when another sample from the same source did
-  /// participate. Identifying participants by source ID alone would
-  /// re-admit the outlier whenever its source contributed more than
-  /// one sample (duplicate config, future burst sampling, etc.).
+  /// The specific [SourceSample] instances whose uncertainty interval
+  /// `[utc - u, utc + u]` contains the consensus midpoint reported in
+  /// [utc]. Computed by interval-containment of that midpoint rather
+  /// than by snapshotting the active set at a sweep instant: a same-
+  /// source sample whose interval ends mid-window is correctly excluded
+  /// here even though its source ID stays in the sweep's active multiset
+  /// (because a sibling sample from the same source is still active).
+  ///
+  /// Callers pinning a monotonic/wall reference must restrict themselves
+  /// to *these* samples — a fast outlier excluded from the intersection
+  /// has nothing to say about consensus UTC, even when another sample
+  /// from the same source did participate. Identifying participants by
+  /// source ID alone would re-admit the outlier whenever its source
+  /// contributed more than one sample (duplicate config, future burst
+  /// sampling, etc.).
   final Set<SourceSample> participants;
 }
 
@@ -154,13 +161,15 @@ final class MarzulloEngine {
 
     return ConsensusResult(
       utc: DateTime.fromMillisecondsSinceEpoch(midMs, isUtc: true),
-      // When all surviving intervals coincide on a single point the raw
-      // intersection width is zero, but reporting `uncertaintyMs == 0`
-      // would falsely advertise sub-millisecond consensus precision —
-      // every clock has read jitter above that, and TrustAnchor exposes
+      // Floor at 1 ms. `uncertaintyMs` above is `(bestEnd - bestStart)
+      // ~/ 2`, so integer truncation maps every consensus window
+      // narrower than 2 ms onto zero — not just the zero-width
+      // (single-point) case. Reporting `uncertaintyMs == 0` would
+      // falsely advertise sub-millisecond consensus precision; every
+      // clock has read jitter above that, and TrustAnchor exposes
       // uncertaintyMs publicly for callers reasoning about confidence
-      // bounds. Floor at 1 ms so the published anchor reflects a
-      // realistic best-case bound rather than a meaningless zero.
+      // bounds. The floor produces a realistic best-case bound (1 ms)
+      // for any sub-2 ms window rather than a meaningless zero.
       uncertaintyMs: max(1, uncertaintyMs),
       participantCount: bestSourceIdCount,
       participants: Set.unmodifiable(participants),
