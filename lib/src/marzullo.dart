@@ -38,10 +38,19 @@ final class MarzulloEngine {
   final int minimumQuorum;
 
   ConsensusResult? resolve(List<SourceSample> samples) {
-    if (samples.length < minimumQuorum) return null;
+    // Drop samples whose source reports a negative round-trip time (a
+    // contract violation by a custom TrustedTimeSource). Negative RTT
+    // produces a negative uncertaintyMs, which inverts the interval and
+    // makes the upper endpoint sort before the lower endpoint. Without
+    // filtering, the sweep below would hit `activeSourceCounts[id]!`
+    // for an id that was never inserted and throw — masking a real
+    // upstream bug as a runtime crash. Treating the malformed samples
+    // as absent lets quorum fail cleanly.
+    final valid = samples.where((s) => s.roundTripMs >= 0).toList();
+    if (valid.length < minimumQuorum) return null;
 
     final endpoints = <_Endpoint>[];
-    for (final s in samples) {
+    for (final s in valid) {
       final center = s.utc.millisecondsSinceEpoch;
       final u = s.uncertaintyMs;
       endpoints

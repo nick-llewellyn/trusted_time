@@ -258,5 +258,43 @@ void main() {
 
       expect(result, isNull);
     });
+
+    test('rejects samples with negative roundTripMs without throwing', () {
+      // A custom TrustedTimeSource that violates the non-negative
+      // roundTripMs contract would otherwise produce an inverted
+      // interval (upper endpoint < lower endpoint), causing the
+      // multiset sweep to look up an unseen id and throw on the
+      // null-asserted map access. The malformed sample must instead
+      // be treated as absent so quorum can fail cleanly.
+      final result = engine.resolve([
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(
+          sourceId: 'b',
+          utc: baseTime.add(const Duration(milliseconds: 5)),
+          roundTripMs: -100,
+        ),
+      ]);
+
+      // Only one valid sample remains; quorum=2 fails cleanly.
+      expect(result, isNull);
+    });
+
+    test(
+      'ignores negative-RTT samples but still resolves on remaining valid ones',
+      () {
+        final result = engine.resolve([
+          SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+          SourceSample(
+            sourceId: 'b',
+            utc: baseTime.add(const Duration(milliseconds: 5)),
+            roundTripMs: 30,
+          ),
+          SourceSample(sourceId: 'c', utc: baseTime, roundTripMs: -50),
+        ]);
+
+        expect(result, isNotNull);
+        expect(result!.participantCount, 2);
+      },
+    );
   });
 }
