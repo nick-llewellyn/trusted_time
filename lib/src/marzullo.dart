@@ -38,14 +38,16 @@ final class MarzulloEngine {
   final int minimumQuorum;
 
   ConsensusResult? resolve(List<SourceSample> samples) {
-    // Drop samples whose source reports a negative round-trip time (a
-    // contract violation by a custom TrustedTimeSource). Negative RTT
-    // produces a negative uncertaintyMs, which inverts the interval and
-    // makes the upper endpoint sort before the lower endpoint. Without
-    // filtering, the sweep below would hit `activeSourceCounts[id]!`
-    // for an id that was never inserted and throw — masking a real
-    // upstream bug as a runtime crash. Treating the malformed samples
-    // as absent lets quorum fail cleanly.
+    // Defence in depth: SyncEngine is expected to drop samples whose
+    // source reports a negative round-trip time before reaching this
+    // method (so anchor selection, error messaging, and consensus all
+    // see the same filtered set). The check is repeated here because
+    // MarzulloEngine takes SourceSample directly and any future caller
+    // that bypasses SyncEngine must not be able to crash the sweep:
+    // a negative roundTripMs produces a negative uncertaintyMs which
+    // inverts the interval, sorts the upper endpoint before its lower
+    // endpoint, and would otherwise hit `activeSourceCounts[id]!` for
+    // an id that was never inserted.
     final valid = samples.where((s) => s.roundTripMs >= 0).toList();
     if (valid.length < minimumQuorum) return null;
 
@@ -126,8 +128,13 @@ final class MarzulloEngine {
 
     return ConsensusResult(
       utc: DateTime.fromMillisecondsSinceEpoch(midMs, isUtc: true),
-      // 1 ms floor prevents downstream divide-by-zero and signals the
-      // best-case precision honestly even when intervals coincide exactly.
+      // When all surviving intervals coincide on a single point the raw
+      // intersection width is zero, but reporting `uncertaintyMs == 0`
+      // would falsely advertise sub-millisecond consensus precision —
+      // every clock has read jitter above that, and TrustAnchor exposes
+      // uncertaintyMs publicly for callers reasoning about confidence
+      // bounds. Floor at 1 ms so the published anchor reflects a
+      // realistic best-case bound rather than a meaningless zero.
       uncertaintyMs: max(1, uncertaintyMs),
       participantCount: bestSourceIdCount,
     );

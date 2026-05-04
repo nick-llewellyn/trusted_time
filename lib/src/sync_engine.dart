@@ -53,10 +53,28 @@ final class SyncEngine {
   /// Throws [TrustedTimeSyncException] if no sources respond or if quorum
   /// cannot be reached.
   Future<TrustAnchor> sync() async {
-    final samples = await _queryConcurrently();
-    if (samples.isEmpty) {
+    final rawSamples = await _queryConcurrently();
+    if (rawSamples.isEmpty) {
       throw const TrustedTimeSyncException(
         'Every configured time source failed to respond.',
+      );
+    }
+
+    // Reject samples whose source returned a negative round-trip time:
+    // the documented `TimeSample.roundTripTime` contract is non-negative,
+    // and admitting a violator would (a) inject a negative uncertainty
+    // into the Marzullo sweep and crash it, and (b) win the lowest-RTT
+    // reduction below — pinning the anchor's monotonic/wall reference
+    // to a sample that never participated in consensus. Filtering once
+    // here keeps consensus, anchor selection, and the quorum-failure
+    // message in agreement on the eligible sample set.
+    final samples = rawSamples
+        .where((s) => !s.roundTripTime.isNegative)
+        .toList(growable: false);
+    if (samples.isEmpty) {
+      throw const TrustedTimeSyncException(
+        'Every configured time source returned an invalid sample '
+        '(negative round-trip time violates the TimeSample contract).',
       );
     }
 
@@ -71,15 +89,22 @@ final class SyncEngine {
 
     final result = _engine.resolve(marzulloSamples);
     if (result == null) {
+      final rejected = rawSamples.length - samples.length;
+      final rejectedNote = rejected > 0
+          ? ' ($rejected rejected as invalid)'
+          : '';
       throw TrustedTimeSyncException(
-        'Quorum not reached: got ${samples.length} samples, '
+        'Quorum not reached: got ${samples.length} eligible samples'
+        '$rejectedNote, '
         'need ${_config.minimumQuorum} for intersection.',
       );
     }
 
-    // Pin uptime to the lowest-RTT sample's captured monotonic — this is
+    // Pin uptime to the lowest-RTT eligible sample's captured monotonic —
     // the tightest reference available, recorded the instant its response
-    // was received (not after slower siblings resolved).
+    // was received (not after slower siblings resolved). The negative-RTT
+    // filter above is what keeps a malformed source from winning this
+    // reduction with the smallest (negative) Duration.
     final best = samples.reduce(
       (a, b) => a.roundTripTime <= b.roundTripTime ? a : b,
     );

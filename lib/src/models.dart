@@ -197,6 +197,13 @@ final class TimeSample {
   final DateTime networkUtc;
 
   /// Measured round-trip latency to acquire this sample.
+  ///
+  /// Must be non-negative. The sync engine rejects samples that violate
+  /// this contract: a negative round-trip time would produce a negative
+  /// uncertainty estimate, invert the consensus interval, and exclude
+  /// the sample from both the Marzullo intersection and the lowest-RTT
+  /// anchor reduction. Custom [TrustedTimeSource] implementations that
+  /// return negative durations therefore lose quorum silently.
   final Duration roundTripTime;
 
   /// Estimated uncertainty (half-RTT by default; sources with tighter
@@ -245,6 +252,10 @@ abstract interface class TrustedTimeSource {
   /// the response is received (before any aggregation) and should throw
   /// on failure rather than returning stale or estimated values — the
   /// sync engine handles failures gracefully.
+  ///
+  /// The returned [TimeSample.roundTripTime] must be non-negative; the
+  /// sync engine treats samples with a negative round-trip time as
+  /// invalid and excludes them from consensus and anchor selection.
   Future<TimeSample> fetch();
 }
 

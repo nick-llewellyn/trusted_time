@@ -149,5 +149,102 @@ void main() {
         throwsA(isA<TrustedTimeSyncException>()),
       );
     });
+
+    test('rejects negative-RTT samples from anchor selection', () async {
+      // A malformed source returns a negative RTT. Two well-behaved
+      // sources agree on the consensus midpoint, with monotonic uptimes
+      // 5000 and 9000. The malformed source has the smallest (negative)
+      // RTT and would win the lowest-RTT reduce if it were not filtered,
+      // pinning anchor.uptimeMs to its 1 ms reference.
+      final engine = SyncEngine.withSources(
+        config: config,
+        sources: [
+          _FakeTimeSource(
+            id: 'fast',
+            networkUtc: baseTime,
+            roundTripTime: const Duration(milliseconds: 10),
+            capturedMonotonicMs: 5000,
+          ),
+          _FakeTimeSource(
+            id: 'slow',
+            networkUtc: baseTime.add(const Duration(milliseconds: 5)),
+            roundTripTime: const Duration(milliseconds: 200),
+            capturedMonotonicMs: 9000,
+          ),
+          _FakeTimeSource(
+            id: 'broken',
+            networkUtc: baseTime,
+            roundTripTime: const Duration(milliseconds: -50),
+            capturedMonotonicMs: 1,
+          ),
+        ],
+      );
+
+      final anchor = await engine.sync();
+      // Anchor must come from `fast` (5000), not the broken source (1).
+      expect(anchor.uptimeMs, 5000);
+    });
+
+    test(
+      'quorum-failure message reports eligible (filtered) sample count',
+      () async {
+        // Two sources fetch successfully, but one returns a negative RTT
+        // and is filtered. With minimumQuorum=2 the message must say "1
+        // eligible samples (1 rejected as invalid)" rather than the
+        // misleading "2 samples".
+        final engine = SyncEngine.withSources(
+          config: config,
+          sources: [
+            _FakeTimeSource(
+              id: 'good',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: 20),
+            ),
+            _FakeTimeSource(
+              id: 'broken',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: -10),
+            ),
+          ],
+        );
+
+        try {
+          await engine.sync();
+          fail('expected TrustedTimeSyncException');
+        } on TrustedTimeSyncException catch (e) {
+          expect(e.message, contains('1 eligible samples'));
+          expect(e.message, contains('1 rejected as invalid'));
+        }
+      },
+    );
+
+    test(
+      'throws explicit invalid-sample error when every source is malformed',
+      () async {
+        final engine = SyncEngine.withSources(
+          config: config,
+          sources: [
+            _FakeTimeSource(
+              id: 'a',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: -5),
+            ),
+            _FakeTimeSource(
+              id: 'b',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: -10),
+            ),
+          ],
+        );
+
+        try {
+          await engine.sync();
+          fail('expected TrustedTimeSyncException');
+        } on TrustedTimeSyncException catch (e) {
+          expect(e.message, contains('invalid sample'));
+          expect(e.message, contains('TimeSample contract'));
+        }
+      },
+    );
   });
 }
