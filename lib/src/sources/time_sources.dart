@@ -2,7 +2,6 @@ import 'package:http/http.dart' as http;
 import '../models.dart';
 import '../monotonic_clock.dart';
 
-export 'ntp_source_stub.dart' if (dart.library.io) 'ntp_source_io.dart';
 export 'nts_source_stub.dart' if (dart.library.io) 'nts_source_io.dart';
 
 /// Fetches UTC time from an HTTPS endpoint's `Date` response header.
@@ -10,6 +9,11 @@ export 'nts_source_stub.dart' if (dart.library.io) 'nts_source_io.dart';
 /// Tries HEAD first (lightweight), falls back to GET if HEAD returns 405
 /// or omits the `Date` header. The server's `Date` header is corrected for
 /// one-way network latency using the measured round-trip time.
+///
+/// The URL **must** use the `https` scheme. The package's threat model
+/// relies on the `Date` header being bound to a TLS handshake; a
+/// `http://` URL silently degrades that guarantee and is rejected at
+/// construction time with an [ArgumentError].
 ///
 /// Pass a pre-configured [http.Client] for enterprise certificate pinning:
 /// ```dart
@@ -19,7 +23,26 @@ export 'nts_source_stub.dart' if (dart.library.io) 'nts_source_io.dart';
 final class HttpsSource implements TrustedTimeSource {
   HttpsSource(this._url, {http.Client? client, MonotonicClock? clock})
     : _client = client ?? http.Client(),
-      _clock = clock ?? PlatformMonotonicClock();
+      _clock = clock ?? PlatformMonotonicClock() {
+    final Uri parsed;
+    try {
+      parsed = Uri.parse(_url);
+    } on FormatException catch (e) {
+      throw ArgumentError.value(_url, 'url', 'Not a valid URI: ${e.message}');
+    }
+    if (parsed.scheme != 'https') {
+      throw ArgumentError.value(
+        _url,
+        'url',
+        'HttpsSource requires the https scheme; got "${parsed.scheme}". '
+            'Clear-text HTTP would silently drop the TLS binding the '
+            'package depends on (see ADR 0003).',
+      );
+    }
+    if (parsed.host.isEmpty) {
+      throw ArgumentError.value(_url, 'url', 'URI is missing a host.');
+    }
+  }
 
   final String _url;
   final http.Client _client;

@@ -49,7 +49,6 @@ void main() {
   group('runBackgroundSync', () {
     final consensusUtc = DateTime.utc(2026, 1, 15, 10);
     final config = TrustedTimeConfig(
-      ntpServers: const [],
       httpsSources: const [],
       ntsServers: const [],
       minimumQuorum: 2,
@@ -83,7 +82,6 @@ void main() {
       final store = InMemoryAnchorStorage();
       final result = await runBackgroundSync(
         config: TrustedTimeConfig(
-          ntpServers: const [],
           httpsSources: const [],
           ntsServers: const [],
           minimumQuorum: 2,
@@ -104,7 +102,6 @@ void main() {
       final store = InMemoryAnchorStorage();
       final result = await runBackgroundSync(
         config: TrustedTimeConfig(
-          ntpServers: const [],
           httpsSources: const [],
           ntsServers: const [],
           minimumQuorum: 2,
@@ -231,7 +228,6 @@ void main() {
       () async {
         final result = await public_api.TrustedTime.runBackgroundSync(
           config: TrustedTimeConfig(
-            ntpServers: const [],
             httpsSources: const [],
             ntsServers: const [],
             minimumQuorum: 2,
@@ -260,7 +256,6 @@ void main() {
         'a failing run', () async {
       final result = await public_api.TrustedTime.runBackgroundSync(
         config: TrustedTimeConfig(
-          ntpServers: const [],
           httpsSources: const [],
           ntsServers: const [],
           minimumQuorum: 2,
@@ -289,7 +284,6 @@ void main() {
           .setMockMethodCallHandler(channel, null);
       final result = await public_api.TrustedTime.runBackgroundSync(
         config: TrustedTimeConfig(
-          ntpServers: const [],
           httpsSources: const [],
           ntsServers: const [],
           minimumQuorum: 2,
@@ -320,7 +314,6 @@ void main() {
 
       final result = await public_api.TrustedTime.runBackgroundSync(
         config: TrustedTimeConfig(
-          ntpServers: const [],
           httpsSources: const [],
           ntsServers: const [],
           minimumQuorum: 2,

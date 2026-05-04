@@ -159,7 +159,7 @@ Prevent cooldown bypass attacks caused by local clock manipulation.
 
 TrustedTime establishes a **Trust Anchor**:
 
-1. It queries multiple network time sources (NTP + HTTPS).
+1. It queries multiple authenticated and TLS-anchored network time sources (NTS + HTTPS).
 2. It filters bad or slow sources using a quorum algorithm.
 3. It stores the verified network time alongside the device’s **monotonic uptime**.
 4. From then on, it computes:
@@ -184,15 +184,23 @@ Only a device reboot resets uptime — which TrustedTime detects and automatical
 await TrustedTime.initialize(
   config: TrustedTimeConfig(
     refreshInterval: Duration(hours: 12),
-    ntpServers: ['time.google.com', 'pool.ntp.org'],
     ntsServers: ['time.cloudflare.com', 'nts.netnod.se'],
-    httpsSources: ['https://www.google.com', 'https://www.cloudflare.com'],
+    httpsSources: [
+      'https://www.google.com',
+      'https://www.cloudflare.com',
+      'https://www.apple.com',
+      'https://www.microsoft.com',
+    ],
     maxLatency: Duration(seconds: 2),
     minimumQuorum: 2,
     persistState: true,
   ),
 );
 ```
+
+### Why no clear-text NTP?
+
+Clear-text NTP (UDP/123) provides no integrity guarantee against an attacker on the network path. Because `trusted_time_nts` exists to defeat clock-tampering threats, shipping a default NTP client would silently undermine that contract. Use `ntsServers` (RFC 8915) for authenticated time, `httpsSources` for a TLS-anchored fallback, or supply your own `TrustedTimeSource` via `additionalSources` if your environment requires clear-text NTP and you accept the trade-off. See [ADR 0003](doc/adr/0003-removing-clear-text-ntp.md) for the rationale.
 
 ### Authenticated time via NTS (RFC 8915)
 
@@ -313,12 +321,14 @@ These are mitigated regardless of which network source is configured, because tr
 
 ### Network-side threats (per source)
 
-| Threat                                | NTP (default) | HTTPS `Date` header | NTS (RFC 8915) | Marzullo consensus across ≥2 sources |
-| ------------------------------------- | :-----------: | :-----------------: | :------------: | :----------------------------------: |
-| Passive eavesdropping                 |       ❌       |          ✅          |        ✅       |                  n/a                 |
-| Off-path attacker (response spoofing) |       ❌       |          ✅          |        ✅       |                   ✅                  |
-| On-path / MITM attacker               |       ❌       |        ⚠️ (1)       |        ✅       |                ⚠️ (2)                |
-| Single dishonest server               |     ⚠️ (2)    |        ⚠️ (2)       |     ⚠️ (2)     |                   ✅                  |
+Clear-text NTP is intentionally not provided by this package — see [ADR 0003](doc/adr/0003-removing-clear-text-ntp.md) and the [Why no clear-text NTP?](#why-no-clear-text-ntp) section above. The matrix below covers the supported sources.
+
+| Threat                                | HTTPS `Date` header | NTS (RFC 8915) | Marzullo consensus across ≥2 sources |
+| ------------------------------------- | :-----------------: | :------------: | :----------------------------------: |
+| Passive eavesdropping                 |          ✅          |        ✅       |                  n/a                 |
+| Off-path attacker (response spoofing) |          ✅          |        ✅       |                   ✅                  |
+| On-path / MITM attacker               |        ⚠️ (1)       |        ✅       |                ⚠️ (2)                |
+| Single dishonest server               |        ⚠️ (2)       |     ⚠️ (2)     |                   ✅                  |
 
 (1) HTTPS `Date` is bound to a TLS handshake, so a network attacker cannot forge it without a valid certificate; however, the header is single-second resolution and the server itself is trusted.
 (2) Mitigated by configuring multiple sources from independent operators — the engine's Marzullo intersection rejects samples that disagree with the quorum. A single attacker who controls fewer than half of the configured servers cannot shift the consensus.
@@ -329,7 +339,7 @@ These are mitigated regardless of which network source is configured, because tr
 
 * Requires internet on first launch to establish the anchor.
 * Cannot protect against hardware-level oscillator manipulation or a compromised OS that lies about monotonic uptime (rooted/jailbroken devices — see [SECURITY.md](SECURITY.md) "Out of Scope").
-* Default-configured NTP and HTTPS sources are **not** end-to-end authenticated; rely on Marzullo consensus across multiple operators for MITM resistance, or opt into NTS for per-sample cryptographic authentication.
+* Default-configured **HTTPS-Date** sources are not end-to-end authenticated; rely on Marzullo consensus across multiple independent operators for MITM resistance, or opt into NTS for per-sample cryptographic authentication. Clear-text NTP is **not** offered by this package — its integrity guarantee is incompatible with on-path attackers, and NTS supersedes it.
 * HTTPS `Date` header has 1-second resolution and depends on the upstream server's clock accuracy.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).

@@ -79,7 +79,7 @@ export 'src/trusted_time_mock.dart';
 /// startup, then use [now], [nowUnixMs], or [nowIso] anywhere in your code
 /// for synchronous, sub-microsecond trusted time access.
 ///
-/// The engine synchronizes with multiple network time sources (NTP + HTTPS),
+/// The engine synchronizes with multiple network time sources (NTS + HTTPS),
 /// establishes a quorum-based consensus, and anchors the result to the
 /// device's hardware monotonic clock. This ensures timestamps remain correct
 /// even if users manipulate their device's system clock.
@@ -101,8 +101,9 @@ abstract final class TrustedTime {
   /// }
   /// ```
   ///
-  /// Pass a [config] to customize NTP servers, refresh intervals, quorum
-  /// requirements, and other engine parameters.
+  /// Pass a [config] to customize time-source endpoints (NTS, HTTPS, or
+  /// custom), refresh intervals, quorum requirements, and other engine
+  /// parameters.
   static Future<void> initialize({
     TrustedTimeConfig config = const TrustedTimeConfig(),
   }) async {

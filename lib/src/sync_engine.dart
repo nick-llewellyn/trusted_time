@@ -17,13 +17,12 @@ final class SyncEngine {
   /// Creates a sync engine with the given [config] and [clock].
   ///
   /// Time-source instances are built from the config and the clock is
-  /// forwarded to NTP/HTTPS sources so each can pin its monotonic
+  /// forwarded to NTS/HTTPS sources so each can pin its monotonic
   /// reference at response receipt.
   SyncEngine({required TrustedTimeConfig config, required MonotonicClock clock})
     : _config = config,
       _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum),
       _sources = [
-        for (final host in config.ntpServers) NtpSource(host, clock: clock),
         for (final host in config.ntsServers) NtsSource(host, clock: clock),
         for (final url in config.httpsSources) HttpsSource(url, clock: clock),
         ...config.additionalSources,

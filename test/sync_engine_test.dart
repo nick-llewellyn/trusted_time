@@ -40,7 +40,6 @@ void main() {
     final baseTime = DateTime.utc(2024, 6, 15, 12);
     final baseMs = baseTime.millisecondsSinceEpoch;
     const config = TrustedTimeConfig(
-      ntpServers: [],
       httpsSources: [],
       minimumQuorum: 2,
       maxLatency: Duration(seconds: 3),
@@ -125,7 +124,6 @@ void main() {
 
     test('filters out samples exceeding maxLatency', () async {
       const fastConfig = TrustedTimeConfig(
-        ntpServers: [],
         httpsSources: [],
         minimumQuorum: 2,
         maxLatency: Duration(milliseconds: 50),

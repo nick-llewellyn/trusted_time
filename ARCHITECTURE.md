@@ -33,7 +33,7 @@ The relationship is then defined as:
 
 To prevent reliance on a single potentially compromised or laggy server, TrustedTime uses a **Consensus Strategy**.
 
-1. **Fan-out**: Queries 3-5 sources in parallel (NTP + HTTPS).
+1. **Fan-out**: Queries 2–N sources in parallel (NTS + HTTPS-Date, plus any user-supplied `additionalSources`). Clear-text NTP is intentionally not provided — see [ADR 0003](doc/adr/0003-removing-clear-text-ntp.md).
 2. **Interval Estimation**: Each source provides a time `T` and an error `E` (based on RTT).
 3. **Consensus**: Marzullo's Algorithm finds the widest overlapping interval that contains the true time. Outliers are discarded.
 
