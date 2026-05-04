@@ -3,15 +3,15 @@
 - Status: **Accepted**
 - Date: 2026-05-04
 - Tracking issue: `trusted_time-k5p`
-- Supersedes: portions of ADR 0001 §"Alternatives considered" that rejected a sibling `trusted_time_nts` package on the assumption upstream would adopt the conditional-import-stub integration in core. After upstream shipped 2.0.0 along a different path (see Context and the postscript appended to ADR 0001), the sibling-package shape is the operational reality this ADR records — not a freshly-chosen distribution strategy.
+- Supersedes: portions of ADR 0001 §"Alternatives considered" that rejected a sibling `trusted_time_nts` package on the assumption upstream would adopt the conditional-import-stub integration in core. After upstream shipped 2.0.0 along a different path (see Context and ADR 0001 §["Postscript: upstream 2.0.0 outcome (2026-05-04)"](0001-nts-integration-strategy.md#postscript-upstream-200-outcome-2026-05-04)), the sibling-package shape is the operational reality this ADR records — not a freshly-chosen distribution strategy.
 - Related: ADR 0001 (NTS integration strategy — historical context for the original RFC 5705 finding and the rejected alternatives), ADR 0003 (removing clear-text NTP)
 - Upstream outreach: [`Sahad2701/trusted_time#11`](https://github.com/Sahad2701/trusted_time/issues/11)
 
 ## Context
 
-`trusted_time_nts` was forked from `Sahad2701/trusted_time` at 1.0.5 (pre-NTS) to add Rust-backed RFC 8915 NTS and remove unauthenticated NTP from the default consensus pool. On 2026-04-29 upstream shipped `trusted_time` 2.0.0 (now at 2.0.2), which independently introduced NTS support, `ConfidenceLevel` with exponential decay, adaptive consensus thresholds (3× median uncertainty), exponential source cooldown, a stability guard, Marzullo correctness fixes, Linux `timerfd` integrity monitoring, and Windows `WM_TIMECHANGE` subclassing.
+`trusted_time_nts` was forked from `Sahad2701/trusted_time` at 1.0.5 (pre-NTS) to add Rust-backed RFC 8915 NTS and remove unauthenticated NTP from the default consensus pool. On 2026-04-29 upstream shipped `trusted_time` 2.0.0 (now at 2.0.2), which independently introduced NTS support, a `ConfidenceLevel` enum with exponential decay, adaptive consensus thresholds (3× median uncertainty), exponential source cooldown, a stability guard, Marzullo correctness fixes, a `requireSecure` parameter on `getTime()`, a `TimeInterval`/`TimeSample` type split, Linux `timerfd` integrity monitoring, and Windows `WM_TIMECHANGE` subclassing.
 
-A side-by-side audit of the two implementations was performed on 2026-05-04. Convergent additions are extensive; the two projects diverge on exactly the two security decisions that motivate this fork's existence.
+A side-by-side audit of the two implementations was performed on 2026-05-04. The two projects diverge on the two security decisions that motivate this fork's existence (NTS transport and clear-text NTP), and the fork is missing most of upstream's 2.0.0 additions — they remain candidates for cherry-pick or independent port, not convergent implementations.
 
 ## Divergence
 
@@ -23,8 +23,12 @@ A side-by-side audit of the two implementations was performed on 2026-05-04. Con
 | Dart SDK floor | `^3.0.0` | `^3.10.0` (Native Assets requirement) |
 | Flutter floor | `>=3.29.0` | `>=3.38.0` |
 | HTTPS-Date default fan-out | 2 operators | 4 operators (ADR 0003) |
-| Confidence scoring, `requireSecure`, `TimeInterval`/`TimeSample` split, `timerfd`, `WM_TIMECHANGE` | Present | Independently present |
+| Confidence scoring | `ConfidenceLevel` enum (Low/Medium/High) with exponential decay | Continuous `double confidence` field with linear decay over wall-clock elapsed (different shape; port candidate `trusted_time-gbt`) |
+| `getTime({requireSecure})` | Present | Not present (port candidate `trusted_time-ejv`) |
+| `TimeInterval` / `TimeSample` split | Present | `TimeSample` only (port candidate `trusted_time-q7s`) |
+| Platform integrity monitoring | Linux `timerfd` + Windows `WM_TIMECHANGE` subclassing | Android `ACTION_TIME_CHANGED` + iOS notifications via `IntegrityWatcher` (different platforms; Linux/Windows additions tracked as `trusted_time-vlm`) |
 | Adaptive thresholds, exponential cooldown, stability guard | Present | Cherry-pick candidates (`trusted_time-381`, `trusted_time-33l`, `trusted_time-ads`) |
+| Marzullo correctness | Present | In-flight (`trusted_time-skj`, PR #7) |
 
 Upstream's "Cryptographic Preview" label is the load-bearing signal. RFC 8915 §4.3 requires that C2S/S2C AEAD keys be derived from the NTS-KE TLS session via the RFC 5705 keying-material exporter. `dart:io.SecureSocket` does not expose that exporter, and `package:cryptography` operates above the TLS layer, so a pure-Dart NTS-KE client running on the standard `dart:io` TLS stack cannot derive RFC-compliant keying material. ADR 0001 §"Alternatives considered" rejected this exact path for that reason.
 
@@ -44,7 +48,7 @@ Upstream's "Cryptographic Preview" label is the load-bearing signal. RFC 8915 §
 
 - The fork carries ongoing diff-management cost against upstream: each new upstream release must be audited for cherry-pickable improvements (and for incompatible additions — for example, further pure-Dart NTS work that would be wrong to port).
 - The two packages will continue to diverge on naming, defaults, and SDK floor. Consumers comparing them need a clear narrative; this ADR is part of that narrative, alongside the upstream outreach on `Sahad2701/trusted_time#11`.
-- Convergent independent implementations (confidence scoring, `requireSecure`, domain split, platform integrity monitoring) require periodic audit against upstream's parameters to confirm the fork is not subtly weaker on any axis. Tracked in `trusted_time-gbt`, `trusted_time-ejv`, `trusted_time-q7s`.
+- Where the fork independently implements something upstream also added (continuous confidence scoring vs upstream's `ConfidenceLevel` enum; Android/iOS integrity monitoring vs upstream's Linux/Windows additions), the fork's parameters need periodic audit against upstream's to confirm it is not subtly weaker on any axis. Tracked alongside the port-candidate work in `trusted_time-gbt` (decay curve), and orthogonally in the platform-coverage backlog (`trusted_time-vlm` for Windows).
 
 ## Alternatives considered
 
@@ -54,7 +58,8 @@ Upstream's "Cryptographic Preview" label is the load-bearing signal. RFC 8915 §
 
 ## Tracking
 
-- Cherry-pick work: `trusted_time-skj` (Marzullo audit), `trusted_time-381` (adaptive thresholds), `trusted_time-33l` (exponential cooldown), `trusted_time-ads` (stability guard), `trusted_time-vlm` (Windows `WM_TIMECHANGE`).
-- Convergent-feature audit: `trusted_time-gbt` (`ConfidenceLevel` decay), `trusted_time-ejv` (`requireSecure` semantics), `trusted_time-q7s` (`TimeInterval`/`TimeSample` boundaries).
+- Cherry-pick work: `trusted_time-skj` (Marzullo audit, in-flight as PR #7), `trusted_time-381` (adaptive thresholds), `trusted_time-33l` (exponential cooldown), `trusted_time-ads` (stability guard), `trusted_time-vlm` (Windows `WM_TIMECHANGE`).
+- Port candidates (upstream-only today, not yet in fork): `trusted_time-ejv` (`requireSecure` parameter), `trusted_time-q7s` (`TimeInterval`/`TimeSample` split). Each requires a port + boundary tests, not just an audit of an existing fork implementation.
+- Convergent-shape audit (both projects implement, but with different shapes): `trusted_time-gbt` (fork's continuous `double confidence` linear decay vs upstream's `ConfidenceLevel` exponential decay — confirm fork is not less conservative).
 - ADR 0001 patch: `trusted_time-wyb`.
 - Upstream response monitoring: `trusted_time-1qx`.
