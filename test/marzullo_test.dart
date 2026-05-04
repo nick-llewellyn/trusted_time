@@ -178,6 +178,68 @@ void main() {
       expect(result.utc.millisecondsSinceEpoch, baseMs + 9);
     });
 
+    test('chatty source does not mask later window with more unique '
+        'authorities', () {
+      // Three samples from `a` plus one from `b` create a window of raw
+      // depth 4 but only 2 unique authorities. A later, fully disjoint
+      // window of three distinct sources `c`, `d`, `e` has raw depth 3
+      // and 3 unique authorities. With quorum=3, the second window is
+      // the only valid consensus. A sweep that optimises on raw depth
+      // would lock in the first window and the post-sweep gate would
+      // reject the result entirely (returning null), even though a
+      // valid consensus exists.
+      //   a1: centre base+5  ms, rtt 10 ms -> [base+0,  base+10]
+      //   a2: centre base+5  ms, rtt  8 ms -> [base+1,  base+9 ]
+      //   a3: centre base+5  ms, rtt  6 ms -> [base+2,  base+8 ]
+      //   b : centre base+5  ms, rtt  4 ms -> [base+3,  base+7 ]
+      //   c : centre base+25 ms, rtt 10 ms -> [base+20, base+30]
+      //   d : centre base+25 ms, rtt  8 ms -> [base+21, base+29]
+      //   e : centre base+25 ms, rtt  6 ms -> [base+22, base+28]
+      const engine3 = MarzulloEngine(minimumQuorum: 3);
+      final result = engine3.resolve([
+        SourceSample(
+          sourceId: 'a',
+          utc: baseTime.add(const Duration(milliseconds: 5)),
+          roundTripMs: 10,
+        ),
+        SourceSample(
+          sourceId: 'a',
+          utc: baseTime.add(const Duration(milliseconds: 5)),
+          roundTripMs: 8,
+        ),
+        SourceSample(
+          sourceId: 'a',
+          utc: baseTime.add(const Duration(milliseconds: 5)),
+          roundTripMs: 6,
+        ),
+        SourceSample(
+          sourceId: 'b',
+          utc: baseTime.add(const Duration(milliseconds: 5)),
+          roundTripMs: 4,
+        ),
+        SourceSample(
+          sourceId: 'c',
+          utc: baseTime.add(const Duration(milliseconds: 25)),
+          roundTripMs: 10,
+        ),
+        SourceSample(
+          sourceId: 'd',
+          utc: baseTime.add(const Duration(milliseconds: 25)),
+          roundTripMs: 8,
+        ),
+        SourceSample(
+          sourceId: 'e',
+          utc: baseTime.add(const Duration(milliseconds: 25)),
+          roundTripMs: 6,
+        ),
+      ]);
+
+      expect(result, isNotNull);
+      expect(result!.participantCount, 3);
+      // Best window is [base+22, base+28]; midpoint at base+25.
+      expect(result.utc.millisecondsSinceEpoch, baseMs + 25);
+    });
+
     test('returns null when raw overlap meets quorum but unique sources '
         'do not', () {
       // Two samples from the same `sourceId` overlap. Raw overlap depth

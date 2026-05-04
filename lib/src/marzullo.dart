@@ -57,10 +57,8 @@ final class MarzulloEngine {
       return a.type == _EndpointType.lower ? -1 : 1;
     });
 
-    var best = 0;
     int? bestStart;
     int? bestEnd;
-    var overlap = 0;
 
     // Multiset of currently-active source IDs. A plain Set would lose
     // multiplicity if the same source contributes overlapping samples:
@@ -68,41 +66,46 @@ final class MarzulloEngine {
     // would drop the source even though another of its intervals is
     // still active, under-counting any later best-moment snapshot.
     final activeSourceCounts = <String, int>{};
+    // The sweep optimises for the maximum number of *distinct authorities*
+    // overlapping at a moment, not raw interval depth. Optimising on raw
+    // depth lets one chatty source mask a later window with more unique
+    // authorities (e.g. three samples from `a` plus one from `b` would
+    // lock in depth=4 and ignore a later [c, d, e] window of depth=3
+    // even though the latter is the only one that satisfies quorum=3).
     var bestSourceIdCount = 0;
 
     for (final ep in endpoints) {
       final id = ep.sample.sourceId;
       if (ep.type == _EndpointType.lower) {
-        overlap++;
         activeSourceCounts.update(id, (c) => c + 1, ifAbsent: () => 1);
-        if (overlap > best) {
-          best = overlap;
+        final unique = activeSourceCounts.length;
+        if (unique > bestSourceIdCount) {
+          bestSourceIdCount = unique;
           bestStart = ep.timeMs;
-          // #7: Reset bestEnd when we find a new maximum overlap depth.
-          // The correct closing endpoint hasn't been encountered yet.
+          // The correct closing endpoint for this new best hasn't been
+          // encountered yet; clear any prior end-of-window candidate.
           bestEnd = null;
-          // Snapshot unique-source-ID count at the best moment so
-          // participantCount reports authorities, not raw overlap depth.
-          bestSourceIdCount = activeSourceCounts.length;
         }
       } else {
-        if (overlap == best && bestStart != null && bestEnd == null) {
-          bestEnd = ep.timeMs;
-        }
         final newCount = activeSourceCounts[id]! - 1;
         if (newCount == 0) {
           activeSourceCounts.remove(id);
         } else {
           activeSourceCounts[id] = newCount;
         }
-        overlap--;
+        // Mark the close of the best window the first time the unique
+        // source count drops below the running maximum. Checking after
+        // the decrement lets a same-source upper endpoint pass without
+        // ending the window when another sample from that source is
+        // still active.
+        if (bestStart != null &&
+            bestEnd == null &&
+            activeSourceCounts.length < bestSourceIdCount) {
+          bestEnd = ep.timeMs;
+        }
       }
     }
 
-    // Gate on unique-source count, not raw overlap depth: minimumQuorum
-    // names distinct authorities, so two overlapping samples from one
-    // source must not satisfy a quorum of two. bestSourceIdCount is
-    // always <= best, making this strictly stronger than `best < ...`.
     if (bestSourceIdCount < minimumQuorum ||
         bestStart == null ||
         bestEnd == null) {
