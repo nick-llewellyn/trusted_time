@@ -23,18 +23,22 @@ final class ConsensusResult {
     required this.utc,
     required this.uncertaintyMs,
     required this.participantCount,
-    required this.participantSourceIds,
+    required this.participants,
   });
 
   final DateTime utc;
   final int uncertaintyMs;
   final int participantCount;
 
-  /// Source IDs whose intervals were active at the moment of maximum
-  /// overlap. Callers pinning a monotonic/wall reference must restrict
-  /// themselves to samples from these sources — a fast outlier excluded
-  /// from the intersection has nothing to say about consensus UTC.
-  final Set<String> participantSourceIds;
+  /// The specific [SourceSample] instances whose intervals were active
+  /// at the moment of maximum overlap. Callers pinning a monotonic/wall
+  /// reference must restrict themselves to *these* samples — a fast
+  /// outlier excluded from the intersection has nothing to say about
+  /// consensus UTC, even when another sample from the same source did
+  /// participate. Identifying participants by source ID alone would
+  /// re-admit the outlier whenever its source contributed more than
+  /// one sample (duplicate config, future burst sampling, etc.).
+  final Set<SourceSample> participants;
 }
 
 /// Resolves a single source-of-truth from overlapping confidence intervals
@@ -91,13 +95,6 @@ final class MarzulloEngine {
     // lock in depth=4 and ignore a later [c, d, e] window of depth=3
     // even though the latter is the only one that satisfies quorum=3).
     var bestSourceIdCount = 0;
-    // Snapshot of the unique source IDs active when `bestSourceIdCount`
-    // was last raised. Captured by value at that moment so that later
-    // sweep activity (sources entering and leaving as endpoints close)
-    // cannot mutate it. Callers use this set to filter post-consensus
-    // anchor candidates — only sources that were inside the intersection
-    // get to contribute a monotonic/wall reference.
-    var bestParticipants = const <String>{};
 
     for (final ep in endpoints) {
       final id = ep.sample.sourceId;
@@ -110,11 +107,6 @@ final class MarzulloEngine {
           // The correct closing endpoint for this new best hasn't been
           // encountered yet; clear any prior end-of-window candidate.
           bestEnd = null;
-          // Materialise an immutable copy of the active source IDs
-          // *now*; subsequent endpoint events will add and remove
-          // entries from `activeSourceCounts` and would otherwise
-          // corrupt the snapshot.
-          bestParticipants = Set.unmodifiable(activeSourceCounts.keys);
         }
       } else {
         final newCount = activeSourceCounts[id]! - 1;
@@ -145,6 +137,21 @@ final class MarzulloEngine {
     final midMs = (bestStart + bestEnd) ~/ 2;
     final uncertaintyMs = (bestEnd - bestStart) ~/ 2;
 
+    // Identify participants by interval-containment of the consensus
+    // midpoint rather than by snapshotting the active set during the
+    // sweep. The sweep guarantees a constant *unique-source* count
+    // throughout `[bestStart, bestEnd]`, but a same-source sample can
+    // enter or leave during the window without changing that count —
+    // so an active-set snapshot at `bestStart` could include a sample
+    // whose interval ends mid-window (and therefore does not actually
+    // contain consensus UTC). Filtering on `|s.utc - midMs| <= s.u`
+    // captures exactly the samples whose reported time is consistent
+    // with consensus, with no dependence on sweep instant.
+    final participants = <SourceSample>{
+      for (final s in valid)
+        if ((s.utc.millisecondsSinceEpoch - midMs).abs() <= s.uncertaintyMs) s,
+    };
+
     return ConsensusResult(
       utc: DateTime.fromMillisecondsSinceEpoch(midMs, isUtc: true),
       // When all surviving intervals coincide on a single point the raw
@@ -156,7 +163,7 @@ final class MarzulloEngine {
       // realistic best-case bound rather than a meaningless zero.
       uncertaintyMs: max(1, uncertaintyMs),
       participantCount: bestSourceIdCount,
-      participantSourceIds: bestParticipants,
+      participants: Set.unmodifiable(participants),
     );
   }
 }

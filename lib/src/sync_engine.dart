@@ -76,6 +76,9 @@ final class SyncEngine {
         .where((s) => !s.roundTripTime.isNegative)
         .toList(growable: false);
 
+    // Build SourceSamples 1:1 with `samples` so that participating
+    // SourceSample instances returned by Marzullo can be mapped back
+    // to their TimeSamples by parallel index.
     final marzulloSamples = [
       for (final s in samples)
         SourceSample(
@@ -101,19 +104,20 @@ final class SyncEngine {
     }
 
     // Pin uptime to the lowest-RTT consensus participant — the tightest
-    // reference available among sources whose intervals were *inside*
+    // reference available among samples whose intervals were *inside*
     // the Marzullo intersection, recorded the instant the response was
-    // received (not after slower siblings resolved). Restricting the
-    // reduction to `participantSourceIds` is what keeps a fast outlier
-    // — a sample whose interval missed the intersection entirely — from
-    // winning the lowest-RTT pick and pinning the anchor's monotonic/
-    // wall reference to a capture instant that has nothing to say about
-    // the consensus UTC. By construction the participant set is non-empty
-    // (`minimumQuorum >= 1`) and every participant contributed a sample,
-    // so the filtered list is non-empty too.
-    final participantSamples = samples
-        .where((s) => result.participantSourceIds.contains(s.source.id))
-        .toList(growable: false);
+    // received (not after slower siblings resolved). Filtering on
+    // SourceSample identity (rather than `source.id`) is what keeps a
+    // fast outlier — a sample whose interval missed the intersection
+    // entirely — from winning the lowest-RTT pick, even when another
+    // sample from the same source did participate (duplicate config,
+    // future burst sampling, etc.). By construction the participant
+    // set is non-empty (`minimumQuorum >= 1`) and every participant
+    // came from `marzulloSamples`, so the filtered list is non-empty.
+    final participantSamples = <TimeSample>[
+      for (var i = 0; i < samples.length; i++)
+        if (result.participants.contains(marzulloSamples[i])) samples[i],
+    ];
     final best = participantSamples.reduce(
       (a, b) => a.roundTripTime <= b.roundTripTime ? a : b,
     );

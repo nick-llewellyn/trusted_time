@@ -204,8 +204,10 @@ final class TimeSample {
   /// agree, the sync succeeds without the malformed sample. If quorum
   /// cannot be reached after rejection, the engine throws
   /// `TrustedTimeSyncException` with a diagnostic that reports the
-  /// eligible-vs-rejected counts (e.g. `0 eligible (2 rejected as
-  /// invalid)` when every responding source violated the contract).
+  /// eligible-vs-rejected counts among samples that survived latency
+  /// filtering (e.g. `0 eligible (2 rejected as invalid)` when both
+  /// surviving samples violated the contract; samples dropped earlier
+  /// for exceeding `maxLatency` are not counted on either side).
   final Duration roundTripTime;
 
   /// Estimated uncertainty (half-RTT by default; sources with tighter

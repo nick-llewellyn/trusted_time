@@ -300,5 +300,49 @@ void main() {
         expect(anchor.uptimeMs, 5000);
       },
     );
+
+    test(
+      'anchor uptime ignores same-source-id outliers outside the intersection',
+      () async {
+        // Two sources happen to share an id (e.g. duplicate config: the
+        // same NTS host listed twice in `ntsServers`). The duplicate
+        // responds extremely fast (10 ms RTT) but reports a UTC 1 s in
+        // the future, placing its interval well outside the consensus
+        // window. A third source agrees with the first on baseTime.
+        // Filtering anchor candidates by `source.id` would re-admit the
+        // fast outlier — both share id `dup` — and pin uptimeMs to its
+        // capture instant. Filtering by SourceSample identity (the
+        // current contract) excludes the outlier even though another
+        // sample from the same id participated in consensus, so the
+        // anchor must come from the lowest-RTT *participant* (`good`,
+        // monotonic 5000).
+        final engine = SyncEngine.withSources(
+          config: config,
+          sources: [
+            _FakeTimeSource(
+              id: 'dup',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(milliseconds: 100),
+              capturedMonotonicMs: 7000,
+            ),
+            _FakeTimeSource(
+              id: 'dup',
+              networkUtc: baseTime.add(const Duration(seconds: 1)),
+              roundTripTime: const Duration(milliseconds: 10),
+              capturedMonotonicMs: 1,
+            ),
+            _FakeTimeSource(
+              id: 'good',
+              networkUtc: baseTime.add(const Duration(milliseconds: 20)),
+              roundTripTime: const Duration(milliseconds: 50),
+              capturedMonotonicMs: 5000,
+            ),
+          ],
+        );
+
+        final anchor = await engine.sync();
+        expect(anchor.uptimeMs, 5000);
+      },
+    );
   });
 }
