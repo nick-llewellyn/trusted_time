@@ -67,23 +67,14 @@ final class SyncEngine {
     // reduction below — pinning the anchor's monotonic/wall reference
     // to a sample that never participated in consensus. Filtering once
     // here keeps consensus, anchor selection, and the quorum-failure
-    // message in agreement on the eligible sample set.
+    // message in agreement on the eligible sample set. If every
+    // surviving sample is malformed the standard quorum-failure path
+    // below reports `0 eligible / N rejected`, which is more accurate
+    // than a dedicated message would be (sources dropped for exceeding
+    // `maxLatency` are already filtered upstream and never reach here).
     final samples = rawSamples
         .where((s) => !s.roundTripTime.isNegative)
         .toList(growable: false);
-    if (samples.isEmpty) {
-      // Reachable when every sample that survived `_queryConcurrently`
-      // (i.e. did not throw and did not exceed maxLatency) carried a
-      // contract-violating negative round-trip time. Sources that timed
-      // out or threw have already been dropped upstream, so the message
-      // says "responding" rather than "configured" \u2014 a mixed run with
-      // some timeouts and some malformed responses still attributes the
-      // failure honestly to the malformed responders.
-      throw const TrustedTimeSyncException(
-        'Every responding source returned an invalid sample '
-        '(negative round-trip time violates the TimeSample contract).',
-      );
-    }
 
     final marzulloSamples = [
       for (final s in samples)
@@ -109,12 +100,21 @@ final class SyncEngine {
       );
     }
 
-    // Pin uptime to the lowest-RTT eligible sample's captured monotonic —
-    // the tightest reference available, recorded the instant its response
-    // was received (not after slower siblings resolved). The negative-RTT
-    // filter above is what keeps a malformed source from winning this
-    // reduction with the smallest (negative) Duration.
-    final best = samples.reduce(
+    // Pin uptime to the lowest-RTT consensus participant — the tightest
+    // reference available among sources whose intervals were *inside*
+    // the Marzullo intersection, recorded the instant the response was
+    // received (not after slower siblings resolved). Restricting the
+    // reduction to `participantSourceIds` is what keeps a fast outlier
+    // — a sample whose interval missed the intersection entirely — from
+    // winning the lowest-RTT pick and pinning the anchor's monotonic/
+    // wall reference to a capture instant that has nothing to say about
+    // the consensus UTC. By construction the participant set is non-empty
+    // (`minimumQuorum >= 1`) and every participant contributed a sample,
+    // so the filtered list is non-empty too.
+    final participantSamples = samples
+        .where((s) => result.participantSourceIds.contains(s.source.id))
+        .toList(growable: false);
+    final best = participantSamples.reduce(
       (a, b) => a.roundTripTime <= b.roundTripTime ? a : b,
     );
 

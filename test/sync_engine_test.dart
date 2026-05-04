@@ -190,7 +190,7 @@ void main() {
       () async {
         // Two sources fetch successfully, but one returns a negative RTT
         // and is filtered. With minimumQuorum=2 the message must say "1
-        // eligible samples (1 rejected as invalid)" rather than the
+        // eligible sample (1 rejected as invalid)" rather than the
         // misleading "2 samples".
         final engine = SyncEngine.withSources(
           config: config,
@@ -224,32 +224,80 @@ void main() {
       },
     );
 
+    test('all-malformed run reports zero eligible samples in quorum-failure '
+        'message', () async {
+      // Two sources respond, both with contract-violating negative RTT.
+      // The engine has no dedicated "every source malformed" branch:
+      // the standard quorum-failure path reports `0 eligible (2 rejected
+      // as invalid)`, which is more accurate than a custom message
+      // would be (samples that exceeded `maxLatency` are filtered
+      // upstream and never enter the eligible/rejected accounting).
+      final engine = SyncEngine.withSources(
+        config: config,
+        sources: [
+          _FakeTimeSource(
+            id: 'a',
+            networkUtc: baseTime,
+            roundTripTime: const Duration(milliseconds: -5),
+          ),
+          _FakeTimeSource(
+            id: 'b',
+            networkUtc: baseTime,
+            roundTripTime: const Duration(milliseconds: -10),
+          ),
+        ],
+      );
+
+      try {
+        await engine.sync();
+        fail('expected TrustedTimeSyncException');
+      } on TrustedTimeSyncException catch (e) {
+        expect(e.message, contains('Quorum not reached'));
+        expect(e.message, matches(RegExp(r'\b0\b.*eligible')));
+        expect(e.message, matches(RegExp(r'2 rejected')));
+      }
+    });
+
     test(
-      'throws explicit invalid-sample error when every source is malformed',
+      'anchor uptime comes from a consensus participant, not a fast outlier',
       () async {
+        // Three sources, minimumQuorum=2. `good1` and `good2` agree on
+        // a UTC near `baseTime` with overlapping uncertainty intervals;
+        // `outlier` reports a UTC 1 s in the future with the smallest
+        // RTT (and therefore the smallest uncertainty), placing its
+        // interval well outside the good1∩good2 intersection. Marzullo
+        // resolves consensus on {good1, good2}; without participant
+        // filtering the lowest-RTT reduction would still pick `outlier`
+        // and pin `anchor.uptimeMs` to its capture monotonic — a
+        // capture instant that had nothing to say about consensus UTC.
+        // With participant filtering the anchor must come from `good1`
+        // (lowest RTT among participants).
         final engine = SyncEngine.withSources(
           config: config,
           sources: [
             _FakeTimeSource(
-              id: 'a',
+              id: 'good1',
               networkUtc: baseTime,
-              roundTripTime: const Duration(milliseconds: -5),
+              roundTripTime: const Duration(milliseconds: 100),
+              capturedMonotonicMs: 5000,
             ),
             _FakeTimeSource(
-              id: 'b',
-              networkUtc: baseTime,
-              roundTripTime: const Duration(milliseconds: -10),
+              id: 'good2',
+              networkUtc: baseTime.add(const Duration(milliseconds: 20)),
+              roundTripTime: const Duration(milliseconds: 100),
+              capturedMonotonicMs: 9000,
+            ),
+            _FakeTimeSource(
+              id: 'outlier',
+              networkUtc: baseTime.add(const Duration(seconds: 1)),
+              roundTripTime: const Duration(milliseconds: 10),
+              capturedMonotonicMs: 1,
             ),
           ],
         );
 
-        try {
-          await engine.sync();
-          fail('expected TrustedTimeSyncException');
-        } on TrustedTimeSyncException catch (e) {
-          expect(e.message, contains('invalid sample'));
-          expect(e.message, contains('TimeSample contract'));
-        }
+        final anchor = await engine.sync();
+        expect(anchor.uptimeMs, 5000);
       },
     );
   });

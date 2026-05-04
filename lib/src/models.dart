@@ -202,11 +202,10 @@ final class TimeSample {
   /// this contract from both the Marzullo intersection and the
   /// lowest-RTT anchor reduction; if enough remaining sources still
   /// agree, the sync succeeds without the malformed sample. If quorum
-  /// fails because too many samples were rejected, the engine throws
+  /// cannot be reached after rejection, the engine throws
   /// `TrustedTimeSyncException` with a diagnostic that reports the
-  /// eligible-vs-rejected counts. If every responding source carries a
-  /// negative round-trip time, the engine throws an explicit
-  /// invalid-sample exception naming the contract that was violated.
+  /// eligible-vs-rejected counts (e.g. `0 eligible (2 rejected as
+  /// invalid)` when every responding source violated the contract).
   final Duration roundTripTime;
 
   /// Estimated uncertainty (half-RTT by default; sources with tighter

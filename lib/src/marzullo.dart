@@ -23,11 +23,18 @@ final class ConsensusResult {
     required this.utc,
     required this.uncertaintyMs,
     required this.participantCount,
+    required this.participantSourceIds,
   });
 
   final DateTime utc;
   final int uncertaintyMs;
   final int participantCount;
+
+  /// Source IDs whose intervals were active at the moment of maximum
+  /// overlap. Callers pinning a monotonic/wall reference must restrict
+  /// themselves to samples from these sources — a fast outlier excluded
+  /// from the intersection has nothing to say about consensus UTC.
+  final Set<String> participantSourceIds;
 }
 
 /// Resolves a single source-of-truth from overlapping confidence intervals
@@ -84,6 +91,13 @@ final class MarzulloEngine {
     // lock in depth=4 and ignore a later [c, d, e] window of depth=3
     // even though the latter is the only one that satisfies quorum=3).
     var bestSourceIdCount = 0;
+    // Snapshot of the unique source IDs active when `bestSourceIdCount`
+    // was last raised. Captured by value at that moment so that later
+    // sweep activity (sources entering and leaving as endpoints close)
+    // cannot mutate it. Callers use this set to filter post-consensus
+    // anchor candidates — only sources that were inside the intersection
+    // get to contribute a monotonic/wall reference.
+    var bestParticipants = const <String>{};
 
     for (final ep in endpoints) {
       final id = ep.sample.sourceId;
@@ -96,6 +110,11 @@ final class MarzulloEngine {
           // The correct closing endpoint for this new best hasn't been
           // encountered yet; clear any prior end-of-window candidate.
           bestEnd = null;
+          // Materialise an immutable copy of the active source IDs
+          // *now*; subsequent endpoint events will add and remove
+          // entries from `activeSourceCounts` and would otherwise
+          // corrupt the snapshot.
+          bestParticipants = Set.unmodifiable(activeSourceCounts.keys);
         }
       } else {
         final newCount = activeSourceCounts[id]! - 1;
@@ -137,6 +156,7 @@ final class MarzulloEngine {
       // realistic best-case bound rather than a meaningless zero.
       uncertaintyMs: max(1, uncertaintyMs),
       participantCount: bestSourceIdCount,
+      participantSourceIds: bestParticipants,
     );
   }
 }
