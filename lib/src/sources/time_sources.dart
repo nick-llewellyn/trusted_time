@@ -58,11 +58,27 @@ final class HttpsSource implements TrustedTimeSource {
 
     // Try HEAD first (lightweight), fall back to GET if the server rejects
     // HEAD or omits the Date header.
-    var response = await _client.head(uri).timeout(const Duration(seconds: 3));
+    //
+    // The hard-coded 30 s per-request bound is a defensive ceiling for
+    // genuinely hung connections (e.g. a TCP socket that never receives
+    // RST) — it is *not* the policy knob for "how long is too long".
+    // `SyncEngine` wraps every `fetch()` in `timeout(maxLatency)` and
+    // routes the resulting `_OuterTimeoutException` to the `timedOut`
+    // diagnostic bucket; an inner `TimeoutException` is bucketed as
+    // `failed` instead. Keeping the inner bound well above any
+    // reasonable `maxLatency` (the default is 3 s) ensures the outer
+    // wrapper deterministically wins under normal configuration, so a
+    // slow HTTPS probe is reported as "timed out" rather than racing
+    // the inner deadline and being misattributed as a generic failure.
+    // Callers configuring `maxLatency` above 30 s should provide a
+    // pre-configured `http.Client` whose connection / idle timeouts
+    // exceed their budget; otherwise the inner ceiling becomes the
+    // effective bound and the diagnostic split degrades.
+    var response = await _client.head(uri).timeout(const Duration(seconds: 30));
     if (response.statusCode == 405 || response.headers['date'] == null) {
       sw.reset();
       sw.start();
-      response = await _client.get(uri).timeout(const Duration(seconds: 3));
+      response = await _client.get(uri).timeout(const Duration(seconds: 30));
     }
     sw.stop();
     // Capture monotonic reference immediately on response receipt, before

@@ -37,8 +37,8 @@ class _FakeTimeSource implements TrustedTimeSource {
   // distinguish them by sentinel rather than by type — exercised by
   // the "inner TimeoutException is bucketed as failed, not timed out"
   // regression. Real-world equivalent: `HttpsSource` enforces its own
-  // hard-coded 3 s per-request HTTP timeouts independent of
-  // `maxLatency`, and a slow probe under a generous `maxLatency`
+  // hard-coded 30 s defensive per-request HTTP ceiling independent of
+  // `maxLatency`, and a probe under a `maxLatency` larger than 30 s
   // would surface that inner timeout if the engine were not careful.
   final bool throwInnerTimeout;
   // Throws a generic exception *after* the pre-response delay has

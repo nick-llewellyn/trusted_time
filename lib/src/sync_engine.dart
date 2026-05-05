@@ -60,8 +60,18 @@ final class SyncEngine {
   /// from the same source did participate. Pinning at receipt avoids
   /// drift from a post-aggregation re-sample.
   ///
-  /// Throws [TrustedTimeSyncException] if no sources are configured, if
-  /// no sources respond, or if quorum cannot be reached.
+  /// Throws [TrustedTimeSyncException] when consensus cannot be
+  /// produced. The exception spans every failure mode emitted from
+  /// here: no sources configured, no source produced any sample
+  /// (every probe threw, timed out, or returned a malformed
+  /// payload), every responder exceeded `maxLatency` (a pure
+  /// over-latency outage), a multi-cause shortfall where some
+  /// timed out and others failed or were over-budget, and a
+  /// quorum-shortfall where the eligible-and-in-budget pool was
+  /// non-empty but did not reach `minimumQuorum` after Marzullo
+  /// intersection. The diagnostic message names the contributing
+  /// bucket(s) so the caller can attribute the cause without
+  /// relying on exception subtypes.
   Future<TrustAnchor> sync() async {
     // The empty-source configuration is its own failure mode: no
     // queries were attempted, so the post-query diagnostic dispatch
@@ -97,13 +107,15 @@ final class SyncEngine {
         // "Failed to produce a usable sample" deliberately spans the
         // three sub-causes of the `failed` bucket: transport failures
         // before any response (DNS, refused connection), inner
-        // request timeouts (e.g. `HttpsSource`'s hard-coded 3 s HTTP
-        // limit), and post-response validation/parse failures (e.g.
-        // `HttpsSource` throwing after a missing or malformed `Date`
-        // header). Wording it as "failed to respond" \u2014 as the engine
-        // did historically \u2014 misattributes payload errors as
-        // transport non-response and obscures parse failures during
-        // production triage.
+        // request timeouts (e.g. `HttpsSource`'s hard-coded 30 s
+        // defensive HTTP ceiling, which only fires when the outer
+        // `maxLatency` budget is itself longer than 30 s), and
+        // post-response validation/parse failures (e.g. `HttpsSource`
+        // throwing after a missing or malformed `Date` header).
+        // Wording it as "failed to respond" — as the engine did
+        // historically — misattributes payload errors as transport
+        // non-response and obscures parse failures during production
+        // triage.
         throw const TrustedTimeSyncException(
           'Every configured time source failed to produce a usable sample.',
         );
@@ -298,8 +310,12 @@ final class SyncEngine {
   ///   running in the background — sources that need bounded
   ///   resource lifetimes must enforce their own cancellation
   ///   contract. Distinct from `TimeoutException`s raised *inside*
-  ///   `source.fetch()` (e.g. an [HttpsSource]'s own per-request 3 s
-  ///   limit) — those are bucketed as `failed`.
+  ///   `source.fetch()` (e.g. an [HttpsSource]'s own per-request 30 s
+  ///   defensive ceiling) — those are bucketed as `failed`. The
+  ///   inner ceiling is set above any reasonable `maxLatency`
+  ///   precisely so the outer wrapper wins under normal
+  ///   configuration; the `failed`-bucketed inner timeout only
+  ///   surfaces when `maxLatency` itself exceeds 30 s.
   /// - `failed`: returned no usable sample for any reason other than
   ///   the outer `maxLatency` wrapper. Spans transport failures
   ///   before any response (DNS, refused connection), inner
@@ -379,18 +395,21 @@ final class SyncEngine {
   /// *resource cleanup*.
   ///
   /// `TimeoutException`s thrown *inside* `source.fetch()` (for example,
-  /// [HttpsSource]'s hard-coded 3 s per-request HTTP timeouts) are
-  /// explicitly *not* attributed to the outer `maxLatency` wrapper —
-  /// otherwise, when `maxLatency` is larger than the inner deadline,
-  /// the diagnostic would name the configured budget as the cause when
-  /// a different timeout actually fired. To distinguish the two, the
-  /// outer `.timeout(...)` raises a private sentinel
-  /// ([_OuterTimeoutException]) via its `onTimeout` callback; only that
-  /// sentinel maps to `timedOut: true`. Inner `TimeoutException`s fall
-  /// through to the generic catch-all, joining the `failed` bucket
-  /// alongside transport errors and post-response validation/parse
-  /// failures (e.g. an [HttpsSource] response without a usable `Date`
-  /// header).
+  /// [HttpsSource]'s hard-coded 30 s defensive per-request HTTP
+  /// ceiling) are explicitly *not* attributed to the outer
+  /// `maxLatency` wrapper — otherwise, when `maxLatency` is larger
+  /// than the inner deadline, the diagnostic would name the configured
+  /// budget as the cause when a different timeout actually fired. To
+  /// distinguish the two, the outer `.timeout(...)` raises a private
+  /// sentinel ([_OuterTimeoutException]) via its `onTimeout` callback;
+  /// only that sentinel maps to `timedOut: true`. Inner
+  /// `TimeoutException`s fall through to the generic catch-all,
+  /// joining the `failed` bucket alongside transport errors and
+  /// post-response validation/parse failures (e.g. an [HttpsSource]
+  /// response without a usable `Date` header). The inner ceiling sits
+  /// above any reasonable `maxLatency` precisely so the outer wrapper
+  /// wins under normal configuration; the `failed`-bucketed inner
+  /// timeout only fires when `maxLatency` itself exceeds 30 s.
   Future<({TimeSample? sample, bool timedOut})> _querySafe(
     TrustedTimeSource source,
   ) async {

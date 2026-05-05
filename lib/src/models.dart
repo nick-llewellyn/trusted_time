@@ -214,21 +214,25 @@ final class TimeSample {
   /// surfacing it here keeps a mixed run (some eligible, some
   /// failed) from being misread as a pure latency or invalidity
   /// shortfall. When *no* sample reaches the eligible set the engine
-  /// raises a categorical
-  /// diagnostic naming the cause: a pure outright-failure run reports
-  /// `Every configured time source failed to produce a usable
-  /// sample.`, a pure-timeout run reports `N source(s) timed out
-  /// after maxLatency=X ms`, and a pure post-hoc run reports `N
-  /// source(s) responded but every sample exceeded maxLatency=X ms`.
-  /// Runs whose outcomes span more than one of `{timed out, responded
-  /// over-budget, yielded no usable sample}` produce a multi-cause
-  /// message that breaks down each contributing bucket — so a mixed
-  /// "one timed out / one yielded a malformed payload" outage is
-  /// never silently rebadged as a pure-timeout cause. The "yielded
-  /// no usable sample" bucket spans transport failures, inner
-  /// request timeouts, and post-response validation/parse errors
-  /// (e.g. an HTTPS response without a usable `Date` header) — the
-  /// neutral wording avoids implying the source never responded.
+  /// raises a categorical diagnostic naming the cause: a pure
+  /// outright-failure run reports `Every configured time source
+  /// failed to produce a usable sample.`, a pure-timeout run reports
+  /// `N source(s) timed out after maxLatency=...`, and a pure
+  /// post-hoc run reports `N source(s) responded but every sample
+  /// exceeded maxLatency=...`. The `maxLatency=...` token renders in
+  /// whichever unit matches the configured precision — ms-aligned
+  /// budgets render as `50 ms`, sub-millisecond budgets render as
+  /// e.g. `500 µs` so the advertised threshold matches the value the
+  /// filter actually compared against. Runs whose outcomes span more
+  /// than one of `{timed out, responded over-budget, yielded no
+  /// usable sample}` produce a multi-cause message that breaks down
+  /// each contributing bucket — so a mixed "one timed out / one
+  /// yielded a malformed payload" outage is never silently rebadged
+  /// as a pure-timeout cause. The "yielded no usable sample" bucket
+  /// spans transport failures, inner request timeouts, and
+  /// post-response validation/parse errors (e.g. an HTTPS response
+  /// without a usable `Date` header) — the neutral wording avoids
+  /// implying the source never responded.
   final Duration roundTripTime;
 
   /// Confidence half-width of [networkUtc].
