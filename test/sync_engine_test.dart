@@ -1300,4 +1300,99 @@ void main() {
       );
     });
   });
+
+  group('SyncEngine strict-greater invariant', () {
+    // Both new public timeout knobs (`httpsRequestTimeout`,
+    // `ntsRequestTimeout`) only deliver deterministic
+    // `timedOut`/`failed` attribution when they are strictly greater
+    // than `maxLatency`. The dartdocs say so; this group asserts the
+    // engine refuses to construct when the rule is violated rather
+    // than silently shipping a config that produces racy diagnostics.
+    // Asserts (debug-only) rather than runtime throws, because the
+    // failure mode is diagnostic-quality degradation, not a
+    // correctness or safety issue \u2014 production builds with bad
+    // configs still function, just with the documented misbucketing.
+
+    final baseClock = PlatformMonotonicClock();
+
+    test('asserts when httpsRequestTimeout equals maxLatency', () {
+      // Equal values race; the dartdoc forbids equality (not just
+      // less-than). Pinning the boundary catches a future relaxation
+      // to `>=` that would silently reintroduce the race.
+      const badConfig = TrustedTimeConfig(
+        maxLatency: Duration(seconds: 3),
+        httpsRequestTimeout: Duration(seconds: 3),
+      );
+      expect(
+        () => SyncEngine(config: badConfig, clock: baseClock),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('asserts when httpsRequestTimeout is below maxLatency', () {
+      const badConfig = TrustedTimeConfig(
+        maxLatency: Duration(seconds: 5),
+        httpsRequestTimeout: Duration(seconds: 3),
+      );
+      expect(
+        () => SyncEngine(config: badConfig, clock: baseClock),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('asserts when ntsRequestTimeout equals maxLatency', () {
+      const badConfig = TrustedTimeConfig(
+        maxLatency: Duration(seconds: 5),
+        ntsRequestTimeout: Duration(seconds: 5),
+      );
+      expect(
+        () => SyncEngine(config: badConfig, clock: baseClock),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('asserts when ntsRequestTimeout is below maxLatency', () {
+      const badConfig = TrustedTimeConfig(
+        maxLatency: Duration(seconds: 10),
+        ntsRequestTimeout: Duration(seconds: 5),
+      );
+      expect(
+        () => SyncEngine(config: badConfig, clock: baseClock),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test(
+      'withSources constructor enforces the same invariant as the production '
+      'constructor',
+      () {
+        // The test seam bypasses built-in source construction but
+        // still has to honour the diagnostic-attribution rule. A fake
+        // source with an internal ceiling matching httpsRequestTimeout
+        // would race the same way as a real one, and the assert keeps
+        // the contract symmetric across both constructors so tests
+        // cannot smuggle a misconfigured config through the seam.
+        const badConfig = TrustedTimeConfig(
+          maxLatency: Duration(seconds: 3),
+          httpsRequestTimeout: Duration(seconds: 3),
+        );
+        expect(
+          () => SyncEngine.withSources(config: badConfig, sources: const []),
+          throwsA(isA<AssertionError>()),
+        );
+      },
+    );
+
+    test('default config satisfies both invariants', () {
+      // Belt-and-braces: a future change to either default that
+      // breaks the inequality would otherwise only surface when an
+      // integrator hit the assert in their own code. Pinning the
+      // defaults here catches that at our test time.
+      const defaultConfig = TrustedTimeConfig();
+      expect(
+        () => SyncEngine(config: defaultConfig, clock: baseClock),
+        returnsNormally,
+      );
+    });
+  });
 }

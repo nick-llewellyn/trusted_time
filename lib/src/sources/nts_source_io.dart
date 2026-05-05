@@ -84,7 +84,19 @@ final class NtsSource implements TrustedTimeSource {
     NtsWarmCookiesFn? warmCookies,
   }) : assert(burstSize >= 1, 'burstSize must be >= 1'),
        _port = port,
-       _timeoutMs = timeout.inMilliseconds,
+       // Round up rather than floor when collapsing the per-query
+       // ceiling down to the FRB bridge's int-millisecond granularity.
+       // `Duration.inMilliseconds` truncates, so a caller satisfying
+       // the strict-greater invariant at sub-millisecond resolution
+       // (e.g. `ntsRequestTimeout=3600 µs` vs `maxLatency=3500 µs`)
+       // would otherwise see the bridge receive `3 ms` and fire the
+       // inner deadline first, inverting the timedOut/failed bucketing
+       // that `ntsRequestTimeout` exists to stabilise. Ceiling preserves
+       // the invariant across the conversion at the cost of at most
+       // one extra millisecond of inner ceiling — well below any
+       // reasonable `maxLatency` budget. The standard ceiling-divide
+       // idiom: `(x + d - 1) ~/ d` with `d = 1000`.
+       _timeoutMs = (timeout.inMicroseconds + 999) ~/ 1000,
        _burstSize = burstSize,
        _burstSpacing = burstSpacing,
        _clock = clock ?? PlatformMonotonicClock(),

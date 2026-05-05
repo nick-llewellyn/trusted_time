@@ -447,6 +447,15 @@ final class TrustedTimeConfig {
   /// 5 s must raise this in step (e.g. `maxLatency: 10s,
   /// ntsRequestTimeout: 15s`).
   ///
+  /// The FRB bridge underlying the built-in NTS source carries the
+  /// per-query ceiling as an integer millisecond count. Sub-millisecond
+  /// values pass through `Duration.inMicroseconds` and are rounded
+  /// **up** to the next whole millisecond before reaching the bridge,
+  /// so the strict-greater inequality survives the precision drop
+  /// (a 3.6 ms ceiling above a 3.5 ms outer budget reaches the bridge
+  /// as 4 ms, still strictly greater). Callers wanting an exact
+  /// inner deadline should pass an integer-millisecond [Duration].
+  ///
   /// Has no effect on [additionalSources]; custom [TrustedTimeSource]
   /// implementations are responsible for their own per-request bounds.
   final Duration ntsRequestTimeout;

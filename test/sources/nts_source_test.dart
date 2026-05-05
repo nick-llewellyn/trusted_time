@@ -127,6 +127,71 @@ void main() {
       },
     );
 
+    test(
+      'sub-millisecond timeout rounds up to the next whole millisecond',
+      () async {
+        // Pins the ceiling-divide that protects the strict-greater
+        // invariant across the FRB bridge's int-millisecond
+        // granularity. A floor (`Duration.inMilliseconds`) would
+        // truncate `3600 µs` to `3 ms`, which can drop the inner
+        // ceiling below `maxLatency` even when the caller supplied a
+        // sub-ms strict-greater margin at the config layer (e.g.
+        // `maxLatency: 3500 µs, ntsRequestTimeout: 3600 µs`).
+        // Ceiling preserves the inequality across the conversion;
+        // this test fails the moment the conversion regresses to a
+        // floor.
+        int? receivedTimeoutMs;
+        final source = NtsSource(
+          'nts.example.org',
+          timeout: const Duration(microseconds: 3600),
+          burstSize: 1,
+          burstSpacing: Duration.zero,
+          clock: _FakeMonotonicClock(0),
+          query: ({required spec, required timeoutMs}) async {
+            receivedTimeoutMs = timeoutMs;
+            return _sample();
+          },
+          warmCookies: _noopWarm,
+        );
+
+        await source.fetch();
+
+        // 3600 µs ceiling-divided by 1000 → 4 ms, not 3 ms.
+        expect(receivedTimeoutMs, 4);
+        // The test seam surfaces the same value as a Duration so the
+        // SyncEngine plumbing regression sees the rounded-up shape.
+        expect(
+          source.requestTimeoutForTesting,
+          const Duration(milliseconds: 4),
+        );
+      },
+    );
+
+    test('integral-millisecond timeout passes through unchanged', () async {
+      // Companion to the rounding regression. Ceiling-divide on an
+      // input that is already a whole number of milliseconds must
+      // be a no-op; otherwise the implementation has off-by-one
+      // bug that inflates every config by 1 ms.
+      int? receivedTimeoutMs;
+      final source = NtsSource(
+        'nts.example.org',
+        timeout: const Duration(milliseconds: 7),
+        burstSize: 1,
+        burstSpacing: Duration.zero,
+        clock: _FakeMonotonicClock(0),
+        query: ({required spec, required timeoutMs}) async {
+          receivedTimeoutMs = timeoutMs;
+          return _sample();
+        },
+        warmCookies: _noopWarm,
+      );
+
+      await source.fetch();
+
+      expect(receivedTimeoutMs, 7);
+      expect(source.requestTimeoutForTesting, const Duration(milliseconds: 7));
+    });
+
     test('default port is the IANA NTS-KE port (4460)', () async {
       NtsServerSpec? receivedSpec;
       final source = NtsSource(
