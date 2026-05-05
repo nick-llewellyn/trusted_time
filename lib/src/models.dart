@@ -213,13 +213,18 @@ final class TimeSample {
   /// timeout, or returned a payload that could not be parsed —
   /// surfacing it here keeps a mixed run (some eligible, some
   /// failed) from being misread as a pure latency or invalidity
-  /// shortfall. When *no* sample reaches the eligible set the engine
-  /// raises a categorical diagnostic naming the cause: a pure
-  /// outright-failure run reports `Every configured time source
-  /// failed to produce a usable sample.`, a pure-timeout run reports
-  /// `N source(s) timed out after maxLatency=...`, and a pure
-  /// post-hoc run reports `N source(s) responded but every sample
-  /// exceeded maxLatency=...`. The `maxLatency=...` token renders in
+  /// shortfall. The quorum-shortfall message above also fires when
+  /// every latency-survivor is then rejected as invalid (`0 eligible
+  /// samples (N rejected as invalid; ...)`) — the categorical
+  /// diagnostics described next are reserved for runs where no
+  /// sample survives the **latency** filter at all. When no sample
+  /// survives the latency filter the engine raises a categorical
+  /// diagnostic naming the cause: a pure outright-failure run
+  /// reports `Every configured time source failed to produce a
+  /// usable sample.`, a pure-timeout run reports `N source(s) timed
+  /// out after maxLatency=...`, and a pure post-hoc run reports
+  /// `N source(s) responded but every sample exceeded
+  /// maxLatency=...`. The `maxLatency=...` token renders in
   /// whichever unit matches the configured precision — ms-aligned
   /// budgets render as `50 ms`, sub-millisecond budgets render as
   /// e.g. `500 µs` so the advertised threshold matches the value the
@@ -413,7 +418,13 @@ final class TrustedTimeConfig {
   /// every probe will surface the inner ceiling first and be bucketed
   /// as `failed`. The strict-greater rule is enforced by an assert in
   /// the [SyncEngine] constructor when [httpsSources] is non-empty;
-  /// HTTPS-free configs may leave this value at any setting.
+  /// HTTPS-free configs may leave this value at any setting. Must
+  /// also be a positive [Duration] when [httpsSources] is non-empty:
+  /// a non-positive value would fire the inner ceiling immediately
+  /// on every probe and is rejected at runtime (in both debug and
+  /// release builds) with [ArgumentError] from the [SyncEngine]
+  /// constructor — the failure mode is broken-config, not just
+  /// degraded diagnostics, so it does not rely on debug-only asserts.
   ///
   /// Callers concerned about lingering background work — `Future.timeout`
   /// does not cancel the in-flight HTTP request, so an abandoned probe
@@ -443,18 +454,36 @@ final class TrustedTimeConfig {
   /// [maxLatency]; the default of 5 s is chosen to sit above the
   /// default [maxLatency] of 3 s.
   ///
-  /// Quantitatively the NTS path differs: the inner ceiling applies
-  /// per-query, and the built-in source issues a burst of authenticated
-  /// samples per `fetch()` (lowest-RTD wins). A single hung query may
-  /// fire the inner deadline and surface as `failed` even though the
-  /// overall `fetch()` would still have returned the better samples in
-  /// the burst — hence "strictly greater than [maxLatency]" is
-  /// necessary but not sufficient on its own to keep slow probes in
-  /// the `timedOut` bucket. Callers configuring [maxLatency] above
-  /// 5 s must raise this in step (e.g. `maxLatency: 10s,
-  /// ntsRequestTimeout: 15s`). The strict-greater rule is enforced by
-  /// an assert in the [SyncEngine] constructor when [ntsServers] is
-  /// non-empty; NTS-free configs may leave this value at any setting.
+  /// Quantitatively the NTS path differs from HTTPS: the inner
+  /// ceiling applies **per-query**, and the built-in source issues a
+  /// burst of authenticated samples per `fetch()` (lowest-RTD wins).
+  /// Per-query `NtsError`s — including inner-deadline expiries — are
+  /// caught inside the burst loop and do not propagate as long as at
+  /// least one query in the burst returns a sample, so a single hung
+  /// query is masked rather than surfaced as `failed`. The source
+  /// only surfaces as `failed` when **every** query in the burst
+  /// fails (transport error, inner deadline expiry, or post-response
+  /// validation error on each one). The cumulative cost of a fully
+  /// failing burst — `burstSize * ntsRequestTimeout` plus
+  /// `(burstSize - 1) * burstSpacing` of inter-sample delay — can
+  /// exceed [maxLatency] even when a single inner ceiling does not,
+  /// in which case the outer wrapper fires first and the source is
+  /// bucketed as `timedOut` rather than `failed`. "Strictly greater
+  /// than [maxLatency]" is therefore necessary for the structural
+  /// race-free attribution but not sufficient on its own to predict
+  /// the bucket on the NTS path: which wrapper fires first depends
+  /// on the cumulative burst progress at the moment of expiry.
+  /// Callers configuring [maxLatency] above 5 s must raise this in
+  /// step (e.g. `maxLatency: 10s, ntsRequestTimeout: 15s`). The
+  /// strict-greater rule is enforced by an assert in the
+  /// [SyncEngine] constructor when [ntsServers] is non-empty;
+  /// NTS-free configs may leave this value at any setting. Must
+  /// also be a positive [Duration] when [ntsServers] is non-empty:
+  /// a non-positive value would fire the inner ceiling immediately
+  /// on every burst query and is rejected at runtime (in both debug
+  /// and release builds) with [ArgumentError] from the [SyncEngine]
+  /// constructor — the failure mode is broken-config, not just
+  /// degraded diagnostics, so it does not rely on debug-only asserts.
   ///
   /// The FRB bridge underlying the built-in NTS source carries the
   /// per-query ceiling as an integer millisecond count. Sub-millisecond

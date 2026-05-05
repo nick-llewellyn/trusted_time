@@ -20,7 +20,8 @@ final class SyncEngine {
   /// forwarded to NTS/HTTPS sources so each can pin its monotonic
   /// reference at response receipt.
   SyncEngine({required TrustedTimeConfig config, required MonotonicClock clock})
-    : assert(
+    : _config = _validateConfig(config),
+      assert(
         config.httpsSources.isEmpty ||
             config.httpsRequestTimeout > config.maxLatency,
         // The strict-greater rule is what makes the timedOut/failed
@@ -59,7 +60,6 @@ final class SyncEngine {
         'non-empty, for deterministic timedOut/failed attribution. '
         'See TrustedTimeConfig.ntsRequestTimeout dartdoc.',
       ),
-      _config = config,
       _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum),
       _sources = [
         // Thread `ntsRequestTimeout` through to every built-in NTS
@@ -106,6 +106,57 @@ final class SyncEngine {
   }) : _config = config,
        _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum),
        _sources = List.unmodifiable(sources);
+
+  /// Validates the runtime preconditions on the config that are too
+  /// load-bearing to be left as debug-only `assert`s.
+  ///
+  /// The strict-greater rule on the timeout knobs vs. [maxLatency]
+  /// stays as an `assert` in the constructor's initializer list — it
+  /// governs *which* diagnostic bucket a slow probe ends up in, which
+  /// is a development-time correctness concern. A non-positive
+  /// `httpsRequestTimeout`/`ntsRequestTimeout`, by contrast, is a
+  /// production-impacting misconfig: every built-in probe fires its
+  /// inner ceiling before the request can even start, the source is
+  /// bucketed as `failed` immediately, and the engine produces no
+  /// usable consensus regardless of how many sources are configured.
+  /// Asserts compiled out of release builds would let a typo
+  /// (`Duration.zero`, a stray negative) ship silently broken; this
+  /// throw fires uniformly in debug and release. Gated on the
+  /// corresponding source list being non-empty for the same reason
+  /// the strict-greater asserts are: an HTTPS-only config that never
+  /// uses `ntsRequestTimeout` should not be rejected for an unused
+  /// knob (and vice versa). Custom [TrustedTimeSource] instances
+  /// supplied via `additionalSources` are responsible for their own
+  /// per-request bounds — only the built-in probes constructed here
+  /// from [TrustedTimeConfig.httpsSources] / [TrustedTimeConfig.ntsServers]
+  /// consume the validated knobs.
+  static TrustedTimeConfig _validateConfig(TrustedTimeConfig config) {
+    if (config.httpsSources.isNotEmpty &&
+        config.httpsRequestTimeout <= Duration.zero) {
+      throw ArgumentError.value(
+        config.httpsRequestTimeout,
+        'config.httpsRequestTimeout',
+        'must be a positive Duration when httpsSources is non-empty; '
+            'a non-positive value would force every built-in HTTPS probe '
+            'to fire its inner ceiling immediately and bucket as '
+            '`failed` before any request is sent. See '
+            'TrustedTimeConfig.httpsRequestTimeout dartdoc.',
+      );
+    }
+    if (config.ntsServers.isNotEmpty &&
+        config.ntsRequestTimeout <= Duration.zero) {
+      throw ArgumentError.value(
+        config.ntsRequestTimeout,
+        'config.ntsRequestTimeout',
+        'must be a positive Duration when ntsServers is non-empty; '
+            'a non-positive value would force every built-in NTS '
+            'query to fire its inner ceiling immediately and the '
+            'whole burst to surface as `failed`. See '
+            'TrustedTimeConfig.ntsRequestTimeout dartdoc.',
+      );
+    }
+    return config;
+  }
 
   final TrustedTimeConfig _config;
   final MarzulloEngine _engine;

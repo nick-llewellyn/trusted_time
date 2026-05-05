@@ -50,27 +50,32 @@ void main() {
     });
 
     test('configs with different httpsRequestTimeout are NOT equal', () {
-      // Pins both halves of the equality contract for the public knob
-      // added to expose the per-request HTTPS ceiling: an omission from
-      // either `operator ==` or `hashCode` would let a config swap that
-      // changed only this field silently look like a no-op (and skip a
-      // re-sync that callers expected). Asserting both `!=` and
-      // `hashCode != hashCode` catches either omission.
+      // Pins the `operator ==` half of the equality contract for the
+      // public knob added to expose the per-request HTTPS ceiling: an
+      // omission from `==` would let a config swap that changed only
+      // this field silently look like a no-op (and skip a re-sync that
+      // callers expected). The `hashCode` half is *not* asserted via
+      // inequality because Dart's `hashCode` contract permits unequal
+      // objects to share a hash — the only contractual obligation is
+      // `a == b => a.hashCode == b.hashCode` (covered by the equality
+      // tests below). Asserting `a.hashCode != b.hashCode` would be a
+      // soundness bug that could fail spuriously on legal collisions
+      // even when `hashCode` correctly includes the field.
       const a = TrustedTimeConfig(httpsRequestTimeout: Duration(seconds: 30));
       const b = TrustedTimeConfig(httpsRequestTimeout: Duration(seconds: 60));
       expect(a, isNot(equals(b)));
-      expect(a.hashCode, isNot(equals(b.hashCode)));
     });
 
     test('configs with different ntsRequestTimeout are NOT equal', () {
       // Mirror of the httpsRequestTimeout regression for the NTS
       // per-query ceiling. Same rationale: a future omission from
-      // either `operator ==` or `hashCode` should fail this test
-      // rather than slip through as a silent equality bug.
+      // `operator ==` should fail this test rather than slip through
+      // as a silent equality bug. `hashCode` inequality is not
+      // asserted (see the httpsRequestTimeout test for the contract
+      // rationale).
       const a = TrustedTimeConfig(ntsRequestTimeout: Duration(seconds: 5));
       const b = TrustedTimeConfig(ntsRequestTimeout: Duration(seconds: 10));
       expect(a, isNot(equals(b)));
-      expect(a.hashCode, isNot(equals(b.hashCode)));
     });
 
     test('configs with different additionalSources are NOT equal', () {

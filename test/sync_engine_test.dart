@@ -1455,4 +1455,133 @@ void main() {
       );
     });
   });
+
+  group('SyncEngine non-positive timeout runtime guard', () {
+    // The strict-greater asserts above govern the timedOut/failed
+    // diagnostic split — a development-time correctness concern,
+    // hence `assert`. Non-positive timeouts (`Duration.zero`,
+    // negative durations) are a different category: every built-in
+    // probe fires its inner ceiling immediately, the source is
+    // bucketed as `failed` before any real request, and the engine
+    // produces no usable consensus regardless of how many sources
+    // are configured. That is broken-config, not just degraded
+    // diagnostics, so the production [SyncEngine] constructor throws
+    // [ArgumentError] in both debug and release builds rather than
+    // relying on debug-only asserts that ship code with the bug
+    // intact. These regressions pin that contract.
+
+    final baseClock = PlatformMonotonicClock();
+
+    test('throws ArgumentError when httpsRequestTimeout is Duration.zero '
+        'and httpsSources is non-empty', () {
+      const config = TrustedTimeConfig(
+        httpsSources: ['https://example.com'],
+        httpsRequestTimeout: Duration.zero,
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.name,
+            'name',
+            'config.httpsRequestTimeout',
+          ),
+        ),
+      );
+    });
+
+    test('throws ArgumentError when httpsRequestTimeout is negative '
+        'and httpsSources is non-empty', () {
+      const config = TrustedTimeConfig(
+        httpsSources: ['https://example.com'],
+        httpsRequestTimeout: Duration(seconds: -1),
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('throws ArgumentError when ntsRequestTimeout is Duration.zero '
+        'and ntsServers is non-empty', () {
+      const config = TrustedTimeConfig(
+        ntsServers: ['time.example.com'],
+        ntsRequestTimeout: Duration.zero,
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.name,
+            'name',
+            'config.ntsRequestTimeout',
+          ),
+        ),
+      );
+    });
+
+    test('throws ArgumentError when ntsRequestTimeout is negative '
+        'and ntsServers is non-empty', () {
+      const config = TrustedTimeConfig(
+        ntsServers: ['time.example.com'],
+        ntsRequestTimeout: Duration(seconds: -5),
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('empty httpsSources bypasses httpsRequestTimeout positivity '
+        'guard', () {
+      // Mirrors the strict-greater assert's gating: an HTTPS-free
+      // config doesn't construct any HttpsSource, so the unused knob
+      // shouldn't reject the config. NTS knob set to a valid
+      // strict-greater value to isolate the gate.
+      const config = TrustedTimeConfig(
+        httpsSources: [],
+        ntsServers: ['time.example.com'],
+        maxLatency: Duration(seconds: 3),
+        httpsRequestTimeout: Duration.zero,
+        ntsRequestTimeout: Duration(seconds: 5),
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        returnsNormally,
+      );
+    });
+
+    test('empty ntsServers bypasses ntsRequestTimeout positivity '
+        'guard', () {
+      const config = TrustedTimeConfig(
+        httpsSources: ['https://example.com'],
+        ntsServers: [],
+        maxLatency: Duration(seconds: 3),
+        httpsRequestTimeout: Duration(seconds: 30),
+        ntsRequestTimeout: Duration.zero,
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        returnsNormally,
+      );
+    });
+
+    test('withSources does not enforce the positivity guard', () {
+      // Same rationale as the strict-greater carve-out for the test
+      // seam: built-in source construction is bypassed entirely, so
+      // neither knob is consumed and rejecting the config would block
+      // legitimate custom-source integrations from using non-default
+      // values for purely structural reasons.
+      const config = TrustedTimeConfig(
+        httpsSources: ['https://example.com'],
+        ntsServers: ['time.example.com'],
+        httpsRequestTimeout: Duration.zero,
+        ntsRequestTimeout: Duration(seconds: -1),
+      );
+      expect(
+        () => SyncEngine.withSources(config: config, sources: const []),
+        returnsNormally,
+      );
+    });
+  });
 }
