@@ -411,7 +411,9 @@ final class TrustedTimeConfig {
   /// Callers configuring [maxLatency] above 30 s must raise this in
   /// step (e.g. `maxLatency: 60s, httpsRequestTimeout: 90s`); otherwise
   /// every probe will surface the inner ceiling first and be bucketed
-  /// as `failed`.
+  /// as `failed`. The strict-greater rule is enforced by an assert in
+  /// the [SyncEngine] constructor when [httpsSources] is non-empty;
+  /// HTTPS-free configs may leave this value at any setting.
   ///
   /// Callers concerned about lingering background work — `Future.timeout`
   /// does not cancel the in-flight HTTP request, so an abandoned probe
@@ -445,7 +447,9 @@ final class TrustedTimeConfig {
   /// necessary but not sufficient on its own to keep slow probes in
   /// the `timedOut` bucket. Callers configuring [maxLatency] above
   /// 5 s must raise this in step (e.g. `maxLatency: 10s,
-  /// ntsRequestTimeout: 15s`).
+  /// ntsRequestTimeout: 15s`). The strict-greater rule is enforced by
+  /// an assert in the [SyncEngine] constructor when [ntsServers] is
+  /// non-empty; NTS-free configs may leave this value at any setting.
   ///
   /// The FRB bridge underlying the built-in NTS source carries the
   /// per-query ceiling as an integer millisecond count. Sub-millisecond

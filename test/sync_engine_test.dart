@@ -1312,14 +1312,23 @@ void main() {
     // failure mode is diagnostic-quality degradation, not a
     // correctness or safety issue \u2014 production builds with bad
     // configs still function, just with the documented misbucketing.
+    //
+    // The asserts are gated on the corresponding source list being
+    // non-empty: `httpsRequestTimeout` only matters when at least one
+    // built-in [HttpsSource] is constructed, and likewise for
+    // `ntsRequestTimeout`/`ntsServers`. The `non-empty source list`
+    // tests below pin the active half of each gate; the `empty
+    // source list bypasses` tests pin the complementary half.
 
     final baseClock = PlatformMonotonicClock();
 
-    test('asserts when httpsRequestTimeout equals maxLatency', () {
+    test('asserts when httpsRequestTimeout equals maxLatency and httpsSources '
+        'is non-empty', () {
       // Equal values race; the dartdoc forbids equality (not just
       // less-than). Pinning the boundary catches a future relaxation
       // to `>=` that would silently reintroduce the race.
       const badConfig = TrustedTimeConfig(
+        httpsSources: ['https://example.com'],
         maxLatency: Duration(seconds: 3),
         httpsRequestTimeout: Duration(seconds: 3),
       );
@@ -1329,19 +1338,27 @@ void main() {
       );
     });
 
-    test('asserts when httpsRequestTimeout is below maxLatency', () {
-      const badConfig = TrustedTimeConfig(
-        maxLatency: Duration(seconds: 5),
-        httpsRequestTimeout: Duration(seconds: 3),
-      );
-      expect(
-        () => SyncEngine(config: badConfig, clock: baseClock),
-        throwsA(isA<AssertionError>()),
-      );
-    });
+    test(
+      'asserts when httpsRequestTimeout is below maxLatency and httpsSources '
+      'is non-empty',
+      () {
+        const badConfig = TrustedTimeConfig(
+          httpsSources: ['https://example.com'],
+          maxLatency: Duration(seconds: 5),
+          httpsRequestTimeout: Duration(seconds: 3),
+        );
+        expect(
+          () => SyncEngine(config: badConfig, clock: baseClock),
+          throwsA(isA<AssertionError>()),
+        );
+      },
+    );
 
-    test('asserts when ntsRequestTimeout equals maxLatency', () {
+    test('asserts when ntsRequestTimeout equals maxLatency and ntsServers is '
+        'non-empty', () {
       const badConfig = TrustedTimeConfig(
+        httpsSources: [],
+        ntsServers: ['time.example.com'],
         maxLatency: Duration(seconds: 5),
         ntsRequestTimeout: Duration(seconds: 5),
       );
@@ -1351,8 +1368,11 @@ void main() {
       );
     });
 
-    test('asserts when ntsRequestTimeout is below maxLatency', () {
+    test('asserts when ntsRequestTimeout is below maxLatency and ntsServers is '
+        'non-empty', () {
       const badConfig = TrustedTimeConfig(
+        httpsSources: [],
+        ntsServers: ['time.example.com'],
         maxLatency: Duration(seconds: 10),
         ntsRequestTimeout: Duration(seconds: 5),
       );
@@ -1362,26 +1382,66 @@ void main() {
       );
     });
 
-    test(
-      'withSources constructor enforces the same invariant as the production '
-      'constructor',
-      () {
-        // The test seam bypasses built-in source construction but
-        // still has to honour the diagnostic-attribution rule. A fake
-        // source with an internal ceiling matching httpsRequestTimeout
-        // would race the same way as a real one, and the assert keeps
-        // the contract symmetric across both constructors so tests
-        // cannot smuggle a misconfigured config through the seam.
-        const badConfig = TrustedTimeConfig(
-          maxLatency: Duration(seconds: 3),
-          httpsRequestTimeout: Duration(seconds: 3),
-        );
-        expect(
-          () => SyncEngine.withSources(config: badConfig, sources: const []),
-          throwsA(isA<AssertionError>()),
-        );
-      },
-    );
+    test('empty httpsSources bypasses httpsRequestTimeout assert', () {
+      // The knob is only consumed when the engine constructs an
+      // [HttpsSource]. An NTS-only or custom-only config can leave
+      // `httpsRequestTimeout` at any value (including <= maxLatency)
+      // without affecting attribution, because the inner ceiling
+      // never wraps any real work in this configuration. Rejecting
+      // such a config would force callers to inflate an unrelated
+      // field just to satisfy the assert.
+      const config = TrustedTimeConfig(
+        httpsSources: [],
+        ntsServers: ['time.example.com'],
+        maxLatency: Duration(seconds: 10),
+        httpsRequestTimeout: Duration(seconds: 1),
+        ntsRequestTimeout: Duration(seconds: 15),
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        returnsNormally,
+      );
+    });
+
+    test('empty ntsServers bypasses ntsRequestTimeout assert', () {
+      // Symmetric to the httpsSources-empty case: an HTTPS-only
+      // (or custom-only) config can leave `ntsRequestTimeout` at
+      // any value without affecting attribution.
+      const config = TrustedTimeConfig(
+        httpsSources: ['https://example.com'],
+        ntsServers: [],
+        maxLatency: Duration(seconds: 10),
+        httpsRequestTimeout: Duration(seconds: 15),
+        ntsRequestTimeout: Duration(seconds: 1),
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        returnsNormally,
+      );
+    });
+
+    test('withSources does not enforce the strict-greater invariant', () {
+      // The test seam bypasses built-in source construction
+      // entirely; neither knob is consumed. Custom
+      // [TrustedTimeSource] implementations supplied via `sources`
+      // are responsible for their own per-request bounds, so
+      // applying the rule here would block legitimate custom-source
+      // tests (and integrations) from using larger latency budgets
+      // unless they also inflated unrelated config fields. The
+      // production constructor remains the single point of
+      // enforcement for built-in sources.
+      const config = TrustedTimeConfig(
+        httpsSources: ['https://example.com'],
+        ntsServers: ['time.example.com'],
+        maxLatency: Duration(seconds: 10),
+        httpsRequestTimeout: Duration(seconds: 1),
+        ntsRequestTimeout: Duration(seconds: 1),
+      );
+      expect(
+        () => SyncEngine.withSources(config: config, sources: const []),
+        returnsNormally,
+      );
+    });
 
     test('default config satisfies both invariants', () {
       // Belt-and-braces: a future change to either default that

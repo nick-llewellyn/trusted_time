@@ -21,11 +21,17 @@ final class SyncEngine {
   /// reference at response receipt.
   SyncEngine({required TrustedTimeConfig config, required MonotonicClock clock})
     : assert(
-        config.httpsRequestTimeout > config.maxLatency,
+        config.httpsSources.isEmpty ||
+            config.httpsRequestTimeout > config.maxLatency,
         // The strict-greater rule is what makes the timedOut/failed
-        // diagnostic split deterministic; equal values race the inner
-        // and outer wrappers, and a smaller inner ceiling systematically
-        // misbuckets every probe as `failed`. Documented on
+        // diagnostic split deterministic for built-in HTTPS probes;
+        // equal values race the inner and outer wrappers, and a smaller
+        // inner ceiling systematically misbuckets every probe as
+        // `failed`. Gated on `httpsSources.isNotEmpty` because the
+        // knob is only consumed when this constructor builds an
+        // [HttpsSource]; an HTTPS-free config (NTS-only, custom-only)
+        // can leave `httpsRequestTimeout` at any value without
+        // affecting attribution. Documented on
         // `TrustedTimeConfig.httpsRequestTimeout`. Asserted here rather
         // than thrown in production because the failure mode is a
         // diagnostic-quality degradation, not a correctness or safety
@@ -33,22 +39,25 @@ final class SyncEngine {
         // development without breaking shipped builds.
         'TrustedTimeConfig.httpsRequestTimeout '
         '(=${config.httpsRequestTimeout}) must be strictly greater '
-        'than maxLatency (=${config.maxLatency}) for deterministic '
-        'timedOut/failed attribution. See '
+        'than maxLatency (=${config.maxLatency}) when httpsSources is '
+        'non-empty, for deterministic timedOut/failed attribution. See '
         'TrustedTimeConfig.httpsRequestTimeout dartdoc.',
       ),
       assert(
-        config.ntsRequestTimeout > config.maxLatency,
-        // Mirrors the httpsRequestTimeout rule. The NTS path also has
-        // the per-query/burst quantitative caveat documented on
+        config.ntsServers.isEmpty ||
+            config.ntsRequestTimeout > config.maxLatency,
+        // Mirrors the httpsRequestTimeout rule, gated on
+        // `ntsServers.isNotEmpty`. The NTS path also has the
+        // per-query/burst quantitative caveat documented on
         // `TrustedTimeConfig.ntsRequestTimeout`, but the structural
         // strict-greater inequality is a prerequisite for either
-        // attribution to be deterministic at all.
+        // attribution to be deterministic at all when a built-in
+        // [NtsSource] is constructed.
         'TrustedTimeConfig.ntsRequestTimeout '
         '(=${config.ntsRequestTimeout}) must be strictly greater '
-        'than maxLatency (=${config.maxLatency}) for deterministic '
-        'timedOut/failed attribution. See '
-        'TrustedTimeConfig.ntsRequestTimeout dartdoc.',
+        'than maxLatency (=${config.maxLatency}) when ntsServers is '
+        'non-empty, for deterministic timedOut/failed attribution. '
+        'See TrustedTimeConfig.ntsRequestTimeout dartdoc.',
       ),
       _config = config,
       _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum),
@@ -82,34 +91,19 @@ final class SyncEngine {
   /// Test seam: build a SyncEngine with a pre-assembled list of sources.
   /// Bypasses the config-driven source construction so unit tests can
   /// inject [TrustedTimeSource] fakes directly.
+  ///
+  /// Does **not** assert the strict-greater invariants on
+  /// [TrustedTimeConfig.httpsRequestTimeout] or
+  /// [TrustedTimeConfig.ntsRequestTimeout]: those rules apply only to
+  /// built-in [HttpsSource]/[NtsSource] instances, and this constructor
+  /// builds none of them. Custom [TrustedTimeSource] implementations
+  /// supplied via [sources] are responsible for their own per-request
+  /// bounds and attribution semantics.
   @visibleForTesting
   SyncEngine.withSources({
     required TrustedTimeConfig config,
     required List<TrustedTimeSource> sources,
-  }) : assert(
-         config.httpsRequestTimeout > config.maxLatency,
-         // Mirror of the strict-greater invariant from the production
-         // constructor. Even though `withSources` ignores the built-in
-         // source list, the diagnostic-attribution rule is a property
-         // of `TrustedTimeConfig` itself: a fake source whose internal
-         // ceiling matches `httpsRequestTimeout` would race the same
-         // way, and the assert keeps the contract symmetric so tests
-         // cannot smuggle a misconfigured config through the test seam.
-         'TrustedTimeConfig.httpsRequestTimeout '
-         '(=${config.httpsRequestTimeout}) must be strictly greater '
-         'than maxLatency (=${config.maxLatency}) for deterministic '
-         'timedOut/failed attribution. See '
-         'TrustedTimeConfig.httpsRequestTimeout dartdoc.',
-       ),
-       assert(
-         config.ntsRequestTimeout > config.maxLatency,
-         'TrustedTimeConfig.ntsRequestTimeout '
-         '(=${config.ntsRequestTimeout}) must be strictly greater '
-         'than maxLatency (=${config.maxLatency}) for deterministic '
-         'timedOut/failed attribution. See '
-         'TrustedTimeConfig.ntsRequestTimeout dartdoc.',
-       ),
-       _config = config,
+  }) : _config = config,
        _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum),
        _sources = List.unmodifiable(sources);
 
