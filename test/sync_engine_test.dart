@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time_nts/src/exceptions.dart';
 import 'package:trusted_time_nts/src/models.dart';
+import 'package:trusted_time_nts/src/monotonic_clock.dart';
+import 'package:trusted_time_nts/src/sources/time_sources.dart';
 import 'package:trusted_time_nts/src/sync_engine.dart';
 
 class _FakeTimeSource implements TrustedTimeSource {
@@ -1190,5 +1192,112 @@ void main() {
         expect(anchor.wallMs, goodWallAt.millisecondsSinceEpoch);
       },
     );
+  });
+
+  group('SyncEngine config plumbing', () {
+    // The default constructor (not `withSources`) is the production
+    // path: `SyncEngine` builds its source list from
+    // `TrustedTimeConfig.{ntsServers, httpsSources, additionalSources}`
+    // and forwards `httpsRequestTimeout` / `ntsRequestTimeout` to the
+    // built-in source constructors. The rest of the suite exercises
+    // `withSources`, which bypasses that plumbing entirely — without
+    // a regression here, dropping or renaming the forwarding (or
+    // adding a new source kind that ignores the config field) would
+    // become a silent no-op.
+
+    test(
+      'TrustedTimeConfig.httpsRequestTimeout reaches each built-in HttpsSource',
+      () {
+        const config = TrustedTimeConfig(
+          httpsSources: [
+            'https://www.google.com',
+            'https://www.cloudflare.com',
+          ],
+          httpsRequestTimeout: Duration(seconds: 45),
+        );
+        final engine = SyncEngine(
+          config: config,
+          clock: PlatformMonotonicClock(),
+        );
+
+        final httpsSources = engine.sourcesForTesting
+            .whereType<HttpsSource>()
+            .toList();
+        expect(httpsSources, hasLength(2));
+        for (final s in httpsSources) {
+          expect(
+            s.requestTimeoutForTesting,
+            const Duration(seconds: 45),
+            reason:
+                'Each built-in HttpsSource must inherit '
+                'config.httpsRequestTimeout; if this fails the public '
+                'knob has become a no-op for callers using httpsSources.',
+          );
+        }
+      },
+    );
+
+    test(
+      'TrustedTimeConfig.ntsRequestTimeout reaches each built-in NtsSource',
+      () {
+        const config = TrustedTimeConfig(
+          // Empty `httpsSources` keeps this regression focused on the
+          // NTS branch; the default list would still be exercised by
+          // the companion HTTPS regression above.
+          httpsSources: [],
+          ntsServers: ['time.cloudflare.com', 'nts.netnod.se'],
+          ntsRequestTimeout: Duration(seconds: 12),
+        );
+        final engine = SyncEngine(
+          config: config,
+          clock: PlatformMonotonicClock(),
+        );
+
+        final ntsSources = engine.sourcesForTesting
+            .whereType<NtsSource>()
+            .toList();
+        expect(ntsSources, hasLength(2));
+        for (final s in ntsSources) {
+          expect(
+            s.requestTimeoutForTesting,
+            const Duration(seconds: 12),
+            reason:
+                'Each built-in NtsSource must inherit '
+                'config.ntsRequestTimeout; if this fails the public '
+                'knob has become a no-op for callers using ntsServers.',
+          );
+        }
+      },
+    );
+
+    test('defaults flow through unchanged when callers do not override', () {
+      // Belt-and-braces check: a default-constructed config still
+      // produces sources whose inner ceilings match the documented
+      // defaults (30 s for HTTPS, 5 s for NTS). Catches a refactor
+      // that breaks the defaults at either end of the chain — for
+      // example, replacing the constructor default with a const
+      // pulled from the wrong field.
+      const config = TrustedTimeConfig(ntsServers: ['time.cloudflare.com']);
+      final engine = SyncEngine(
+        config: config,
+        clock: PlatformMonotonicClock(),
+      );
+
+      final httpsSources = engine.sourcesForTesting
+          .whereType<HttpsSource>()
+          .toList();
+      for (final s in httpsSources) {
+        expect(s.requestTimeoutForTesting, const Duration(seconds: 30));
+      }
+
+      final ntsSources = engine.sourcesForTesting
+          .whereType<NtsSource>()
+          .toList();
+      expect(ntsSources, hasLength(1));
+      expect(
+        ntsSources.single.requestTimeoutForTesting,
+        const Duration(seconds: 5),
+      );
+    });
   });
 }

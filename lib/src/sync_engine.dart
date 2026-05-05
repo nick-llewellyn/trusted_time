@@ -23,7 +23,16 @@ final class SyncEngine {
     : _config = config,
       _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum),
       _sources = [
-        for (final host in config.ntsServers) NtsSource(host, clock: clock),
+        // Thread `ntsRequestTimeout` through to every built-in NTS
+        // probe; the per-query defensive ceiling is otherwise
+        // unreachable from `TrustedTimeConfig.ntsServers` because
+        // `NtsSource` is exported only via `time_sources.dart` for
+        // tests and is not part of the supported config surface.
+        // Callers configuring `maxLatency` above the default 3 s must
+        // raise `ntsRequestTimeout` in step (strictly greater than
+        // `maxLatency` for deterministic attribution).
+        for (final host in config.ntsServers)
+          NtsSource(host, clock: clock, timeout: config.ntsRequestTimeout),
         // Thread `httpsRequestTimeout` through to every built-in HTTPS
         // probe; the per-request defensive ceiling is otherwise
         // unreachable from `TrustedTimeConfig.httpsSources` because
@@ -54,6 +63,15 @@ final class SyncEngine {
   final TrustedTimeConfig _config;
   final MarzulloEngine _engine;
   final List<TrustedTimeSource> _sources;
+
+  /// Test seam: the assembled source list, in construction order
+  /// (`ntsServers`, then `httpsSources`, then `additionalSources`).
+  /// Lets regression tests verify that config-driven plumbing (e.g.
+  /// [TrustedTimeConfig.httpsRequestTimeout],
+  /// [TrustedTimeConfig.ntsRequestTimeout]) actually reaches the
+  /// constructed sources rather than silently becoming a no-op.
+  @visibleForTesting
+  List<TrustedTimeSource> get sourcesForTesting => List.unmodifiable(_sources);
 
   /// Executes concurrent sampling and returns a hardware-pinned trust anchor.
   ///
@@ -410,7 +428,8 @@ final class SyncEngine {
   ///
   /// `TimeoutException`s thrown *inside* `source.fetch()` (for example,
   /// [HttpsSource]'s configurable per-request defensive ceiling,
-  /// default 30 s) are explicitly *not* attributed to the outer
+  /// default 30 s, or the built-in NTS source's per-query ceiling,
+  /// default 5 s) are explicitly *not* attributed to the outer
   /// `maxLatency` wrapper — otherwise, when `maxLatency` is larger
   /// than the inner deadline, the diagnostic would name the configured
   /// budget as the cause when a different timeout actually fired. To
@@ -422,17 +441,19 @@ final class SyncEngine {
   /// post-response validation/parse failures (e.g. an [HttpsSource]
   /// response without a usable `Date` header).
   ///
-  /// The split is only deterministic when the source's configured
-  /// `requestTimeout` is **strictly greater than** `maxLatency`. Both
-  /// timers wrap the same underlying work, so `requestTimeout ==
-  /// maxLatency` lets either callback win depending on scheduler
-  /// ordering — a slow probe in that configuration may surface as
-  /// `timedOut` on one run and `failed` on the next. Default config
-  /// satisfies the inequality (3 s vs 30 s); callers raising
-  /// `maxLatency` must raise [TrustedTimeConfig.httpsRequestTimeout]
-  /// in step. The diagnostic message names the contributing bucket(s)
-  /// regardless, so attribution is always recoverable from the message
-  /// even when the exception subtype itself is ambiguous.
+  /// The split is only deterministic when each source's configured
+  /// inner ceiling is **strictly greater than** `maxLatency`. Both
+  /// timers wrap the same underlying work, so an equal pair lets
+  /// either callback win depending on scheduler ordering — a slow
+  /// probe in that configuration may surface as `timedOut` on one
+  /// run and `failed` on the next. Default config satisfies the
+  /// inequality on both axes (3 s vs 30 s for HTTPS; 3 s vs 5 s
+  /// per NTS query); callers raising `maxLatency` must raise both
+  /// [TrustedTimeConfig.httpsRequestTimeout] and
+  /// [TrustedTimeConfig.ntsRequestTimeout] in step. The diagnostic
+  /// message names the contributing bucket(s) regardless, so
+  /// attribution is always recoverable from the message even when
+  /// the exception subtype itself is ambiguous.
   Future<({TimeSample? sample, bool timedOut})> _querySafe(
     TrustedTimeSource source,
   ) async {

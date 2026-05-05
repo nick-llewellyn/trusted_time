@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import '../models.dart';
 import '../monotonic_clock.dart';
 
@@ -13,9 +14,16 @@ final class NtsSource implements TrustedTimeSource {
     int port = 4460,
     Duration timeout = const Duration(seconds: 5),
     MonotonicClock? clock,
-  });
+  }) : _timeout = timeout;
 
   final String _host;
+  final Duration _timeout;
+
+  /// Test seam matching the io implementation so the
+  /// `TrustedTimeConfig.ntsRequestTimeout` plumbing regression compiles
+  /// and runs identically on web.
+  @visibleForTesting
+  Duration get requestTimeoutForTesting => _timeout;
 
   @override
   String get id => 'nts:$_host';

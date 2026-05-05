@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart';
 import '../models.dart';
 import '../monotonic_clock.dart';
@@ -100,6 +101,14 @@ final class NtsSource implements TrustedTimeSource {
   final NtsQueryFn _query;
   final NtsWarmCookiesFn _warmCookies;
   final bool _usingDefaultBridge;
+
+  /// Test seam: the per-query defensive ceiling currently in effect,
+  /// surfaced as a [Duration] for parity with [HttpsSource]. Lets
+  /// `SyncEngine`-construction regressions verify that
+  /// [TrustedTimeConfig.ntsRequestTimeout] reaches the built-in
+  /// probes constructed from `ntsServers`.
+  @visibleForTesting
+  Duration get requestTimeoutForTesting => Duration(milliseconds: _timeoutMs);
 
   @override
   String get id => 'nts:$_host';

@@ -354,6 +354,7 @@ final class TrustedTimeConfig {
     ],
     this.maxLatency = const Duration(seconds: 3),
     this.httpsRequestTimeout = const Duration(seconds: 30),
+    this.ntsRequestTimeout = const Duration(seconds: 5),
     this.minimumQuorum = 2,
     this.persistState = true,
     this.additionalSources = const [],
@@ -424,6 +425,32 @@ final class TrustedTimeConfig {
   /// implementations are responsible for their own per-request bounds.
   final Duration httpsRequestTimeout;
 
+  /// Per-NTS-query defensive ceiling applied inside each built-in NTS
+  /// source's KE-handshake and individual NTPv4 query.
+  ///
+  /// The structural relationship to [maxLatency] mirrors
+  /// [httpsRequestTimeout]: both timers wrap the same underlying work,
+  /// so equal values race and the diagnostic bucket (`timedOut` vs
+  /// `failed`) becomes scheduler-dependent. For deterministic
+  /// attribution this value must be **strictly greater than**
+  /// [maxLatency]; the default of 5 s is chosen to sit above the
+  /// default [maxLatency] of 3 s.
+  ///
+  /// Quantitatively the NTS path differs: the inner ceiling applies
+  /// per-query, and the built-in source issues a burst of authenticated
+  /// samples per `fetch()` (lowest-RTD wins). A single hung query may
+  /// fire the inner deadline and surface as `failed` even though the
+  /// overall `fetch()` would still have returned the better samples in
+  /// the burst — hence "strictly greater than [maxLatency]" is
+  /// necessary but not sufficient on its own to keep slow probes in
+  /// the `timedOut` bucket. Callers configuring [maxLatency] above
+  /// 5 s must raise this in step (e.g. `maxLatency: 10s,
+  /// ntsRequestTimeout: 15s`).
+  ///
+  /// Has no effect on [additionalSources]; custom [TrustedTimeSource]
+  /// implementations are responsible for their own per-request bounds.
+  final Duration ntsRequestTimeout;
+
   /// Minimum number of agreeing sources required to establish consensus.
   ///
   /// Must be ≥ 2 for meaningful tamper resistance. The engine will throw
@@ -463,6 +490,7 @@ final class TrustedTimeConfig {
           listEquals(httpsSources, other.httpsSources) &&
           maxLatency == other.maxLatency &&
           httpsRequestTimeout == other.httpsRequestTimeout &&
+          ntsRequestTimeout == other.ntsRequestTimeout &&
           minimumQuorum == other.minimumQuorum &&
           persistState == other.persistState &&
           oscillatorDriftFactor == other.oscillatorDriftFactor &&
@@ -476,6 +504,7 @@ final class TrustedTimeConfig {
     Object.hashAll(httpsSources),
     maxLatency,
     httpsRequestTimeout,
+    ntsRequestTimeout,
     minimumQuorum,
     persistState,
     oscillatorDriftFactor,

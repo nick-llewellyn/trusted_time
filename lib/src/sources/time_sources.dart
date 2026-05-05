@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models.dart';
 import '../monotonic_clock.dart';
@@ -82,6 +83,13 @@ final class HttpsSource implements TrustedTimeSource {
   final http.Client _client;
   final MonotonicClock _clock;
   final Duration _requestTimeout;
+
+  /// Test seam: the per-request defensive ceiling currently in effect.
+  /// Lets `SyncEngine`-construction regressions verify that
+  /// [TrustedTimeConfig.httpsRequestTimeout] reaches the built-in
+  /// probes constructed from `httpsSources`.
+  @visibleForTesting
+  Duration get requestTimeoutForTesting => _requestTimeout;
 
   @override
   String get id => 'https:$_url';

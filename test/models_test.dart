@@ -49,6 +49,30 @@ void main() {
       expect(a, isNot(equals(b)));
     });
 
+    test('configs with different httpsRequestTimeout are NOT equal', () {
+      // Pins both halves of the equality contract for the public knob
+      // added to expose the per-request HTTPS ceiling: an omission from
+      // either `operator ==` or `hashCode` would let a config swap that
+      // changed only this field silently look like a no-op (and skip a
+      // re-sync that callers expected). Asserting both `!=` and
+      // `hashCode != hashCode` catches either omission.
+      const a = TrustedTimeConfig(httpsRequestTimeout: Duration(seconds: 30));
+      const b = TrustedTimeConfig(httpsRequestTimeout: Duration(seconds: 60));
+      expect(a, isNot(equals(b)));
+      expect(a.hashCode, isNot(equals(b.hashCode)));
+    });
+
+    test('configs with different ntsRequestTimeout are NOT equal', () {
+      // Mirror of the httpsRequestTimeout regression for the NTS
+      // per-query ceiling. Same rationale: a future omission from
+      // either `operator ==` or `hashCode` should fail this test
+      // rather than slip through as a silent equality bug.
+      const a = TrustedTimeConfig(ntsRequestTimeout: Duration(seconds: 5));
+      const b = TrustedTimeConfig(ntsRequestTimeout: Duration(seconds: 10));
+      expect(a, isNot(equals(b)));
+      expect(a.hashCode, isNot(equals(b.hashCode)));
+    });
+
     test('configs with different additionalSources are NOT equal', () {
       final sourceA = _FakeSource('a');
       final sourceB = _FakeSource('b');
