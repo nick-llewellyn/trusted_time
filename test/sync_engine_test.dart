@@ -162,6 +162,75 @@ void main() {
       expect(anchor.uncertaintyMs, lessThanOrEqualTo(100));
     });
 
+    test('published anchor interval covers Marzullo result when midpoint is '
+        'mid-millisecond', () async {
+      // The internal Marzullo engine resolves at microsecond
+      // resolution, but `TrustAnchor.{networkUtcMs, uncertaintyMs}`
+      // is a whole-millisecond surface. Flooring the centre via
+      // `millisecondsSinceEpoch` shifts it up to 999 µs *left* of
+      // the true midpoint; if the half-width is only ceiling-rounded
+      // from microseconds (without folding in that truncation
+      // residual), the published interval `[c-u, c+u]` excludes up
+      // to 999 µs of the true upper bound — silently understating
+      // uncertainty even though both knobs were rounded
+      // "conservatively" in isolation. This regression pins both
+      // sources at `baseTime + 750 µs` with a tight 100 µs advertised
+      // bound (floored by the engine to 1000 µs / 1 ms), so the
+      // truncation residual is the dominant term: without folding
+      // the residual into the half-width, the published
+      // `uncertaintyMs` would round to 1 and the upper published
+      // bound would land 750 µs short of the true Marzullo upper
+      // bound. The fix widens by `(uncertaintyMicros + residual +
+      // 999) ~/ 1000`, surfacing as `uncertaintyMs >= 2` here.
+      final offset = const Duration(microseconds: 750);
+      final shifted = baseTime.add(offset);
+      final engine = SyncEngine.withSources(
+        config: config,
+        sources: [
+          _FakeTimeSource(
+            id: 'a',
+            networkUtc: shifted,
+            roundTripTime: const Duration(milliseconds: 50),
+            uncertainty: const Duration(microseconds: 100),
+            capturedMonotonicMs: 1000,
+          ),
+          _FakeTimeSource(
+            id: 'b',
+            networkUtc: shifted,
+            roundTripTime: const Duration(milliseconds: 50),
+            uncertainty: const Duration(microseconds: 100),
+            capturedMonotonicMs: 1100,
+          ),
+        ],
+      );
+
+      final anchor = await engine.sync();
+
+      // The true Marzullo interval (in microseconds) is centred on
+      // `baseMicros + 750` with a half-width floored at 1000 µs by
+      // the engine. The published interval — derived from
+      // `networkUtcMs` and `uncertaintyMs` — must fully contain that
+      // microsecond-resolution window in both directions.
+      final trueMidMicros = shifted.microsecondsSinceEpoch;
+      const trueHalfWidthMicros = 1000;
+      final trueLoMicros = trueMidMicros - trueHalfWidthMicros;
+      final trueHiMicros = trueMidMicros + trueHalfWidthMicros;
+
+      final publishedLoMicros =
+          (anchor.networkUtcMs - anchor.uncertaintyMs) * 1000;
+      final publishedHiMicros =
+          (anchor.networkUtcMs + anchor.uncertaintyMs) * 1000;
+
+      expect(publishedLoMicros, lessThanOrEqualTo(trueLoMicros));
+      expect(publishedHiMicros, greaterThanOrEqualTo(trueHiMicros));
+      // The fix surfaces as `uncertaintyMs >= 2` for a 750 µs
+      // residual + 1000 µs floored half-width; a regression that
+      // dropped the residual term would land at 1 ms and fail the
+      // upper-bound assertion above. Pin the value directly so the
+      // intent is visible in the diagnostic on regression.
+      expect(anchor.uncertaintyMs, greaterThanOrEqualTo(2));
+    });
+
     test('throws when no sources respond', () async {
       final engine = SyncEngine.withSources(
         config: config,

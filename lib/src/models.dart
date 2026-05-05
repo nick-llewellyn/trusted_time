@@ -205,10 +205,16 @@ final class TimeSample {
   /// cannot be reached after rejection, the engine throws
   /// `TrustedTimeSyncException` with a diagnostic that reports the
   /// eligible-vs-rejected counts among samples that survived latency
-  /// filtering, alongside any latency drops and timeouts (e.g.
-  /// `0 eligible (2 rejected as invalid; 1 dropped for exceeding
-  /// maxLatency=...; 1 timed out at maxLatency=...)`). When *no*
-  /// sample reaches the eligible set the engine raises a categorical
+  /// filtering, alongside any latency drops, timeouts, and outright
+  /// failures (e.g. `0 eligible (2 rejected as invalid; 1 dropped
+  /// for exceeding maxLatency=...; 1 timed out at maxLatency=...;
+  /// 1 yielded no usable sample)`). The "yielded no usable sample"
+  /// bucket appears whenever a source threw, raised an inner request
+  /// timeout, or returned a payload that could not be parsed —
+  /// surfacing it here keeps a mixed run (some eligible, some
+  /// failed) from being misread as a pure latency or invalidity
+  /// shortfall. When *no* sample reaches the eligible set the engine
+  /// raises a categorical
   /// diagnostic naming the cause: a pure outright-failure run reports
   /// `Every configured time source failed to produce a usable
   /// sample.`, a pure-timeout run reports `N source(s) timed out
@@ -227,10 +233,13 @@ final class TimeSample {
 
   /// Confidence half-width of [networkUtc].
   ///
-  /// Required: the constructor does not supply an API default. Built-in
-  /// HTTPS sources pass `roundTripTime ~/ 2` and custom sources with
-  /// access to tighter information (e.g. an NTS source exposing the
-  /// server's stratum and root dispersion) may report a smaller value.
+  /// Required: the constructor does not supply an API default. The
+  /// built-in `HttpsSource` currently advertises a millisecond-grained
+  /// bound — `Duration(milliseconds: stopwatch.elapsedMilliseconds ~/
+  /// 2)` — because HTTP `Date` headers carry no sub-second resolution
+  /// in the first place; custom sources with access to tighter
+  /// information (e.g. an NTS source exposing the server's stratum and
+  /// root dispersion) may report a smaller, sub-millisecond value.
   /// The sync engine plumbs this through to the Marzullo consensus
   /// interval `[networkUtc - uncertainty, networkUtc + uncertainty]`
   /// at microsecond resolution — it does **not** re-derive intervals
@@ -299,11 +308,15 @@ abstract interface class TrustedTimeSource {
   /// `uncertainty` is a required parameter on [TimeSample] — the API
   /// does not supply a default. Sources that don't have a tighter
   /// bound to advertise should pass `roundTripTime ~/ 2` themselves
-  /// (matching the bound built-in HTTPS sources use). Sources with
+  /// (a generic half-RTT estimate; the built-in `HttpsSource` uses
+  /// the millisecond-grained equivalent `Duration(milliseconds:
+  /// stopwatch.elapsedMilliseconds ~/ 2)` because HTTP `Date`
+  /// headers carry no sub-second resolution anyway). Sources with
   /// access to a tighter bound (e.g. an NTS source exposing the
   /// server's stratum and root dispersion) should supply that
-  /// narrower value, which the engine honours when building each
-  /// Marzullo interval rather than re-deriving it from RTT.
+  /// narrower, possibly sub-millisecond value, which the engine
+  /// honours at microsecond resolution when building each Marzullo
+  /// interval rather than re-deriving it from RTT.
   Future<TimeSample> fetch();
 }
 

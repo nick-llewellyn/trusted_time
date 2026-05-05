@@ -237,21 +237,32 @@ final class SyncEngine {
       (a, b) => a.roundTripTime <= b.roundTripTime ? a : b,
     );
 
+    // `TrustAnchor.networkUtcMs` is a whole-millisecond surface, so the
+    // microsecond-resolution consensus midpoint must be projected onto
+    // that grid. Flooring (via `millisecondsSinceEpoch`) shifts the
+    // published centre up to 999 µs *left* of the true midpoint —
+    // without compensation, the published interval `[c-u, c+u]` would
+    // exclude up to 999 µs of the true upper bound, silently
+    // *understating* uncertainty even though the bound was widened by
+    // ceiling division. Recover the exact truncation residual from
+    // `microsecondsSinceEpoch` and fold it into the half-width before
+    // rounding up, so the published interval fully contains
+    // `[mid - U, mid + U]` regardless of where the midpoint lands
+    // inside its truncated millisecond. The published bound stays at
+    // ≥ 1 ms because the Marzullo engine floors `uncertaintyMicros`
+    // there. Worst case (residual=999 µs, raw width=1000 µs) widens
+    // by an extra millisecond — preferring overstatement to a
+    // silently sub-covering interval.
+    final midMicros = result.utc.microsecondsSinceEpoch;
+    final networkUtcMs = midMicros ~/ 1000;
+    final residualMicros = midMicros - networkUtcMs * 1000;
+    final uncertaintyMs =
+        (result.uncertaintyMicros + residualMicros + 999) ~/ 1000;
     return TrustAnchor(
-      networkUtcMs: result.utc.millisecondsSinceEpoch,
+      networkUtcMs: networkUtcMs,
       uptimeMs: best.capturedMonotonicMs,
       wallMs: best.capturedAt.millisecondsSinceEpoch,
-      // `result.uncertaintyMicros` is already floored at 1000 µs by
-      // the Marzullo engine, so this ceiling division yields ≥ 1 ms
-      // and never advertises sub-millisecond consensus precision.
-      // Rounding *up* (rather than down) keeps the published bound
-      // conservative: a 1500 µs raw window surfaces as ±2 ms rather
-      // than the under-claimed ±1 ms that integer truncation would
-      // give. `TrustAnchor.uncertaintyMs` is the public, persisted
-      // millisecond-resolution surface; the Marzullo engine itself
-      // operates in microseconds so sub-millisecond inputs are
-      // honoured during the intersection sweep.
-      uncertaintyMs: (result.uncertaintyMicros + 999) ~/ 1000,
+      uncertaintyMs: uncertaintyMs,
     );
   }
 
