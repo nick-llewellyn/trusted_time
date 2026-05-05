@@ -37,9 +37,10 @@ class _FakeTimeSource implements TrustedTimeSource {
   // distinguish them by sentinel rather than by type — exercised by
   // the "inner TimeoutException is bucketed as failed, not timed out"
   // regression. Real-world equivalent: `HttpsSource` enforces its own
-  // hard-coded 30 s defensive per-request HTTP ceiling independent of
-  // `maxLatency`, and a probe under a `maxLatency` larger than 30 s
-  // would surface that inner timeout if the engine were not careful.
+  // configurable per-request HTTP timeout (default 30 s) via
+  // `requestTimeout`, independent of `maxLatency`. A probe under a
+  // `maxLatency` larger than the source's `requestTimeout` would
+  // surface that inner timeout if the engine were not careful.
   final bool throwInnerTimeout;
   // Throws a generic exception *after* the pre-response delay has
   // resolved, simulating a successful network round trip whose
@@ -808,20 +809,20 @@ void main() {
     test(
       'inner TimeoutException is bucketed as failed, not as a maxLatency timeout',
       () async {
-        // Real-world equivalent: `HttpsSource` enforces its own hard-
-        // coded 3 s per-request HTTP timeouts independent of the
-        // configured `maxLatency`. When `maxLatency` is more generous
-        // than the inner deadline (e.g. 30 s configured, 3 s inner),
-        // a slow probe will surface a `TimeoutException` from inside
+        // Real-world equivalent: `HttpsSource` enforces its own
+        // configurable per-request HTTP timeout (default 30 s) via
+        // `requestTimeout`, independent of the engine's `maxLatency`.
+        // When `maxLatency` is more generous than the inner deadline
+        // (e.g. 60 s configured, 30 s inner under defaults), a slow
+        // probe will surface a `TimeoutException` from inside
         // `source.fetch()` — *not* from the outer `.timeout(maxLatency)`
-        // wrapper. Catching every `TimeoutException` as a
-        // `maxLatency` event would attribute the cause to the wrong
-        // budget. The engine distinguishes outer from inner timeouts
-        // via a private sentinel raised in the outer `onTimeout`
-        // callback, so only that sentinel maps to `timedOut`; inner
-        // `TimeoutException`s fall through to the generic `failed`
-        // bucket. This regression pins both the categorisation and
-        // the message wording.
+        // wrapper. Catching every `TimeoutException` as a `maxLatency`
+        // event would attribute the cause to the wrong budget. The
+        // engine distinguishes outer from inner timeouts via a private
+        // sentinel raised in the outer `onTimeout` callback, so only
+        // that sentinel maps to `timedOut`; inner `TimeoutException`s
+        // fall through to the generic `failed` bucket. This regression
+        // pins both the categorisation and the message wording.
         const tightConfig = TrustedTimeConfig(
           httpsSources: [],
           minimumQuorum: 2,

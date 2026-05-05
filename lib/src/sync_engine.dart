@@ -107,15 +107,15 @@ final class SyncEngine {
         // "Failed to produce a usable sample" deliberately spans the
         // three sub-causes of the `failed` bucket: transport failures
         // before any response (DNS, refused connection), inner
-        // request timeouts (e.g. `HttpsSource`'s hard-coded 30 s
-        // defensive HTTP ceiling, which only fires when the outer
-        // `maxLatency` budget is itself longer than 30 s), and
-        // post-response validation/parse failures (e.g. `HttpsSource`
-        // throwing after a missing or malformed `Date` header).
-        // Wording it as "failed to respond" — as the engine did
-        // historically — misattributes payload errors as transport
-        // non-response and obscures parse failures during production
-        // triage.
+        // request timeouts (e.g. `HttpsSource`'s configurable
+        // per-request defensive ceiling, default 30 s, which only
+        // fires when `maxLatency` itself exceeds the configured
+        // `requestTimeout`), and post-response validation/parse
+        // failures (e.g. `HttpsSource` throwing after a missing or
+        // malformed `Date` header). Wording it as "failed to respond"
+        // — as the engine did historically — misattributes payload
+        // errors as transport non-response and obscures parse failures
+        // during production triage.
         throw const TrustedTimeSyncException(
           'Every configured time source failed to produce a usable sample.',
         );
@@ -310,12 +310,14 @@ final class SyncEngine {
   ///   running in the background — sources that need bounded
   ///   resource lifetimes must enforce their own cancellation
   ///   contract. Distinct from `TimeoutException`s raised *inside*
-  ///   `source.fetch()` (e.g. an [HttpsSource]'s own per-request 30 s
-  ///   defensive ceiling) — those are bucketed as `failed`. The
-  ///   inner ceiling is set above any reasonable `maxLatency`
+  ///   `source.fetch()` (e.g. an [HttpsSource]'s own per-request
+  ///   defensive ceiling, configured via `requestTimeout` and
+  ///   defaulting to 30 s) — those are bucketed as `failed`. The
+  ///   inner ceiling is sized above any reasonable `maxLatency`
   ///   precisely so the outer wrapper wins under normal
   ///   configuration; the `failed`-bucketed inner timeout only
-  ///   surfaces when `maxLatency` itself exceeds 30 s.
+  ///   surfaces when `maxLatency` exceeds the source's configured
+  ///   `requestTimeout`.
   /// - `failed`: returned no usable sample for any reason other than
   ///   the outer `maxLatency` wrapper. Spans transport failures
   ///   before any response (DNS, refused connection), inner
@@ -395,8 +397,8 @@ final class SyncEngine {
   /// *resource cleanup*.
   ///
   /// `TimeoutException`s thrown *inside* `source.fetch()` (for example,
-  /// [HttpsSource]'s hard-coded 30 s defensive per-request HTTP
-  /// ceiling) are explicitly *not* attributed to the outer
+  /// [HttpsSource]'s configurable per-request defensive ceiling,
+  /// default 30 s) are explicitly *not* attributed to the outer
   /// `maxLatency` wrapper — otherwise, when `maxLatency` is larger
   /// than the inner deadline, the diagnostic would name the configured
   /// budget as the cause when a different timeout actually fired. To
@@ -406,10 +408,11 @@ final class SyncEngine {
   /// `TimeoutException`s fall through to the generic catch-all,
   /// joining the `failed` bucket alongside transport errors and
   /// post-response validation/parse failures (e.g. an [HttpsSource]
-  /// response without a usable `Date` header). The inner ceiling sits
-  /// above any reasonable `maxLatency` precisely so the outer wrapper
-  /// wins under normal configuration; the `failed`-bucketed inner
-  /// timeout only fires when `maxLatency` itself exceeds 30 s.
+  /// response without a usable `Date` header). The inner ceiling
+  /// sits above any reasonable `maxLatency` precisely so the outer
+  /// wrapper wins under normal configuration; the `failed`-bucketed
+  /// inner timeout only fires when `maxLatency` exceeds the source's
+  /// configured `requestTimeout`.
   Future<({TimeSample? sample, bool timedOut})> _querySafe(
     TrustedTimeSource source,
   ) async {

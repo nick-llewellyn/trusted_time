@@ -20,10 +20,30 @@ export 'nts_source_stub.dart' if (dart.library.io) 'nts_source_io.dart';
 /// final client = IOClient(HttpClient(context: mySecurityContext));
 /// final source = HttpsSource('https://internal.example.com', client: client);
 /// ```
+///
+/// [requestTimeout] is the per-request defensive ceiling applied to
+/// each HEAD/GET. It defaults to 30 s, sized to sit comfortably above
+/// the default `TrustedTimeConfig.maxLatency` of 3 s so a slow probe
+/// is attributed to the outer budget (`timedOut`) rather than racing
+/// the inner deadline (`failed`). Callers configuring a `maxLatency`
+/// larger than 30 s must pass a matching `requestTimeout` (e.g.
+/// `requestTimeout: maxLatency` or larger); the per-request bound is
+/// hard-coded into the timeout wrapper here, so it cannot be relaxed
+/// by swapping in a different `http.Client` alone. Callers concerned
+/// about lingering background work after the outer wrapper times out
+/// (`Future.timeout` does not cancel the in-flight HTTP request) can
+/// pass a smaller `requestTimeout`, accepting that values close to
+/// or below `maxLatency` may race the outer wrapper and degrade the
+/// `timedOut`-vs-`failed` diagnostic split.
 final class HttpsSource implements TrustedTimeSource {
-  HttpsSource(this._url, {http.Client? client, MonotonicClock? clock})
-    : _client = client ?? http.Client(),
-      _clock = clock ?? PlatformMonotonicClock() {
+  HttpsSource(
+    this._url, {
+    http.Client? client,
+    MonotonicClock? clock,
+    Duration requestTimeout = const Duration(seconds: 30),
+  }) : _client = client ?? http.Client(),
+       _clock = clock ?? PlatformMonotonicClock(),
+       _requestTimeout = requestTimeout {
     final Uri parsed;
     try {
       parsed = Uri.parse(_url);
@@ -47,6 +67,7 @@ final class HttpsSource implements TrustedTimeSource {
   final String _url;
   final http.Client _client;
   final MonotonicClock _clock;
+  final Duration _requestTimeout;
 
   @override
   String get id => 'https:$_url';
@@ -59,26 +80,32 @@ final class HttpsSource implements TrustedTimeSource {
     // Try HEAD first (lightweight), fall back to GET if the server rejects
     // HEAD or omits the Date header.
     //
-    // The hard-coded 30 s per-request bound is a defensive ceiling for
-    // genuinely hung connections (e.g. a TCP socket that never receives
-    // RST) — it is *not* the policy knob for "how long is too long".
-    // `SyncEngine` wraps every `fetch()` in `timeout(maxLatency)` and
-    // routes the resulting `_OuterTimeoutException` to the `timedOut`
-    // diagnostic bucket; an inner `TimeoutException` is bucketed as
-    // `failed` instead. Keeping the inner bound well above any
-    // reasonable `maxLatency` (the default is 3 s) ensures the outer
-    // wrapper deterministically wins under normal configuration, so a
-    // slow HTTPS probe is reported as "timed out" rather than racing
-    // the inner deadline and being misattributed as a generic failure.
-    // Callers configuring `maxLatency` above 30 s should provide a
-    // pre-configured `http.Client` whose connection / idle timeouts
-    // exceed their budget; otherwise the inner ceiling becomes the
-    // effective bound and the diagnostic split degrades.
-    var response = await _client.head(uri).timeout(const Duration(seconds: 30));
+    // `_requestTimeout` is a per-request defensive ceiling for genuinely
+    // hung connections (e.g. a TCP socket that never receives RST) — it
+    // is *not* the policy knob for "how long is too long". `SyncEngine`
+    // wraps every `fetch()` in `timeout(maxLatency)` and routes the
+    // resulting `_OuterTimeoutException` to the `timedOut` diagnostic
+    // bucket; an inner `TimeoutException` is bucketed as `failed`
+    // instead. The 30 s default sits comfortably above the default
+    // `maxLatency` of 3 s, so the outer wrapper deterministically wins
+    // under default configuration and a slow HTTPS probe is reported as
+    // "timed out" rather than racing the inner deadline. Callers
+    // configuring `maxLatency` above 30 s must pass a matching
+    // `requestTimeout` (the inner bound is hard-coded into the
+    // `.timeout(...)` call here, so it cannot be relaxed by swapping in
+    // a different `http.Client` alone). Conversely, callers concerned
+    // about lingering background work — `Future.timeout` does not
+    // cancel the in-flight request, so an abandoned probe keeps running
+    // until the response arrives, the underlying client tears down the
+    // socket, or `_requestTimeout` fires, whichever comes first — can
+    // pass a smaller `requestTimeout`, accepting that values close to
+    // or below `maxLatency` may race the outer wrapper and degrade the
+    // diagnostic split.
+    var response = await _client.head(uri).timeout(_requestTimeout);
     if (response.statusCode == 405 || response.headers['date'] == null) {
       sw.reset();
       sw.start();
-      response = await _client.get(uri).timeout(const Duration(seconds: 30));
+      response = await _client.get(uri).timeout(_requestTimeout);
     }
     sw.stop();
     // Capture monotonic reference immediately on response receipt, before
