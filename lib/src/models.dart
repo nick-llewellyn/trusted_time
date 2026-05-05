@@ -419,9 +419,14 @@ final class TrustedTimeConfig {
   /// does not cancel the in-flight HTTP request, so an abandoned probe
   /// keeps running until the response arrives, the underlying client
   /// tears down the socket, or this ceiling fires, whichever comes
-  /// first — can pass a smaller value (e.g. `Duration(seconds: 5)`),
-  /// accepting that values close to [maxLatency] will rejoin the race
-  /// and the diagnostic split becomes nondeterministic.
+  /// first — can pass a smaller value (e.g. `Duration(seconds: 5)`)
+  /// **provided it remains strictly greater than [maxLatency]**. Values
+  /// at or below [maxLatency] are rejected by the [SyncEngine]
+  /// constructor in debug builds when [httpsSources] is non-empty;
+  /// the same gate that enforces the strict-greater rule above also
+  /// rejects this lowering pattern when it would re-introduce the race.
+  /// Lowering below the default of 30 s while keeping the inequality
+  /// satisfied is the supported way to shorten lingering work.
   ///
   /// Has no effect on [additionalSources]; custom [TrustedTimeSource]
   /// implementations are responsible for their own per-request bounds.
