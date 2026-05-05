@@ -9,7 +9,7 @@ void main() {
 
     test('returns null when fewer samples than quorum', () {
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 20000),
       ]);
       expect(result, isNull);
     });
@@ -20,11 +20,11 @@ void main() {
 
     test('resolves consensus from two agreeing sources', () {
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 20000),
         SourceSample(
           sourceId: 'b',
           utc: baseTime.add(const Duration(milliseconds: 5)),
-          roundTripMs: 30,
+          roundTripMicros: 30000,
         ),
       ]);
 
@@ -37,16 +37,16 @@ void main() {
     test('resolves consensus from three sources with one outlier', () {
       final engine3 = MarzulloEngine(minimumQuorum: 2);
       final result = engine3.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 20000),
         SourceSample(
           sourceId: 'b',
           utc: baseTime.add(const Duration(milliseconds: 3)),
-          roundTripMs: 20,
+          roundTripMicros: 20000,
         ),
         SourceSample(
           sourceId: 'outlier',
           utc: baseTime.add(const Duration(seconds: 60)),
-          roundTripMs: 20,
+          roundTripMicros: 20000,
         ),
       ]);
 
@@ -57,22 +57,22 @@ void main() {
 
     test('uncertainty reflects intersection width', () {
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 100),
-        SourceSample(sourceId: 'b', utc: baseTime, roundTripMs: 100),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 100000),
+        SourceSample(sourceId: 'b', utc: baseTime, roundTripMicros: 100000),
       ]);
 
       expect(result, isNotNull);
-      expect(result!.uncertaintyMs, greaterThanOrEqualTo(0));
-      expect(result.uncertaintyMs, lessThanOrEqualTo(100));
+      expect(result!.uncertaintyMicros, greaterThanOrEqualTo(0));
+      expect(result.uncertaintyMicros, lessThanOrEqualTo(100 * 1000));
     });
 
     test('returns null when sources are too far apart for quorum', () {
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 10),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 10000),
         SourceSample(
           sourceId: 'b',
           utc: baseTime.add(const Duration(seconds: 120)),
-          roundTripMs: 10,
+          roundTripMicros: 10000,
         ),
       ]);
 
@@ -85,11 +85,11 @@ void main() {
       // semantics requires depth=2 at that point, so consensus is the
       // zero-width interval anchored at the touch.
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 20000),
         SourceSample(
           sourceId: 'b',
           utc: DateTime.fromMillisecondsSinceEpoch(baseMs + 20, isUtc: true),
-          roundTripMs: 20,
+          roundTripMicros: 20000,
         ),
       ]);
 
@@ -98,24 +98,26 @@ void main() {
       // Midpoint of the zero-width consensus window sits exactly on the
       // shared endpoint.
       expect(result.utc.millisecondsSinceEpoch, baseMs + 10);
-      // Zero-width raw interval is floored to 1 ms by the engine.
-      expect(result.uncertaintyMs, 1);
+      // Zero-width raw interval is floored to 1 ms (1000 µs) by the
+      // engine; `TrustAnchor.uncertaintyMs` is rounded up from this
+      // before being surfaced to public callers.
+      expect(result.uncertaintyMicros, 1000);
     });
 
     test('participantCount reports unique source IDs, not overlap depth', () {
       // Two samples from the same source overlap heavily. The raw overlap
       // depth at the intersection is 2, but only one authority is present.
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 20000),
         SourceSample(
           sourceId: 'a',
           utc: baseTime.add(const Duration(milliseconds: 2)),
-          roundTripMs: 20,
+          roundTripMicros: 20000,
         ),
         SourceSample(
           sourceId: 'b',
           utc: baseTime.add(const Duration(milliseconds: 1)),
-          roundTripMs: 20,
+          roundTripMicros: 20000,
         ),
       ]);
 
@@ -125,46 +127,93 @@ void main() {
     });
 
     test('uncertainty is floored at 1 ms when intervals coincide exactly', () {
-      // Two samples with identical centres and identical roundTrips collapse
-      // to a zero-width consensus interval. `TrustAnchor.uncertaintyMs` is
-      // public and consumers reason about confidence bounds against it; a
-      // reported `\u00b10 ms` would falsely advertise sub-millisecond consensus
-      // precision below any real clock's read jitter, so the engine floors
-      // the published value at 1 ms.
+      // Two samples with identical centres and identical roundTrips
+      // collapse to a zero-width consensus interval.
+      // `TrustAnchor.uncertaintyMs` is public and consumers reason
+      // about confidence bounds against it; a reported `\u00b10 ms`
+      // would falsely advertise sub-millisecond consensus precision
+      // below any real clock's read jitter, so the engine floors
+      // `uncertaintyMicros` at 1000 µs (= 1 ms) before the consensus
+      // result is built. SyncEngine then rounds that up to whole
+      // milliseconds when populating `TrustAnchor.uncertaintyMs`, so
+      // the public surface never advertises sub-1 ms precision.
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 0),
-        SourceSample(sourceId: 'b', utc: baseTime, roundTripMs: 0),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 0),
+        SourceSample(sourceId: 'b', utc: baseTime, roundTripMicros: 0),
       ]);
 
       expect(result, isNotNull);
-      expect(result!.uncertaintyMs, 1);
+      expect(result!.uncertaintyMicros, 1000);
     });
 
     test('uncertainty is floored at 1 ms for sub-2 ms non-zero windows', () {
-      // The floor applies to any consensus window narrower than 2 ms,
-      // not just zero-width intersections, because `(bestEnd - bestStart)
-      // ~/ 2` truncates a 1 ms-wide raw window to 0 before `max(1, ...)`
-      // runs. The previous test pinned the zero-width case; this one
-      // pins the 1 ms-wide non-zero case so a future refactor that
-      // narrowed the floor to `width == 0` would visibly regress here.
-      //   a: centre base+0 ms, rtt 4 ms -> [base-2, base+2]
-      //   b: centre base+3 ms, rtt 4 ms -> [base+1, base+5]
-      //   intersection: [base+1, base+2] -> raw width 1 ms, midpoint
-      //   base+1 (after `(1 + 2) ~/ 2`).
+      // The floor applies to any consensus window narrower than 2 ms
+      // (= 2000 µs), not just zero-width intersections, because the
+      // engine reports a half-width and a sub-2 ms window collapses
+      // to a sub-1 ms half-width which would re-introduce the
+      // sub-millisecond precision claim the floor exists to prevent.
+      // The previous test pinned the zero-width case; this one pins
+      // the genuinely non-zero but still-floored case so a future
+      // refactor that narrowed the floor to `width == 0` would
+      // visibly regress here.
+      //   a: centre base+0 µs,    rtt 4000 µs -> [base-2000, base+2000]
+      //   b: centre base+3000 µs, rtt 4000 µs -> [base+1000, base+5000]
+      //   intersection: [base+1000, base+2000] -> raw width 1000 µs,
+      //   midpoint base+1500 µs (after `(1000 + 2000) ~/ 2`), raw
+      //   half-width 500 µs (floored up to 1000 µs).
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 4),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 4000),
         SourceSample(
           sourceId: 'b',
           utc: baseTime.add(const Duration(milliseconds: 3)),
-          roundTripMs: 4,
+          roundTripMicros: 4000,
         ),
       ]);
 
       expect(result, isNotNull);
-      // Confirm the raw window is genuinely 1 ms wide (not zero) by
-      // pinning the truncated midpoint.
-      expect(result!.utc.millisecondsSinceEpoch, baseMs + 1);
-      expect(result.uncertaintyMs, 1);
+      // Pin the midpoint at microsecond precision so a regression that
+      // re-truncated to milliseconds (which would lose the 500 µs
+      // offset) is caught — `millisecondsSinceEpoch` truncates to
+      // baseMs+1 for both this microsecond migration and the legacy
+      // millisecond engine, so the strict pin happens at us scale.
+      expect(result!.utc.microsecondsSinceEpoch, baseMs * 1000 + 1500);
+      expect(result.uncertaintyMicros, 1000);
+    });
+
+    test('honours sub-millisecond uncertainty bounds during the sweep', () {
+      // Regression for the millisecond-truncation gap: an earlier
+      // revision converted advertised `TimeSample.uncertainty` to
+      // `inMilliseconds` before building `SourceSample`s, which
+      // collapsed a ±200 µs bound to ±0 ms. Combined with sample
+      // centres also truncated to whole milliseconds, two samples
+      // disagreeing by sub-millisecond margins could share a single
+      // truncated millisecond and falsely overlap. The microsecond
+      // engine resolves both centres and widths at µs precision so
+      // genuinely disjoint sub-ms intervals are rejected.
+      //
+      //   a: centre base+0 µs,   uncertainty ±100 µs -> [base+0,    base+100]
+      //   b: centre base+800 µs, uncertainty ±100 µs -> [base+700,  base+900]
+      //
+      // Both centres truncate to baseMs, both half-widths to 0 ms in
+      // the legacy engine — false agreement. At microsecond
+      // resolution the intervals are clearly disjoint and the engine
+      // must return null with quorum=2.
+      final result = engine.resolve([
+        SourceSample(
+          sourceId: 'a',
+          utc: baseTime,
+          roundTripMicros: 200,
+          uncertaintyMicros: 100,
+        ),
+        SourceSample(
+          sourceId: 'b',
+          utc: baseTime.add(const Duration(microseconds: 800)),
+          roundTripMicros: 200,
+          uncertaintyMicros: 100,
+        ),
+      ]);
+
+      expect(result, isNull);
     });
 
     test('participantCount tracks source multiplicity across reopened '
@@ -183,22 +232,22 @@ void main() {
         SourceSample(
           sourceId: 'a',
           utc: baseTime.add(const Duration(milliseconds: 2)),
-          roundTripMs: 4,
+          roundTripMicros: 4000,
         ),
         SourceSample(
           sourceId: 'a',
           utc: baseTime.add(const Duration(milliseconds: 11)),
-          roundTripMs: 16,
+          roundTripMicros: 16000,
         ),
         SourceSample(
           sourceId: 'b',
           utc: baseTime.add(const Duration(milliseconds: 11)),
-          roundTripMs: 8,
+          roundTripMicros: 8000,
         ),
         SourceSample(
           sourceId: 'c',
           utc: baseTime.add(const Duration(milliseconds: 9)),
-          roundTripMs: 2,
+          roundTripMicros: 2000,
         ),
       ]);
 
@@ -230,37 +279,37 @@ void main() {
         SourceSample(
           sourceId: 'a',
           utc: baseTime.add(const Duration(milliseconds: 5)),
-          roundTripMs: 10,
+          roundTripMicros: 10000,
         ),
         SourceSample(
           sourceId: 'a',
           utc: baseTime.add(const Duration(milliseconds: 5)),
-          roundTripMs: 8,
+          roundTripMicros: 8000,
         ),
         SourceSample(
           sourceId: 'a',
           utc: baseTime.add(const Duration(milliseconds: 5)),
-          roundTripMs: 6,
+          roundTripMicros: 6000,
         ),
         SourceSample(
           sourceId: 'b',
           utc: baseTime.add(const Duration(milliseconds: 5)),
-          roundTripMs: 4,
+          roundTripMicros: 4000,
         ),
         SourceSample(
           sourceId: 'c',
           utc: baseTime.add(const Duration(milliseconds: 25)),
-          roundTripMs: 10,
+          roundTripMicros: 10000,
         ),
         SourceSample(
           sourceId: 'd',
           utc: baseTime.add(const Duration(milliseconds: 25)),
-          roundTripMs: 8,
+          roundTripMicros: 8000,
         ),
         SourceSample(
           sourceId: 'e',
           utc: baseTime.add(const Duration(milliseconds: 25)),
-          roundTripMs: 6,
+          roundTripMicros: 6000,
         ),
       ]);
 
@@ -289,7 +338,7 @@ void main() {
       // Sweep: best=2 unique sources at base+0 (bestStart). a1 closes
       // at base+1 — multiset 'a' drops 2->1, unique stays 2. a2 and b
       // close together at base+10 — unique drops below 2 -> bestEnd.
-      // midpoint = (0 + 10) / 2 = 5; uncertaintyMs = 5.
+      // midpoint = (0 + 10) / 2 = 5 ms; uncertaintyMicros = 5000.
       // Containment check `|s.utc - 5| <= s.u`:
       //   a1: |0 - 5| = 5 > 1  -> EXCLUDED
       //   a2: |5 - 5| = 0 <= 5 -> INCLUDED
@@ -300,16 +349,20 @@ void main() {
       // that only check participant *count*, because unique-source
       // count is 2 throughout the window. This test pins identity,
       // not just count.
-      final a1 = SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 2);
+      final a1 = SourceSample(
+        sourceId: 'a',
+        utc: baseTime,
+        roundTripMicros: 2000,
+      );
       final a2 = SourceSample(
         sourceId: 'a',
         utc: baseTime.add(const Duration(milliseconds: 5)),
-        roundTripMs: 10,
+        roundTripMicros: 10000,
       );
       final b = SourceSample(
         sourceId: 'b',
         utc: baseTime.add(const Duration(milliseconds: 5)),
-        roundTripMs: 10,
+        roundTripMicros: 10000,
       );
       final result = engine.resolve([a1, a2, b]);
 
@@ -329,30 +382,30 @@ void main() {
       // sources, so this must return null even though the old
       // depth-only gate would have admitted it.
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 20000),
         SourceSample(
           sourceId: 'a',
           utc: baseTime.add(const Duration(milliseconds: 5)),
-          roundTripMs: 20,
+          roundTripMicros: 20000,
         ),
       ]);
 
       expect(result, isNull);
     });
 
-    test('rejects samples with negative roundTripMs without throwing', () {
+    test('rejects samples with negative roundTripMicros without throwing', () {
       // A custom TrustedTimeSource that violates the non-negative
-      // roundTripMs contract would otherwise produce an inverted
+      // roundTripMicros contract would otherwise produce an inverted
       // interval (upper endpoint < lower endpoint), causing the
       // multiset sweep to look up an unseen id and throw on the
       // null-asserted map access. The malformed sample must instead
       // be treated as absent so quorum can fail cleanly.
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 20000),
         SourceSample(
           sourceId: 'b',
           utc: baseTime.add(const Duration(milliseconds: 5)),
-          roundTripMs: -100,
+          roundTripMicros: -100000,
         ),
       ]);
 
@@ -364,13 +417,13 @@ void main() {
       'ignores negative-RTT samples but still resolves on remaining valid ones',
       () {
         final result = engine.resolve([
-          SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+          SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 20000),
           SourceSample(
             sourceId: 'b',
             utc: baseTime.add(const Duration(milliseconds: 5)),
-            roundTripMs: 30,
+            roundTripMicros: 30000,
           ),
-          SourceSample(sourceId: 'c', utc: baseTime, roundTripMs: -50),
+          SourceSample(sourceId: 'c', utc: baseTime, roundTripMicros: -50000),
         ]);
 
         expect(result, isNotNull);
@@ -378,25 +431,26 @@ void main() {
       },
     );
 
-    test('rejects samples with negative explicit uncertaintyMs', () {
-      // `SourceSample.uncertaintyMs` is now an independent constructor
-      // parameter that defaults to `roundTripMs ~/ 2` when omitted, so
-      // a caller can supply a sane RTT alongside a negative explicit
-      // uncertainty — exactly what the SyncEngine does when wiring
-      // through `TimeSample.uncertainty`. A negative `uncertaintyMs`
-      // would invert the Marzullo interval (upper endpoint < lower
-      // endpoint) and crash the sweep on the same null-asserted map
-      // access that motivates the negative-RTT filter, so the
-      // defence-in-depth check on `uncertaintyMs >= 0` must reject it
-      // independently. With one good sample + quorum=2 the run must
-      // return null cleanly rather than throw.
+    test('rejects samples with negative explicit uncertaintyMicros', () {
+      // `SourceSample.uncertaintyMicros` is an independent constructor
+      // parameter that defaults to `roundTripMicros ~/ 2` when omitted,
+      // so a caller can supply a sane RTT alongside a negative
+      // explicit uncertainty — exactly what the SyncEngine does when
+      // wiring through `TimeSample.uncertainty`. A negative
+      // `uncertaintyMicros` would invert the Marzullo interval (upper
+      // endpoint < lower endpoint) and crash the sweep on the same
+      // null-asserted map access that motivates the negative-RTT
+      // filter, so the defence-in-depth check on
+      // `uncertaintyMicros >= 0` must reject it independently. With
+      // one good sample + quorum=2 the run must return null cleanly
+      // rather than throw.
       final result = engine.resolve([
-        SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+        SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 20000),
         SourceSample(
           sourceId: 'b',
           utc: baseTime,
-          roundTripMs: 100,
-          uncertaintyMs: -5,
+          roundTripMicros: 100000,
+          uncertaintyMicros: -5000,
         ),
       ]);
 
@@ -404,7 +458,7 @@ void main() {
     });
 
     test(
-      'ignores negative-uncertaintyMs samples but resolves on remaining valid ones',
+      'ignores negative-uncertaintyMicros samples but resolves on remaining valid ones',
       () {
         // Companion to the negative-RTT positive case: a malformed
         // explicit uncertainty must not poison the consensus when
@@ -413,17 +467,17 @@ void main() {
         // the third sample carries a negative explicit uncertainty
         // and is filtered. Result must contain 2 participants.
         final result = engine.resolve([
-          SourceSample(sourceId: 'a', utc: baseTime, roundTripMs: 20),
+          SourceSample(sourceId: 'a', utc: baseTime, roundTripMicros: 20000),
           SourceSample(
             sourceId: 'b',
             utc: baseTime.add(const Duration(milliseconds: 5)),
-            roundTripMs: 30,
+            roundTripMicros: 30000,
           ),
           SourceSample(
             sourceId: 'c',
             utc: baseTime,
-            roundTripMs: 50,
-            uncertaintyMs: -1,
+            roundTripMicros: 50000,
+            uncertaintyMicros: -1000,
           ),
         ]);
 

@@ -163,18 +163,22 @@ final class SyncEngine {
 
     // Build SourceSamples 1:1 with `samples` so that participating
     // SourceSample instances returned by Marzullo can be mapped back
-    // to their TimeSamples by parallel index. `uncertaintyMs` is taken
-    // from the sample's advertised `TimeSample.uncertainty` rather than
-    // the historical RTT/2 derivation, honouring the documented
-    // contract that a custom source may report a tighter bound than
-    // half the round-trip.
+    // to their TimeSamples by parallel index. RTT and uncertainty are
+    // wired through at microsecond resolution so that NTS sources (or
+    // any custom source advertising sub-millisecond bounds) are
+    // honoured directly during the sweep — `inMilliseconds` would
+    // truncate a ±200 µs advertised bound to ±0 ms before Marzullo
+    // ever saw it. Uncertainty is taken from the sample's advertised
+    // `TimeSample.uncertainty` rather than the historical RTT/2
+    // derivation, honouring the documented contract that a custom
+    // source may report a tighter bound than half the round-trip.
     final marzulloSamples = [
       for (final s in samples)
         SourceSample(
           sourceId: s.source.id,
           utc: s.networkUtc,
-          roundTripMs: s.roundTripTime.inMilliseconds,
-          uncertaintyMs: s.uncertainty.inMilliseconds,
+          roundTripMicros: s.roundTripTime.inMicroseconds,
+          uncertaintyMicros: s.uncertainty.inMicroseconds,
         ),
     ];
 
@@ -237,7 +241,17 @@ final class SyncEngine {
       networkUtcMs: result.utc.millisecondsSinceEpoch,
       uptimeMs: best.capturedMonotonicMs,
       wallMs: best.capturedAt.millisecondsSinceEpoch,
-      uncertaintyMs: result.uncertaintyMs,
+      // `result.uncertaintyMicros` is already floored at 1000 µs by
+      // the Marzullo engine, so this ceiling division yields ≥ 1 ms
+      // and never advertises sub-millisecond consensus precision.
+      // Rounding *up* (rather than down) keeps the published bound
+      // conservative: a 1500 µs raw window surfaces as ±2 ms rather
+      // than the under-claimed ±1 ms that integer truncation would
+      // give. `TrustAnchor.uncertaintyMs` is the public, persisted
+      // millisecond-resolution surface; the Marzullo engine itself
+      // operates in microseconds so sub-millisecond inputs are
+      // honoured during the intersection sweep.
+      uncertaintyMs: (result.uncertaintyMicros + 999) ~/ 1000,
     );
   }
 
@@ -292,7 +306,6 @@ final class SyncEngine {
   >
   _queryConcurrently() async {
     final outcomes = await Future.wait(_sources.map(_querySafe));
-    final maxLatencyMs = _config.maxLatency.inMilliseconds;
     final eligible = <TimeSample>[];
     var responded = 0;
     var droppedForLatency = 0;
@@ -302,7 +315,12 @@ final class SyncEngine {
       final sample = outcome.sample;
       if (sample != null) {
         responded++;
-        if (sample.roundTripTime.inMilliseconds <= maxLatencyMs) {
+        // Compare `Duration` objects directly so the gate has the same
+        // resolution as the inputs. An earlier revision floored both
+        // sides to whole milliseconds, which let an over-budget sample
+        // (e.g. 50.9 ms RTT vs `maxLatency: Duration(milliseconds: 50)`)
+        // sneak past the filter and appear in `eligible`.
+        if (sample.roundTripTime <= _config.maxLatency) {
           eligible.add(sample);
         } else {
           droppedForLatency++;
@@ -382,10 +400,14 @@ final class SyncEngine {
 }
 
 /// Sentinel raised by [SyncEngine._querySafe]'s outer
-/// `timeout(maxLatency)` to distinguish a budget-induced kill from a
-/// `TimeoutException` raised inside `source.fetch()` (e.g. an
-/// [HttpsSource]'s own per-request HTTP timeouts). Only this sentinel
-/// is treated as a `maxLatency` timeout in the diagnostic split; inner
+/// `timeout(maxLatency)` to distinguish a budget-induced abandonment
+/// from a `TimeoutException` raised inside `source.fetch()` (e.g. an
+/// [HttpsSource]'s own per-request HTTP timeouts). `Future.timeout`
+/// stops awaiting the underlying future when the budget fires, but
+/// the original work may keep running in the background; the
+/// distinction here is about *attribution* of which timeout fired,
+/// not about cancelling the source. Only this sentinel is treated as
+/// a `maxLatency` timeout in the diagnostic split; inner
 /// `TimeoutException`s fall through to the generic failure bucket.
 final class _OuterTimeoutException implements Exception {
   const _OuterTimeoutException();

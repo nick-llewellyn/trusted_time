@@ -6,38 +6,57 @@ import 'package:flutter/foundation.dart';
 final class SourceSample {
   /// Constructs a sample for the Marzullo sweep.
   ///
-  /// [uncertaintyMs] defaults to `roundTripMs ~/ 2` when omitted, which
-  /// matches the historical RTT/2 derivation used by `HttpsSource` and
-  /// the test fakes. Custom sources (notably NTS, which has access to
-  /// the server's stratum + dispersion fields) may pass a tighter
-  /// explicit value: `TimeSample.uncertainty` is plumbed through
-  /// `SyncEngine` to this parameter so consensus intervals honour the
-  /// advertised bound rather than falling back to a generic round-trip
-  /// estimate.
+  /// All time quantities are in microseconds so that NTS and other
+  /// sub-millisecond-resolution sources are honoured directly during
+  /// the sweep. Earlier revisions of this engine operated in
+  /// milliseconds, which silently truncated an advertised ±200 µs
+  /// bound to ±0 ms; combined with millisecond-truncated sample
+  /// centres, two samples that disagreed by sub-millisecond margins
+  /// could end up sharing a single-point interval at the same
+  /// truncated millisecond and falsely overlap. Storing centres and
+  /// widths at microsecond resolution closes that gap; the engine's
+  /// reported uncertainty is still floored at 1 ms (1000 µs) before
+  /// surfacing to public callers, because that is the realistic
+  /// best-case bound any wall clock can claim.
+  ///
+  /// [uncertaintyMicros] defaults to `roundTripMicros ~/ 2` when
+  /// omitted, which matches the historical RTT/2 derivation used by
+  /// `HttpsSource` and the test fakes. Custom sources (notably NTS,
+  /// which has access to the server's stratum + dispersion fields)
+  /// may pass a tighter explicit value: `TimeSample.uncertainty` is
+  /// plumbed through `SyncEngine` to this parameter so consensus
+  /// intervals honour the advertised bound rather than falling back
+  /// to a generic round-trip estimate.
   const SourceSample({
     required this.sourceId,
     required this.utc,
-    required this.roundTripMs,
-    int? uncertaintyMs,
-  }) : uncertaintyMs = uncertaintyMs ?? roundTripMs ~/ 2;
+    required this.roundTripMicros,
+    int? uncertaintyMicros,
+  }) : uncertaintyMicros = uncertaintyMicros ?? roundTripMicros ~/ 2;
 
   final String sourceId;
   final DateTime utc;
-  final int roundTripMs;
-  final int uncertaintyMs;
+  final int roundTripMicros;
+  final int uncertaintyMicros;
 }
 
 @immutable
 final class ConsensusResult {
   const ConsensusResult({
     required this.utc,
-    required this.uncertaintyMs,
+    required this.uncertaintyMicros,
     required this.participantCount,
     required this.participants,
   });
 
   final DateTime utc;
-  final int uncertaintyMs;
+
+  /// Half-width of the consensus interval in microseconds. Floored at
+  /// 1 ms (1000 µs) so the engine never advertises sub-millisecond
+  /// consensus precision below realistic wall-clock read jitter.
+  /// `SyncEngine` rounds this up to whole milliseconds before storing
+  /// it on the public-facing `TrustAnchor.uncertaintyMs`.
+  final int uncertaintyMicros;
   final int participantCount;
 
   /// The specific [SourceSample] instances whose uncertainty interval
@@ -72,21 +91,28 @@ final class MarzulloEngine {
     // and consensus all see the same filtered set). The check is repeated
     // here because MarzulloEngine takes SourceSample directly and any
     // future caller that bypasses SyncEngine must not be able to crash
-    // the sweep: a negative `uncertaintyMs` inverts the interval, sorts
-    // the upper endpoint before its lower endpoint, and would otherwise
-    // hit `activeSourceCounts[id]!` for an id that was never inserted.
-    // RTT is checked alongside because it survives into anchor selection
-    // (lowest-RTT-among-participants) and a negative value there would
-    // win unfairly.
+    // the sweep: a negative `uncertaintyMicros` inverts the interval,
+    // sorts the upper endpoint before its lower endpoint, and would
+    // otherwise hit `activeSourceCounts[id]!` for an id that was never
+    // inserted. RTT is checked alongside because it survives into
+    // anchor selection (lowest-RTT-among-participants) and a negative
+    // value there would win unfairly.
     final valid = samples
-        .where((s) => s.roundTripMs >= 0 && s.uncertaintyMs >= 0)
+        .where((s) => s.roundTripMicros >= 0 && s.uncertaintyMicros >= 0)
         .toList();
     if (valid.length < minimumQuorum) return null;
 
     final endpoints = <_Endpoint>[];
     for (final s in valid) {
-      final center = s.utc.millisecondsSinceEpoch;
-      final u = s.uncertaintyMs;
+      // Microsecond-resolution centre: `millisecondsSinceEpoch` would
+      // truncate sub-millisecond offsets between samples, so two
+      // genuinely disagreeing centres ~200 µs apart would collide on
+      // the same millisecond and falsely overlap once their advertised
+      // sub-millisecond uncertainties also truncated to zero. Using
+      // `microsecondsSinceEpoch` keeps centres and widths at the same
+      // resolution as the inputs the engine receives.
+      final center = s.utc.microsecondsSinceEpoch;
+      final u = s.uncertaintyMicros;
       endpoints
         ..add(_Endpoint(center - u, _EndpointType.lower, s))
         ..add(_Endpoint(center + u, _EndpointType.upper, s));
@@ -95,7 +121,7 @@ final class MarzulloEngine {
     // Sort by time; at equal times, lower endpoints come first so overlap
     // counting uses closed-interval semantics (touching intervals overlap).
     endpoints.sort((a, b) {
-      final cmp = a.timeMs.compareTo(b.timeMs);
+      final cmp = a.timeMicros.compareTo(b.timeMicros);
       if (cmp != 0) return cmp;
       return a.type == _EndpointType.lower ? -1 : 1;
     });
@@ -124,7 +150,7 @@ final class MarzulloEngine {
         final unique = activeSourceCounts.length;
         if (unique > bestSourceIdCount) {
           bestSourceIdCount = unique;
-          bestStart = ep.timeMs;
+          bestStart = ep.timeMicros;
           // The correct closing endpoint for this new best hasn't been
           // encountered yet; clear any prior end-of-window candidate.
           bestEnd = null;
@@ -144,7 +170,7 @@ final class MarzulloEngine {
         if (bestStart != null &&
             bestEnd == null &&
             activeSourceCounts.length < bestSourceIdCount) {
-          bestEnd = ep.timeMs;
+          bestEnd = ep.timeMicros;
         }
       }
     }
@@ -155,8 +181,8 @@ final class MarzulloEngine {
       return null;
     }
 
-    final midMs = (bestStart + bestEnd) ~/ 2;
-    final uncertaintyMs = (bestEnd - bestStart) ~/ 2;
+    final midMicros = (bestStart + bestEnd) ~/ 2;
+    final uncertaintyMicros = (bestEnd - bestStart) ~/ 2;
 
     // Identify participants by interval-containment of the consensus
     // midpoint rather than by snapshotting the active set during the
@@ -165,26 +191,32 @@ final class MarzulloEngine {
     // enter or leave during the window without changing that count —
     // so an active-set snapshot at `bestStart` could include a sample
     // whose interval ends mid-window (and therefore does not actually
-    // contain consensus UTC). Filtering on `|s.utc - midMs| <= s.u`
-    // captures exactly the samples whose reported time is consistent
-    // with consensus, with no dependence on sweep instant.
+    // contain consensus UTC). Filtering on `|s.utc - midMicros| <=
+    // s.uncertaintyMicros` captures exactly the samples whose reported
+    // time is consistent with consensus, with no dependence on sweep
+    // instant.
     final participants = <SourceSample>{
       for (final s in valid)
-        if ((s.utc.millisecondsSinceEpoch - midMs).abs() <= s.uncertaintyMs) s,
+        if ((s.utc.microsecondsSinceEpoch - midMicros).abs() <=
+            s.uncertaintyMicros)
+          s,
     };
 
     return ConsensusResult(
-      utc: DateTime.fromMillisecondsSinceEpoch(midMs, isUtc: true),
-      // Floor at 1 ms. `uncertaintyMs` above is `(bestEnd - bestStart)
-      // ~/ 2`, so integer truncation maps every consensus window
-      // narrower than 2 ms onto zero — not just the zero-width
-      // (single-point) case. Reporting `uncertaintyMs == 0` would
-      // falsely advertise sub-millisecond consensus precision; every
-      // clock has read jitter above that, and TrustAnchor exposes
-      // uncertaintyMs publicly for callers reasoning about confidence
-      // bounds. The floor produces a realistic best-case bound (1 ms)
-      // for any sub-2 ms window rather than a meaningless zero.
-      uncertaintyMs: max(1, uncertaintyMs),
+      utc: DateTime.fromMicrosecondsSinceEpoch(midMicros, isUtc: true),
+      // Floor at 1 ms (1000 µs). The raw `uncertaintyMicros` above is
+      // `(bestEnd - bestStart) ~/ 2`, which can collapse to zero (or
+      // any sub-millisecond value) for tightly agreeing samples.
+      // `TrustAnchor.uncertaintyMs` is rounded up from this value
+      // before being surfaced to public callers, and consumers reason
+      // about confidence bounds against it; a value below 1 ms would
+      // falsely advertise sub-millisecond consensus precision below
+      // any real clock's read jitter. The floor produces a realistic
+      // best-case bound for any sub-2 ms window rather than a
+      // meaningless zero, and is applied here (not at the SyncEngine
+      // boundary) so direct callers of MarzulloEngine see the same
+      // floor behaviour as the production wiring.
+      uncertaintyMicros: max(1000, uncertaintyMicros),
       participantCount: bestSourceIdCount,
       participants: Set.unmodifiable(participants),
     );
@@ -194,9 +226,9 @@ final class MarzulloEngine {
 enum _EndpointType { lower, upper }
 
 final class _Endpoint {
-  const _Endpoint(this.timeMs, this.type, this.sample);
+  const _Endpoint(this.timeMicros, this.type, this.sample);
 
-  final int timeMs;
+  final int timeMicros;
   final _EndpointType type;
   final SourceSample sample;
 }

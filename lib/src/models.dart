@@ -231,13 +231,19 @@ final class TimeSample {
   /// HTTPS sources pass `roundTripTime ~/ 2` and custom sources with
   /// access to tighter information (e.g. an NTS source exposing the
   /// server's stratum and root dispersion) may report a smaller value.
-  /// The sync engine plumbs this directly into the Marzullo consensus
+  /// The sync engine plumbs this through to the Marzullo consensus
   /// interval `[networkUtc - uncertainty, networkUtc + uncertainty]`
-  /// — it does **not** re-derive intervals from [roundTripTime], so an
-  /// advertised tighter bound is honoured during the intersection
-  /// sweep. Must be non-negative; samples reporting a negative
-  /// uncertainty are rejected alongside negative-RTT samples for the
-  /// same defence-in-depth reasons.
+  /// at microsecond resolution — it does **not** re-derive intervals
+  /// from [roundTripTime], and it does **not** truncate the advertised
+  /// bound to whole milliseconds before the intersection sweep, so an
+  /// NTS-style sub-millisecond bound is honoured during consensus
+  /// rather than being collapsed to a single-point interval. The
+  /// engine still floors the *published* `TrustAnchor.uncertaintyMs`
+  /// at 1 ms (rounded up from microseconds) because that is the
+  /// realistic lower bound any wall clock can claim. Must be
+  /// non-negative; samples reporting a negative uncertainty are
+  /// rejected alongside negative-RTT samples for the same
+  /// defence-in-depth reasons.
   final Duration uncertainty;
 
   /// Device monotonic uptime in milliseconds, captured the instant the

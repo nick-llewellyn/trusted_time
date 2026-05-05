@@ -55,9 +55,15 @@ class _FakeTimeSource implements TrustedTimeSource {
   final bool throwPostResponse;
   // Optional pre-response delay. Tests that need to exercise the real
   // `Future.timeout(maxLatency)` path in `_querySafe` set this to a
-  // value greater than `maxLatency` so `fetch()` is killed before
-  // returning a `TimeSample` — the production case for built-in
-  // HTTPS/NTS sources when the network is slow but reachable.
+  // value greater than `maxLatency` so the outer wrapper abandons
+  // the await before `fetch()` returns a `TimeSample` — the
+  // production case for built-in HTTPS/NTS sources when the network
+  // is slow but reachable. `Future.timeout` does not cancel the
+  // underlying delay; the fake's `Future.delayed` keeps running in
+  // the background after the wrapper has surrendered, which mirrors
+  // real source behaviour and is exactly why the engine has to use
+  // a sentinel to tell outer-budget abandonment apart from inner
+  // `TimeoutException`s.
   final Duration? fetchDelay;
   // Optional fixed capturedAt so tests asserting `anchor.wallMs` can pin
   // a deterministic value. When null, falls back to wall-clock now() for
@@ -505,6 +511,63 @@ void main() {
         }
       },
     );
+
+    test('latency check rejects samples whose RTT exceeds maxLatency by '
+        'sub-millisecond margins', () async {
+      // Regression: an earlier revision floored both sides of the
+      // latency check to whole milliseconds before comparing
+      // (`sample.roundTripTime.inMilliseconds <= maxLatency.inMilliseconds`),
+      // which let a 50.5 ms RTT sneak past a 50 ms `maxLatency` —
+      // both truncated to 50 ms before the `<=`. The fix compares
+      // the `Duration` objects directly so the gate runs at the
+      // resolution the inputs carry. With two sources at 50.5 ms
+      // each and quorum=2, the engine must reject both as
+      // over-budget and surface the pure-over-latency diagnostic
+      // rather than admitting either into the eligible pool.
+      const tightConfig = TrustedTimeConfig(
+        httpsSources: [],
+        minimumQuorum: 2,
+        maxLatency: Duration(milliseconds: 50),
+      );
+      final engine = SyncEngine.withSources(
+        config: tightConfig,
+        sources: [
+          _FakeTimeSource(
+            id: 'over1',
+            networkUtc: baseTime,
+            // 50.5 ms — half a millisecond above the budget. Floors
+            // to 50 ms under the legacy ms-precision comparison and
+            // would falsely pass.
+            roundTripTime: const Duration(microseconds: 50500),
+          ),
+          _FakeTimeSource(
+            id: 'over2',
+            networkUtc: baseTime,
+            roundTripTime: const Duration(microseconds: 50500),
+          ),
+        ],
+      );
+
+      try {
+        await engine.sync();
+        fail('expected TrustedTimeSyncException');
+      } on TrustedTimeSyncException catch (e) {
+        // Both samples must land in `droppedForLatency`, not in the
+        // eligible pool. The pure-over-latency branch fires when
+        // every responder was over budget.
+        expect(
+          e.message,
+          contains(
+            '2 sources responded but every sample exceeded '
+            'maxLatency=50 ms.',
+          ),
+        );
+        // Negative assertion: the over-budget run must NOT be
+        // misattributed as a generic failure or a quorum shortfall.
+        expect(e.message, isNot(contains('Quorum not reached')));
+        expect(e.message, isNot(contains('failed to produce')));
+      }
+    });
 
     test(
       'real Future.timeout drops produce the over-latency diagnostic',
