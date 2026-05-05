@@ -94,8 +94,18 @@ final class SyncEngine {
       // pure post-hoc cases by name, and a single multi-cause branch
       // breaks down whichever buckets contributed for the rest.
       if (query.responded == 0 && query.timedOut == 0 && query.failed > 0) {
+        // "Failed to produce a usable sample" deliberately spans the
+        // three sub-causes of the `failed` bucket: transport failures
+        // before any response (DNS, refused connection), inner
+        // request timeouts (e.g. `HttpsSource`'s hard-coded 3 s HTTP
+        // limit), and post-response validation/parse failures (e.g.
+        // `HttpsSource` throwing after a missing or malformed `Date`
+        // header). Wording it as "failed to respond" \u2014 as the engine
+        // did historically \u2014 misattributes payload errors as
+        // transport non-response and obscures parse failures during
+        // production triage.
         throw const TrustedTimeSyncException(
-          'Every configured time source failed to respond.',
+          'Every configured time source failed to produce a usable sample.',
         );
       }
       final maxLatencyMs = _config.maxLatency.inMilliseconds;
@@ -125,7 +135,7 @@ final class SyncEngine {
               '$maxLatencyMs ms',
         if (query.responded > 0)
           '${query.responded} responded with RTT > $maxLatencyMs ms',
-        if (query.failed > 0) '${query.failed} failed before responding',
+        if (query.failed > 0) '${query.failed} yielded no usable sample',
       ];
       final total = query.timedOut + query.responded + query.failed;
       final word = total == 1 ? 'source' : 'sources';
@@ -179,18 +189,23 @@ final class SyncEngine {
       final eligibleWord = eligible == 1 ? 'sample' : 'samples';
       // Cite every contributing bucket so a reader can attribute the
       // shortfall without re-deriving the source counts. Omitting
-      // `failed` would silently hide whichever sources never
-      // produced a sample (DNS, refused connection, parse error,
-      // inner request timeout) whenever at least one other sample
-      // survived latency filtering — exactly the runs where the
-      // quorum-failure path fires.
+      // `failed` would silently hide whichever sources produced no
+      // usable sample (DNS, refused connection, inner request
+      // timeout, post-response parse/validation error) whenever at
+      // least one other sample survived latency filtering — exactly
+      // the runs where the quorum-failure path fires. The "yielded
+      // no usable sample" wording deliberately covers the
+      // post-response payload-error sub-case alongside the transport
+      // and inner-timeout sub-causes; "failed before responding" —
+      // as previous wording put it — would misattribute payload
+      // errors as transport non-response.
       final notes = <String>[
         if (invalid > 0) '$invalid rejected as invalid',
         if (droppedForLatency > 0)
           '$droppedForLatency dropped for exceeding '
               'maxLatency=$maxLatencyMs ms',
         if (timedOut > 0) '$timedOut timed out at maxLatency=$maxLatencyMs ms',
-        if (failed > 0) '$failed failed before responding',
+        if (failed > 0) '$failed yielded no usable sample',
       ];
       final notesPart = notes.isEmpty ? '' : ' (${notes.join('; ')})';
       throw TrustedTimeSyncException(
@@ -244,18 +259,28 @@ final class SyncEngine {
   /// - `droppedForLatency`: of those `responded`, how many had an RTT
   ///   strictly greater than `maxLatency` and were therefore excluded
   ///   from `eligible`. Always `<= responded`.
-  /// - `timedOut`: how many were killed by the outer
-  ///   `timeout(maxLatency)` wrapper in [_querySafe] before producing a
-  ///   sample. Distinct from `TimeoutException`s raised *inside*
+  /// - `timedOut`: how many were abandoned by the outer
+  ///   `timeout(maxLatency)` wrapper in [_querySafe] before yielding a
+  ///   sample. `Future.timeout` does not cancel the underlying future;
+  ///   it only stops awaiting it, so a timed-out probe may keep
+  ///   running in the background — sources that need bounded
+  ///   resource lifetimes must enforce their own cancellation
+  ///   contract. Distinct from `TimeoutException`s raised *inside*
   ///   `source.fetch()` (e.g. an [HttpsSource]'s own per-request 3 s
   ///   limit) — those are bucketed as `failed`.
-  /// - `failed`: returned no sample for any other reason (DNS, refused
-  ///   connection, parse error, an inner `TimeoutException`, etc.).
+  /// - `failed`: returned no usable sample for any reason other than
+  ///   the outer `maxLatency` wrapper. Spans transport failures
+  ///   before any response (DNS, refused connection), inner
+  ///   `TimeoutException`s, and post-response validation/parse
+  ///   failures (e.g. an [HttpsSource] response without a usable
+  ///   `Date` header). Diagnostics surface this bucket as "yielded
+  ///   no usable sample" to avoid implying the source never
+  ///   responded.
   ///
   /// `responded + timedOut + failed == _sources.length` by construction.
   /// Without the `failed` bucket, mixed runs like "one source timed out,
-  /// one threw" would silently fall into the pure-timeout branch in
-  /// [sync] and misattribute the cause.
+  /// one yielded a malformed payload" would silently fall into the
+  /// pure-timeout branch in [sync] and misattribute the cause.
   Future<
     ({
       List<TimeSample> eligible,
@@ -302,12 +327,20 @@ final class SyncEngine {
   /// Returns a record carrying either the sample (if `fetch()` resolved
   /// inside `maxLatency`) or a `timedOut` flag indicating the *outer*
   /// `maxLatency` wrapper fired. The split matters for diagnostics: a
-  /// slow real-world fetch is killed by the timeout *before* a
+  /// slow real-world fetch is abandoned by the wrapper *before* a
   /// `TimeSample` is produced, so a generic null return would leave
   /// [_queryConcurrently] unable to distinguish "the network was too
-  /// slow for the configured budget" from "every source failed to
-  /// respond" — and callers would see the latter when the real cause
-  /// was the former.
+  /// slow for the configured budget" from "every source produced no
+  /// usable sample" — and callers would see the latter when the real
+  /// cause was the former.
+  ///
+  /// `Future.timeout` does not cancel the underlying future; it only
+  /// stops awaiting it. The original `source.fetch()` work may
+  /// continue in the background and complete (or fail) after the
+  /// timeout fires, so callers that need bounded resource lifetimes
+  /// must enforce their own cancellation contract on top of the
+  /// source. The diagnostic split here is about *attribution*, not
+  /// *resource cleanup*.
   ///
   /// `TimeoutException`s thrown *inside* `source.fetch()` (for example,
   /// [HttpsSource]'s hard-coded 3 s per-request HTTP timeouts) are
@@ -318,7 +351,10 @@ final class SyncEngine {
   /// outer `.timeout(...)` raises a private sentinel
   /// ([_OuterTimeoutException]) via its `onTimeout` callback; only that
   /// sentinel maps to `timedOut: true`. Inner `TimeoutException`s fall
-  /// through to the generic catch-all, joining the `failed` bucket.
+  /// through to the generic catch-all, joining the `failed` bucket
+  /// alongside transport errors and post-response validation/parse
+  /// failures (e.g. an [HttpsSource] response without a usable `Date`
+  /// header).
   Future<({TimeSample? sample, bool timedOut})> _querySafe(
     TrustedTimeSource source,
   ) async {

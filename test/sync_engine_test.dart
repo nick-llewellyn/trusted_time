@@ -14,6 +14,7 @@ class _FakeTimeSource implements TrustedTimeSource {
     this.capturedMonotonicMs = 1000,
     this.shouldThrow = false,
     this.throwInnerTimeout = false,
+    this.throwPostResponse = false,
     this.fetchDelay,
     this.capturedAt,
   }) : _id = id;
@@ -40,6 +41,18 @@ class _FakeTimeSource implements TrustedTimeSource {
   // `maxLatency`, and a slow probe under a generous `maxLatency`
   // would surface that inner timeout if the engine were not careful.
   final bool throwInnerTimeout;
+  // Throws a generic exception *after* the pre-response delay has
+  // resolved, simulating a successful network round trip whose
+  // payload could not be parsed or validated. Real-world equivalent:
+  // `HttpsSource` throws after capturing the response when the
+  // server omits or malforms the `Date` header. The bucket
+  // destination is the same catch-all as `shouldThrow`, but the
+  // *labeling* in the diagnostic must remain neutral ("yielded no
+  // usable sample") rather than implying a transport failure
+  // ("failed to respond" / "failed before responding"). Exercised by
+  // the "post-response parse failure ends up in `failed` bucket
+  // under neutral wording" regression.
+  final bool throwPostResponse;
   // Optional pre-response delay. Tests that need to exercise the real
   // `Future.timeout(maxLatency)` path in `_querySafe` set this to a
   // value greater than `maxLatency` so `fetch()` is killed before
@@ -62,6 +75,11 @@ class _FakeTimeSource implements TrustedTimeSource {
     }
     if (fetchDelay != null) {
       await Future<void>.delayed(fetchDelay!);
+    }
+    if (throwPostResponse) {
+      // Mirrors HttpsSource throwing after capturing the response,
+      // when e.g. the Date header is missing or malformed.
+      throw const FormatException('malformed response payload');
     }
     return TimeSample(
       networkUtc: networkUtc,
@@ -337,12 +355,12 @@ void main() {
         // Every source returns a sample (no fetch failures), but every
         // RTT exceeds `maxLatency`. The `rawSamples.isEmpty` branch is
         // shared with the genuine no-response case, so without the
-        // dedicated latency diagnostic the user would see "Every
-        // configured time source failed to respond." — misleading,
-        // because every source *did* respond. The error must instead
-        // name `maxLatency` as the cause and report the responded
-        // count so the caller can distinguish a network outage from a
-        // tightly configured latency budget.
+        // dedicated latency diagnostic the user would see the
+        // pure-failure wording — misleading, because every source
+        // *did* respond. The error must instead name `maxLatency` as
+        // the cause and report the responded count so the caller can
+        // distinguish a network outage from a tightly configured
+        // latency budget.
         const tightConfig = TrustedTimeConfig(
           httpsSources: [],
           minimumQuorum: 2,
@@ -368,8 +386,14 @@ void main() {
           await engine.sync();
           fail('expected TrustedTimeSyncException');
         } on TrustedTimeSyncException catch (e) {
-          // Must NOT use the no-response wording.
+          // Must NOT use the pure-failure wording (covers both the
+          // historical "failed to respond" phrasing and the current
+          // "failed to produce a usable sample" phrasing).
           expect(e.message, isNot(contains('failed to respond')));
+          expect(
+            e.message,
+            isNot(contains('failed to produce a usable sample')),
+          );
           // Must name the latency cause and the configured budget.
           expect(e.message, contains('maxLatency=50'));
           // Must report how many sources responded.
@@ -472,7 +496,12 @@ void main() {
           expect(e.message, contains('Quorum not reached'));
           expect(e.message, matches(RegExp(r'\b1\b.*eligible')));
           expect(e.message, matches(RegExp(r'1 rejected')));
-          expect(e.message, contains('1 failed before responding'));
+          expect(e.message, contains('1 yielded no usable sample'));
+          // Regression guard against the historical wording, which
+          // implied a transport failure even when the bucket actually
+          // covered post-response payload errors (e.g. an HTTPS
+          // response without a usable Date header).
+          expect(e.message, isNot(contains('failed before responding')));
         }
       },
     );
@@ -481,16 +510,18 @@ void main() {
       'real Future.timeout drops produce the over-latency diagnostic',
       () async {
         // Production case: built-in HTTPS/NTS sources are wrapped in
-        // `source.fetch().timeout(maxLatency)` inside `_querySafe`, so
-        // a genuinely slow network round trip is killed by the timeout
-        // *before* a TimeSample is returned. Without splitting timeouts
-        // from generic failures the engine reports "Every configured
-        // time source failed to respond." — false, because the sources
-        // were reachable but slower than the configured budget. The
-        // fake source delays past `maxLatency` so the real timeout
-        // path fires (no synthetic high-RTT TimeSample), pinning the
-        // production-case fix rather than just the post-hoc filter
-        // that the previous regression covered.
+        // `source.fetch().timeout(maxLatency)` inside `_querySafe`,
+        // so a genuinely slow network round trip is abandoned by the
+        // outer wrapper *before* a TimeSample is returned (the
+        // underlying request is *not* cancelled — `Future.timeout`
+        // only stops awaiting it). Without splitting timeouts from
+        // generic failures the engine reports the pure-failure
+        // wording — false, because the sources were reachable but
+        // slower than the configured budget. The fake source delays
+        // past `maxLatency` so the real timeout path fires (no
+        // synthetic high-RTT TimeSample), pinning the production-case
+        // fix rather than just the post-hoc filter that the previous
+        // regression covered.
         const tightConfig = TrustedTimeConfig(
           httpsSources: [],
           minimumQuorum: 2,
@@ -516,7 +547,14 @@ void main() {
           await engine.sync();
           fail('expected TrustedTimeSyncException');
         } on TrustedTimeSyncException catch (e) {
+          // Regression guard against any pure-failure wording (covers
+          // both the historical phrasing and the current "yielded no
+          // usable sample" phrasing).
           expect(e.message, isNot(contains('failed to respond')));
+          expect(
+            e.message,
+            isNot(contains('failed to produce a usable sample')),
+          );
           expect(e.message, contains('timed out'));
           expect(e.message, contains('maxLatency=50'));
           expect(e.message, matches(RegExp(r'\b2\b.*timed out')));
@@ -568,14 +606,68 @@ void main() {
         } on TrustedTimeSyncException catch (e) {
           // Two sources both threw `TimeoutException` *inside* fetch().
           // They must reach the pure-failure branch ("Every configured
-          // time source failed to respond.") — not the pure-timeout
-          // branch which would falsely name maxLatency=50.
-          expect(e.message, contains('failed to respond'));
+          // time source failed to produce a usable sample.") — not
+          // the pure-timeout branch which would falsely name
+          // maxLatency=50.
+          expect(e.message, contains('failed to produce a usable sample'));
           expect(e.message, isNot(contains('timed out')));
           expect(e.message, isNot(contains('maxLatency=50')));
         }
       },
     );
+
+    test('post-response parse failure reaches the `failed` bucket under '
+        'neutral wording', () async {
+      // Real-world equivalent: `HttpsSource` captures the response,
+      // then throws after detecting a missing or malformed `Date`
+      // header. The bucket destination in `_querySafe` is the
+      // generic catch-all (same as a transport failure), so
+      // labelling the bucket as "failed before responding" /
+      // "failed to respond" misattributes a payload error as a
+      // network non-response — diagnostically wrong. The fix is
+      // purely about wording; the regression pins that the parse-
+      // failure path produces the neutral "failed to produce a
+      // usable sample" / "yielded no usable sample" wording rather
+      // than implying transport non-response. Two `throwPostResponse`
+      // sources reach the pure-failure branch, so the test asserts
+      // the new pure-failure wording and forbids both legacy and
+      // misleading phrasings.
+      const tightConfig = TrustedTimeConfig(
+        httpsSources: [],
+        minimumQuorum: 2,
+        maxLatency: Duration(milliseconds: 50),
+      );
+      final engine = SyncEngine.withSources(
+        config: tightConfig,
+        sources: [
+          _FakeTimeSource(
+            id: 'parse1',
+            networkUtc: baseTime,
+            throwPostResponse: true,
+          ),
+          _FakeTimeSource(
+            id: 'parse2',
+            networkUtc: baseTime,
+            throwPostResponse: true,
+          ),
+        ],
+      );
+
+      try {
+        await engine.sync();
+        fail('expected TrustedTimeSyncException');
+      } on TrustedTimeSyncException catch (e) {
+        expect(e.message, contains('failed to produce a usable sample'));
+        // Regression guards against the historical wording that
+        // would have implied transport non-response when the
+        // actual cause was a payload error.
+        expect(e.message, isNot(contains('failed to respond')));
+        expect(e.message, isNot(contains('before responding')));
+        // Must NOT name maxLatency — these were not budget timeouts.
+        expect(e.message, isNot(contains('timed out')));
+        expect(e.message, isNot(contains('maxLatency=50')));
+      }
+    });
 
     test(
       'mixed timeout + outright failure produces multi-cause diagnostic',
@@ -619,7 +711,7 @@ void main() {
           // failure message would name both buckets.
           expect(e.message, contains('No source produced an in-budget sample'));
           expect(e.message, contains('1 timed out'));
-          expect(e.message, contains('1 failed before responding'));
+          expect(e.message, contains('1 yielded no usable sample'));
           expect(e.message, contains('maxLatency=50'));
           // Must NOT use the pure-timeout wording that would falsely
           // attribute the entire outage to a budget timeout.
@@ -627,6 +719,11 @@ void main() {
             e.message,
             isNot(matches(RegExp(r'\b1 source timed out after maxLatency'))),
           );
+          // Regression guard against the historical "failed before
+          // responding" wording, which implied a transport failure
+          // even when the bucket actually covers post-response
+          // payload errors as well.
+          expect(e.message, isNot(contains('failed before responding')));
         }
       },
     );

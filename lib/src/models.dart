@@ -210,28 +210,34 @@ final class TimeSample {
   /// maxLatency=...; 1 timed out at maxLatency=...)`). When *no*
   /// sample reaches the eligible set the engine raises a categorical
   /// diagnostic naming the cause: a pure outright-failure run reports
-  /// `Every configured time source failed to respond.`, a pure-timeout
-  /// run reports `N source(s) timed out after maxLatency=X ms`, and a
-  /// pure post-hoc run reports `N source(s) responded but every sample
-  /// exceeded maxLatency=X ms`. Runs whose outcomes span more than one
-  /// of `{timed out, responded over-budget, failed before responding}`
-  /// produce a multi-cause message that breaks down each contributing
-  /// bucket — so a mixed "one timed out / one threw" outage is never
-  /// silently rebadged as a pure-timeout cause.
+  /// `Every configured time source failed to produce a usable
+  /// sample.`, a pure-timeout run reports `N source(s) timed out
+  /// after maxLatency=X ms`, and a pure post-hoc run reports `N
+  /// source(s) responded but every sample exceeded maxLatency=X ms`.
+  /// Runs whose outcomes span more than one of `{timed out, responded
+  /// over-budget, yielded no usable sample}` produce a multi-cause
+  /// message that breaks down each contributing bucket — so a mixed
+  /// "one timed out / one yielded a malformed payload" outage is
+  /// never silently rebadged as a pure-timeout cause. The "yielded
+  /// no usable sample" bucket spans transport failures, inner
+  /// request timeouts, and post-response validation/parse errors
+  /// (e.g. an HTTPS response without a usable `Date` header) — the
+  /// neutral wording avoids implying the source never responded.
   final Duration roundTripTime;
 
   /// Confidence half-width of [networkUtc].
   ///
-  /// Defaults to half of [roundTripTime] for built-in sources, but a
-  /// custom source with access to tighter information (e.g. NTS
-  /// exposing the server's stratum and root dispersion) may report a
-  /// smaller value. The sync engine plumbs this directly into the
-  /// Marzullo consensus interval `[networkUtc - uncertainty,
-  /// networkUtc + uncertainty]` — it does **not** re-derive intervals
-  /// from [roundTripTime], so an advertised tighter bound is honoured
-  /// during the intersection sweep. Must be non-negative; samples
-  /// reporting a negative uncertainty are rejected alongside negative-
-  /// RTT samples for the same defence-in-depth reasons.
+  /// Required: the constructor does not supply an API default. Built-in
+  /// HTTPS sources pass `roundTripTime ~/ 2` and custom sources with
+  /// access to tighter information (e.g. an NTS source exposing the
+  /// server's stratum and root dispersion) may report a smaller value.
+  /// The sync engine plumbs this directly into the Marzullo consensus
+  /// interval `[networkUtc - uncertainty, networkUtc + uncertainty]`
+  /// — it does **not** re-derive intervals from [roundTripTime], so an
+  /// advertised tighter bound is honoured during the intersection
+  /// sweep. Must be non-negative; samples reporting a negative
+  /// uncertainty are rejected alongside negative-RTT samples for the
+  /// same defence-in-depth reasons.
   final Duration uncertainty;
 
   /// Device monotonic uptime in milliseconds, captured the instant the
@@ -282,12 +288,16 @@ abstract interface class TrustedTimeSource {
   /// either contract from consensus and anchor selection — a negative
   /// round-trip would invert the latency-eligibility check, and a
   /// negative uncertainty would invert the Marzullo interval (upper
-  /// endpoint < lower endpoint) and crash the consensus sweep. Sources
-  /// that don't have a tighter bound to advertise should leave
-  /// `uncertainty` at its default (RTT/2); those that do (e.g. an NTS
-  /// source exposing the server's stratum and root dispersion) should
-  /// supply the tighter value, which the engine honours when building
-  /// each Marzullo interval.
+  /// endpoint < lower endpoint) and crash the consensus sweep.
+  ///
+  /// `uncertainty` is a required parameter on [TimeSample] — the API
+  /// does not supply a default. Sources that don't have a tighter
+  /// bound to advertise should pass `roundTripTime ~/ 2` themselves
+  /// (matching the bound built-in HTTPS sources use). Sources with
+  /// access to a tighter bound (e.g. an NTS source exposing the
+  /// server's stratum and root dispersion) should supply that
+  /// narrower value, which the engine honours when building each
+  /// Marzullo interval rather than re-deriving it from RTT.
   Future<TimeSample> fetch();
 }
 
