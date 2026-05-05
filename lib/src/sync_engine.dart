@@ -108,13 +108,13 @@ final class SyncEngine {
           'Every configured time source failed to produce a usable sample.',
         );
       }
-      final maxLatencyMs = _config.maxLatency.inMilliseconds;
+      final maxLatencyText = _formatLatency(_config.maxLatency);
       if (query.responded == 0 && query.failed == 0) {
         // Pure-timeout case.
         final word = query.timedOut == 1 ? 'source' : 'sources';
         throw TrustedTimeSyncException(
           '${query.timedOut} $word timed out after maxLatency='
-          '$maxLatencyMs ms.',
+          '$maxLatencyText.',
         );
       }
       if (query.timedOut == 0 && query.failed == 0) {
@@ -123,7 +123,7 @@ final class SyncEngine {
         final word = query.responded == 1 ? 'source' : 'sources';
         throw TrustedTimeSyncException(
           '${query.responded} $word responded but every sample exceeded '
-          'maxLatency=$maxLatencyMs ms.',
+          'maxLatency=$maxLatencyText.',
         );
       }
       // Multi-cause case: cite each bucket that contributed so the
@@ -132,9 +132,9 @@ final class SyncEngine {
       final notes = <String>[
         if (query.timedOut > 0)
           '${query.timedOut} timed out at maxLatency='
-              '$maxLatencyMs ms',
+              '$maxLatencyText',
         if (query.responded > 0)
-          '${query.responded} responded with RTT > $maxLatencyMs ms',
+          '${query.responded} responded with RTT > $maxLatencyText',
         if (query.failed > 0) '${query.failed} yielded no usable sample',
       ];
       final total = query.timedOut + query.responded + query.failed;
@@ -189,7 +189,7 @@ final class SyncEngine {
       final droppedForLatency = query.droppedForLatency;
       final timedOut = query.timedOut;
       final failed = query.failed;
-      final maxLatencyMs = _config.maxLatency.inMilliseconds;
+      final maxLatencyText = _formatLatency(_config.maxLatency);
       final eligibleWord = eligible == 1 ? 'sample' : 'samples';
       // Cite every contributing bucket so a reader can attribute the
       // shortfall without re-deriving the source counts. Omitting
@@ -207,8 +207,8 @@ final class SyncEngine {
         if (invalid > 0) '$invalid rejected as invalid',
         if (droppedForLatency > 0)
           '$droppedForLatency dropped for exceeding '
-              'maxLatency=$maxLatencyMs ms',
-        if (timedOut > 0) '$timedOut timed out at maxLatency=$maxLatencyMs ms',
+              'maxLatency=$maxLatencyText',
+        if (timedOut > 0) '$timedOut timed out at maxLatency=$maxLatencyText',
         if (failed > 0) '$failed yielded no usable sample',
       ];
       final notesPart = notes.isEmpty ? '' : ' (${notes.join('; ')})';
@@ -244,18 +244,25 @@ final class SyncEngine {
     // without compensation, the published interval `[c-u, c+u]` would
     // exclude up to 999 µs of the true upper bound, silently
     // *understating* uncertainty even though the bound was widened by
-    // ceiling division. Recover the exact truncation residual from
-    // `microsecondsSinceEpoch` and fold it into the half-width before
-    // rounding up, so the published interval fully contains
-    // `[mid - U, mid + U]` regardless of where the midpoint lands
-    // inside its truncated millisecond. The published bound stays at
-    // ≥ 1 ms because the Marzullo engine floors `uncertaintyMicros`
-    // there. Worst case (residual=999 µs, raw width=1000 µs) widens
-    // by an extra millisecond — preferring overstatement to a
-    // silently sub-covering interval.
+    // ceiling division. Recover the exact truncation residual and fold
+    // it into the half-width before rounding up, so the published
+    // interval fully contains `[mid - U, mid + U]` regardless of where
+    // the midpoint lands inside its truncated millisecond. Use
+    // Euclidean remainder (`%` on int with a positive divisor returns
+    // a value in `[0, 1000)`) rather than `~/ 1000` for the floor:
+    // truncating division rounds *toward zero*, so a pre-epoch
+    // `midMicros = -1500` would yield `networkUtcMs = -1` and a
+    // negative residual that silently *narrows* the published
+    // interval below the true Marzullo window. Floor division keeps
+    // the residual non-negative, preserving the containment guarantee
+    // for any `DateTime` the engine could legitimately resolve to.
+    // The published bound stays at ≥ 1 ms because the Marzullo engine
+    // floors `uncertaintyMicros` there. Worst case (residual=999 µs,
+    // raw width=1000 µs) widens by an extra millisecond — preferring
+    // overstatement to a silently sub-covering interval.
     final midMicros = result.utc.microsecondsSinceEpoch;
-    final networkUtcMs = midMicros ~/ 1000;
-    final residualMicros = midMicros - networkUtcMs * 1000;
+    final residualMicros = midMicros % 1000;
+    final networkUtcMs = (midMicros - residualMicros) ~/ 1000;
     final uncertaintyMs =
         (result.uncertaintyMicros + residualMicros + 999) ~/ 1000;
     return TrustAnchor(
@@ -397,7 +404,7 @@ final class SyncEngine {
       if (kDebugMode) {
         debugPrint(
           '[TrustedTime] Source ${source.id} exceeded maxLatency='
-          '${_config.maxLatency.inMilliseconds} ms (outer timeout fired).',
+          '${_formatLatency(_config.maxLatency)} (outer timeout fired).',
         );
       }
       return (sample: null, timedOut: true);
@@ -408,6 +415,23 @@ final class SyncEngine {
       return (sample: null, timedOut: false);
     }
   }
+}
+
+/// Renders a `maxLatency` value for diagnostic exceptions in a way
+/// that preserves sub-millisecond resolution. Earlier revisions
+/// formatted via `inMilliseconds`, which truncated configurations
+/// like `Duration(microseconds: 500)` to `0 ms` — pointing callers at
+/// the wrong threshold during triage even though `_queryConcurrently`
+/// itself runs the filter at full `Duration` precision.
+/// Millisecond-aligned budgets render in their natural ms grain
+/// (e.g. `50 ms`) to keep the existing diagnostic wording stable for
+/// the common case; sub-millisecond budgets render as integer
+/// microseconds (e.g. `500 µs`) so the advertised threshold matches
+/// the value the filter actually compared against.
+String _formatLatency(Duration d) {
+  final micros = d.inMicroseconds;
+  if (micros % 1000 == 0) return '${micros ~/ 1000} ms';
+  return '$micros µs';
 }
 
 /// Sentinel raised by [SyncEngine._querySafe]'s outer

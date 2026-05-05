@@ -20,13 +20,19 @@ final class SourceSample {
   /// best-case bound any wall clock can claim.
   ///
   /// [uncertaintyMicros] defaults to `roundTripMicros ~/ 2` when
-  /// omitted, which matches the historical RTT/2 derivation used by
-  /// `HttpsSource` and the test fakes. Custom sources (notably NTS,
-  /// which has access to the server's stratum + dispersion fields)
-  /// may pass a tighter explicit value: `TimeSample.uncertainty` is
-  /// plumbed through `SyncEngine` to this parameter so consensus
-  /// intervals honour the advertised bound rather than falling back
-  /// to a generic round-trip estimate.
+  /// omitted — a generic half-RTT estimate at microsecond resolution.
+  /// The default is only consulted when `SyncEngine` constructs a
+  /// `SourceSample` without an explicit advertised bound, which the
+  /// production path does not do: `SyncEngine` always plumbs
+  /// `TimeSample.uncertainty.inMicroseconds` through, so the engine
+  /// honours whatever the source advertised. For reference, the
+  /// built-in `HttpsSource` advertises a millisecond-grained
+  /// `Duration(milliseconds: stopwatch.elapsedMilliseconds ~/ 2)`
+  /// because HTTP `Date` headers carry no sub-second resolution
+  /// anyway; sub-millisecond bounds (notably from NTS sources, which
+  /// expose the server's stratum + dispersion fields) flow through at
+  /// microsecond resolution and produce a consensus interval narrower
+  /// than RTT/2 when the advertised bound is tighter.
   const SourceSample({
     required this.sourceId,
     required this.utc,

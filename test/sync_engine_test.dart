@@ -231,6 +231,65 @@ void main() {
       expect(anchor.uncertaintyMs, greaterThanOrEqualTo(2));
     });
 
+    test('published anchor interval covers Marzullo result for pre-epoch '
+        'midpoint', () async {
+      // The residual-compensation path uses `~/ 1000` to project the
+      // microsecond-resolution midpoint onto the millisecond grid.
+      // Truncating division rounds *toward zero*, so for a pre-epoch
+      // `midMicros = -1500` it would yield `networkUtcMs = -1` and a
+      // *negative* `residualMicros = -500`, silently *narrowing* the
+      // published interval below the true Marzullo window. The fix
+      // uses Euclidean modulo (`%` on int with a positive divisor
+      // returns a value in `[0, 1000)`) so the residual stays
+      // non-negative and the containment guarantee holds for any
+      // `DateTime` the engine could legitimately resolve to,
+      // including pre-1970 timestamps. This regression pins two
+      // sources at `1969-12-31 23:59:59.999250 UTC` (i.e. 750 µs
+      // before the epoch) so the truncation residual is the
+      // dominant term and a regression that reverted to
+      // truncating-toward-zero division would fail the containment
+      // assertion below.
+      final preEpoch = DateTime.utc(1969, 12, 31, 23, 59, 59, 999, 250);
+      final engine = SyncEngine.withSources(
+        config: config,
+        sources: [
+          _FakeTimeSource(
+            id: 'a',
+            networkUtc: preEpoch,
+            roundTripTime: const Duration(milliseconds: 50),
+            uncertainty: const Duration(microseconds: 100),
+            capturedMonotonicMs: 1000,
+          ),
+          _FakeTimeSource(
+            id: 'b',
+            networkUtc: preEpoch,
+            roundTripTime: const Duration(milliseconds: 50),
+            uncertainty: const Duration(microseconds: 100),
+            capturedMonotonicMs: 1100,
+          ),
+        ],
+      );
+
+      final anchor = await engine.sync();
+
+      // The true Marzullo interval is centred on
+      // `preEpoch.microsecondsSinceEpoch` with a half-width floored
+      // at 1000 µs by the engine. The published interval (in µs)
+      // must fully contain that window in both directions.
+      final trueMidMicros = preEpoch.microsecondsSinceEpoch;
+      const trueHalfWidthMicros = 1000;
+      final trueLoMicros = trueMidMicros - trueHalfWidthMicros;
+      final trueHiMicros = trueMidMicros + trueHalfWidthMicros;
+
+      final publishedLoMicros =
+          (anchor.networkUtcMs - anchor.uncertaintyMs) * 1000;
+      final publishedHiMicros =
+          (anchor.networkUtcMs + anchor.uncertaintyMs) * 1000;
+
+      expect(publishedLoMicros, lessThanOrEqualTo(trueLoMicros));
+      expect(publishedHiMicros, greaterThanOrEqualTo(trueHiMicros));
+    });
+
     test('throws when no sources respond', () async {
       final engine = SyncEngine.withSources(
         config: config,
@@ -637,6 +696,58 @@ void main() {
         expect(e.message, isNot(contains('failed to produce')));
       }
     });
+
+    test(
+      'sub-millisecond maxLatency renders as microseconds in diagnostics',
+      () async {
+        // `_queryConcurrently` compares RTT against `_config.maxLatency`
+        // at full `Duration` precision, but the diagnostic emitter
+        // historically formatted that threshold via `inMilliseconds` —
+        // truncating a sub-ms budget like `Duration(microseconds: 500)`
+        // to `0 ms` and pointing callers at the wrong threshold during
+        // triage. The fix routes every diagnostic through
+        // `_formatLatency`, which renders sub-ms budgets in
+        // microseconds (e.g. `500 µs`) so the advertised threshold
+        // matches the value the filter actually compared against.
+        const subMsConfig = TrustedTimeConfig(
+          httpsSources: [],
+          minimumQuorum: 2,
+          maxLatency: Duration(microseconds: 500),
+        );
+        final engine = SyncEngine.withSources(
+          config: subMsConfig,
+          sources: [
+            _FakeTimeSource(
+              id: 'a',
+              networkUtc: baseTime,
+              // RTT exceeds the 500 µs budget by ~1 µs so both samples
+              // land in `droppedForLatency` and the pure-over-latency
+              // branch fires (no inner timeouts, no failures).
+              roundTripTime: const Duration(microseconds: 501),
+              uncertainty: const Duration(microseconds: 250),
+              capturedMonotonicMs: 1000,
+            ),
+            _FakeTimeSource(
+              id: 'b',
+              networkUtc: baseTime,
+              roundTripTime: const Duration(microseconds: 501),
+              uncertainty: const Duration(microseconds: 250),
+              capturedMonotonicMs: 1100,
+            ),
+          ],
+        );
+
+        try {
+          await engine.sync();
+          fail('expected TrustedTimeSyncException');
+        } on TrustedTimeSyncException catch (e) {
+          // The advertised threshold must match the filter's actual
+          // comparison: render in microseconds, not as `0 ms`.
+          expect(e.message, contains('maxLatency=500 µs'));
+          expect(e.message, isNot(contains('maxLatency=0 ms')));
+        }
+      },
+    );
 
     test(
       'real Future.timeout drops produce the over-latency diagnostic',
