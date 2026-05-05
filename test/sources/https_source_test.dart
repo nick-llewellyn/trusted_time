@@ -27,6 +27,36 @@ class _HangingClient extends http.BaseClient {
   }
 }
 
+/// Returns 405 on HEAD (which triggers the GET fallback inside
+/// `HttpsSource.fetch()`) and hangs forever on GET. Pins the contract
+/// that the GET branch is wrapped in `_requestTimeout` too — a
+/// regression that drops or weakens the `.timeout(...)` on the GET
+/// fallback would slip past the HEAD-only `_HangingClient` regression.
+class _HeadRejectsGetHangsClient extends http.BaseClient {
+  final Completer<http.StreamedResponse> _never =
+      Completer<http.StreamedResponse>();
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    if (request.method == 'HEAD') {
+      return Future.value(
+        http.StreamedResponse(
+          Stream<List<int>>.fromIterable(const <List<int>>[]),
+          405,
+          request: request,
+        ),
+      );
+    }
+    return _never.future;
+  }
+
+  @override
+  void close() {
+    if (!_never.isCompleted) {
+      _never.completeError(StateError('client closed'));
+    }
+  }
+}
+
 void main() {
   group('HttpsSource constructor scheme enforcement', () {
     test('accepts an https URL', () {
@@ -84,7 +114,15 @@ void main() {
     // hanging `http.Client`, with a tight `requestTimeout` so the
     // assertion completes deterministically without the 30 s
     // production wall-clock wait.
-    test('HEAD timeout fires when the underlying client hangs', () {
+    test('HEAD timeout fires when the underlying client hangs', () async {
+      // `await expectLater(...)` is load-bearing: a synchronous
+      // `expect(future, ...)` body returns immediately, so
+      // `addTearDown(source.dispose)` could close `_HangingClient`
+      // before the 50 ms timer fires and the underlying request would
+      // complete with `StateError('client closed')` instead of the
+      // intended `TimeoutException`. Awaiting the matcher pins the
+      // ordering so the timer wins and the regression actually
+      // exercises the timeout path.
       final client = _HangingClient();
       final source = HttpsSource(
         'https://www.example.com',
@@ -92,8 +130,37 @@ void main() {
         requestTimeout: const Duration(milliseconds: 50),
       );
       addTearDown(source.dispose);
-      expect(source.fetch(), throwsA(isA<TimeoutException>()));
+      await expectLater(source.fetch(), throwsA(isA<TimeoutException>()));
     });
+
+    test(
+      'GET fallback timeout fires when HEAD is rejected and GET hangs',
+      () async {
+        // Pins the contract on the GET fallback branch. The HEAD-only
+        // `_HangingClient` regression cannot catch a future refactor
+        // that drops or weakens the `.timeout(...)` wrapper on the GET
+        // call — a server returning 405 on HEAD would then leave the
+        // GET branch unbounded. The 405 response triggers the fallback
+        // inside `HttpsSource.fetch()`, after which the hanging GET
+        // surfaces a `TimeoutException` from the inner wrapper.
+        final client = _HeadRejectsGetHangsClient();
+        final source = HttpsSource(
+          'https://www.example.com',
+          client: client,
+          requestTimeout: const Duration(milliseconds: 50),
+        );
+        addTearDown(source.dispose);
+        final sw = Stopwatch()..start();
+        await expectLater(source.fetch(), throwsA(isA<TimeoutException>()));
+        sw.stop();
+        // Generous upper bound to absorb CI scheduling jitter while
+        // still demonstrating the bound is much tighter than the 30 s
+        // production default — and tighter than any wall-clock value
+        // that would suggest the test is succeeding by coincidence
+        // (e.g. the HEAD-405 path returning early).
+        expect(sw.elapsed, lessThan(const Duration(seconds: 2)));
+      },
+    );
 
     test(
       'requestTimeout is honored independently of any outer wrapper',

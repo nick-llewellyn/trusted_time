@@ -353,6 +353,7 @@ final class TrustedTimeConfig {
       'https://www.microsoft.com',
     ],
     this.maxLatency = const Duration(seconds: 3),
+    this.httpsRequestTimeout = const Duration(seconds: 30),
     this.minimumQuorum = 2,
     this.persistState = true,
     this.additionalSources = const [],
@@ -395,6 +396,34 @@ final class TrustedTimeConfig {
   /// Defaults to 3 seconds.
   final Duration maxLatency;
 
+  /// Per-request defensive ceiling applied inside each built-in
+  /// [HttpsSource] HEAD/GET call.
+  ///
+  /// Distinct from [maxLatency], which is the engine's outer abandonment
+  /// budget. The two timers wrap the same work, so when they are equal
+  /// they race and the diagnostic message can come from either bucket
+  /// (`timedOut` if the outer wrapper fires first, `failed` if the inner
+  /// one does). For deterministic attribution this value must be
+  /// **strictly greater than** [maxLatency]; the default of 30 s is
+  /// chosen to sit comfortably above the default [maxLatency] of 3 s.
+  ///
+  /// Callers configuring [maxLatency] above 30 s must raise this in
+  /// step (e.g. `maxLatency: 60s, httpsRequestTimeout: 90s`); otherwise
+  /// every probe will surface the inner ceiling first and be bucketed
+  /// as `failed`.
+  ///
+  /// Callers concerned about lingering background work — `Future.timeout`
+  /// does not cancel the in-flight HTTP request, so an abandoned probe
+  /// keeps running until the response arrives, the underlying client
+  /// tears down the socket, or this ceiling fires, whichever comes
+  /// first — can pass a smaller value (e.g. `Duration(seconds: 5)`),
+  /// accepting that values close to [maxLatency] will rejoin the race
+  /// and the diagnostic split becomes nondeterministic.
+  ///
+  /// Has no effect on [additionalSources]; custom [TrustedTimeSource]
+  /// implementations are responsible for their own per-request bounds.
+  final Duration httpsRequestTimeout;
+
   /// Minimum number of agreeing sources required to establish consensus.
   ///
   /// Must be ≥ 2 for meaningful tamper resistance. The engine will throw
@@ -433,6 +462,7 @@ final class TrustedTimeConfig {
           listEquals(ntsServers, other.ntsServers) &&
           listEquals(httpsSources, other.httpsSources) &&
           maxLatency == other.maxLatency &&
+          httpsRequestTimeout == other.httpsRequestTimeout &&
           minimumQuorum == other.minimumQuorum &&
           persistState == other.persistState &&
           oscillatorDriftFactor == other.oscillatorDriftFactor &&
@@ -445,6 +475,7 @@ final class TrustedTimeConfig {
     Object.hashAll(ntsServers),
     Object.hashAll(httpsSources),
     maxLatency,
+    httpsRequestTimeout,
     minimumQuorum,
     persistState,
     oscillatorDriftFactor,

@@ -24,7 +24,19 @@ final class SyncEngine {
       _engine = MarzulloEngine(minimumQuorum: config.minimumQuorum),
       _sources = [
         for (final host in config.ntsServers) NtsSource(host, clock: clock),
-        for (final url in config.httpsSources) HttpsSource(url, clock: clock),
+        // Thread `httpsRequestTimeout` through to every built-in HTTPS
+        // probe; the per-request defensive ceiling is otherwise
+        // unreachable from `TrustedTimeConfig.httpsSources` because
+        // `HttpsSource` itself is not exported from the public API.
+        // Callers configuring `maxLatency` above the default 3 s must
+        // raise `httpsRequestTimeout` in step (strictly greater than
+        // `maxLatency` for deterministic attribution).
+        for (final url in config.httpsSources)
+          HttpsSource(
+            url,
+            clock: clock,
+            requestTimeout: config.httpsRequestTimeout,
+          ),
         ...config.additionalSources,
       ];
 
@@ -408,11 +420,19 @@ final class SyncEngine {
   /// `TimeoutException`s fall through to the generic catch-all,
   /// joining the `failed` bucket alongside transport errors and
   /// post-response validation/parse failures (e.g. an [HttpsSource]
-  /// response without a usable `Date` header). The inner ceiling
-  /// sits above any reasonable `maxLatency` precisely so the outer
-  /// wrapper wins under normal configuration; the `failed`-bucketed
-  /// inner timeout only fires when `maxLatency` exceeds the source's
-  /// configured `requestTimeout`.
+  /// response without a usable `Date` header).
+  ///
+  /// The split is only deterministic when the source's configured
+  /// `requestTimeout` is **strictly greater than** `maxLatency`. Both
+  /// timers wrap the same underlying work, so `requestTimeout ==
+  /// maxLatency` lets either callback win depending on scheduler
+  /// ordering — a slow probe in that configuration may surface as
+  /// `timedOut` on one run and `failed` on the next. Default config
+  /// satisfies the inequality (3 s vs 30 s); callers raising
+  /// `maxLatency` must raise [TrustedTimeConfig.httpsRequestTimeout]
+  /// in step. The diagnostic message names the contributing bucket(s)
+  /// regardless, so attribution is always recoverable from the message
+  /// even when the exception subtype itself is ambiguous.
   Future<({TimeSample? sample, bool timedOut})> _querySafe(
     TrustedTimeSource source,
   ) async {
