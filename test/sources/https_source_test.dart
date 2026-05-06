@@ -101,6 +101,48 @@ void main() {
     });
   });
 
+  group('HttpsSource constructor requestTimeout positivity guard', () {
+    // Mirrors the `SyncEngine._validateConfig` check at the
+    // direct-construction layer. The dartdoc on `HttpsSource` points
+    // callers at this constructor for `additionalSources` wiring, so
+    // the source itself has to reject a non-positive `requestTimeout`
+    // — otherwise a direct user can ship a source that fires its
+    // inner ceiling on first scheduler tick and surfaces every probe
+    // as `failed` before the request reaches the network. Throws in
+    // both debug and release builds to close the gap a debug-only
+    // assert would leave.
+    test('rejects Duration.zero', () {
+      expect(
+        () => HttpsSource(
+          'https://www.example.com',
+          requestTimeout: Duration.zero,
+        ),
+        throwsA(
+          isA<ArgumentError>().having((e) => e.name, 'name', 'requestTimeout'),
+        ),
+      );
+    });
+
+    test('rejects a negative duration', () {
+      expect(
+        () => HttpsSource(
+          'https://www.example.com',
+          requestTimeout: const Duration(seconds: -1),
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('accepts a positive duration', () {
+      final source = HttpsSource(
+        'https://www.example.com',
+        requestTimeout: const Duration(milliseconds: 1),
+      );
+      addTearDown(source.dispose);
+      expect(source.requestTimeoutForTesting, const Duration(milliseconds: 1));
+    });
+  });
+
   group('HttpsSource requestTimeout enforcement', () {
     // Pin the inner per-request timeout contract at the source level,
     // not just at the engine level. The companion regression in

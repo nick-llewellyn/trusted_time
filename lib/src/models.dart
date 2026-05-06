@@ -512,6 +512,19 @@ final class TrustedTimeConfig {
 
   /// Additional custom [TrustedTimeSource] implementations to include
   /// in the consensus pool alongside the built-in NTS and HTTPS sources.
+  ///
+  /// [TrustedTimeSource.id] is documented as unique and the Marzullo
+  /// sweep counts *distinct authorities* at the consensus moment, so
+  /// the [SyncEngine] constructor rejects configs whose assembled
+  /// source list contains duplicate ids — including the same URL
+  /// listed twice in [httpsSources], the same host listed twice in
+  /// [ntsServers], or an entry here whose `id` matches a built-in
+  /// probe's id (`'https:<url>'` for HTTPS, `'nts:<host>'` for NTS).
+  /// Rejection is via [ArgumentError] in both debug and release
+  /// builds; without this gate a config that appears to have N
+  /// sources could silently collapse to fewer than N authorities and
+  /// make [minimumQuorum] unreachable without naming duplication as
+  /// the cause.
   final List<TrustedTimeSource> additionalSources;
 
   /// Estimated local oscillator drift rate in ms/ms.

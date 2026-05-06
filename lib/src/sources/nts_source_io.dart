@@ -73,6 +73,17 @@ final class NtsSource implements TrustedTimeSource {
   /// [burstSize] controls how many authenticated samples are taken per
   /// `fetch()`; the lowest-RTD sample wins. [burstSpacing] is the
   /// inter-sample delay applied between successive queries.
+  ///
+  /// A non-positive [timeout] is rejected at construction with
+  /// [ArgumentError] (in both debug and release builds): zero or
+  /// negative values would force the FRB bridge's per-query
+  /// `timeoutMs` to either zero or a negative number, firing the
+  /// inner deadline before any handshake completes and surfacing
+  /// every burst as `failed`. The same gate applies on the
+  /// config-driven path via `SyncEngine._validateConfig`; this
+  /// constructor enforces it independently so callers wiring
+  /// `NtsSource` through `TrustedTimeConfig.additionalSources`
+  /// cannot ship a source that deterministically fails every burst.
   NtsSource(
     this._host, {
     int port = _ntsKeDefaultPort,
@@ -102,7 +113,18 @@ final class NtsSource implements TrustedTimeSource {
        _clock = clock ?? PlatformMonotonicClock(),
        _query = query ?? ntsQuery,
        _warmCookies = warmCookies ?? ntsWarmCookies,
-       _usingDefaultBridge = query == null && warmCookies == null;
+       _usingDefaultBridge = query == null && warmCookies == null {
+    if (timeout <= Duration.zero) {
+      throw ArgumentError.value(
+        timeout,
+        'timeout',
+        'must be a positive Duration; a non-positive value would '
+            'force the per-query bridge ceiling to zero (or negative) '
+            'and every burst would surface as `failed` before any '
+            'NTS-KE handshake completes.',
+      );
+    }
+  }
 
   final String _host;
   final int _port;

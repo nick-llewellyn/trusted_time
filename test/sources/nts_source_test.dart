@@ -437,4 +437,49 @@ void main() {
       }
     });
   });
+
+  group('NtsSource constructor timeout positivity guard', () {
+    // Mirrors the SyncEngine._validateConfig check at the
+    // direct-construction layer. Throws in both debug and release
+    // builds so a caller wiring NtsSource through `additionalSources`
+    // cannot ship a source whose burst loop fires the inner deadline
+    // immediately on every query.
+    test('rejects Duration.zero', () {
+      expect(
+        () => NtsSource(
+          'time.example.com',
+          timeout: Duration.zero,
+          clock: _FakeMonotonicClock(0),
+          query: ({required spec, required timeoutMs}) async => _sample(),
+          warmCookies: _noopWarm,
+        ),
+        throwsA(isA<ArgumentError>().having((e) => e.name, 'name', 'timeout')),
+      );
+    });
+
+    test('rejects a negative duration', () {
+      expect(
+        () => NtsSource(
+          'time.example.com',
+          timeout: const Duration(seconds: -1),
+          clock: _FakeMonotonicClock(0),
+          query: ({required spec, required timeoutMs}) async => _sample(),
+          warmCookies: _noopWarm,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('accepts a positive duration at the sub-millisecond floor', () {
+      final source = NtsSource(
+        'time.example.com',
+        timeout: const Duration(microseconds: 1),
+        clock: _FakeMonotonicClock(0),
+        query: ({required spec, required timeoutMs}) async => _sample(),
+        warmCookies: _noopWarm,
+      );
+      // Ceiling-divide: 1 µs rounds up to 1 ms at the bridge.
+      expect(source.requestTimeoutForTesting, const Duration(milliseconds: 1));
+    });
+  });
 }

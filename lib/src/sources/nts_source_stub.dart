@@ -14,7 +14,18 @@ final class NtsSource implements TrustedTimeSource {
     int port = 4460,
     Duration timeout = const Duration(seconds: 5),
     MonotonicClock? clock,
-  }) : _timeout = timeout;
+  }) : _timeout = timeout {
+    if (timeout <= Duration.zero) {
+      throw ArgumentError.value(
+        timeout,
+        'timeout',
+        'must be a positive Duration; mirrors the io implementation '
+            'so a non-positive value is rejected uniformly across '
+            'platforms even though this stub never consumes the '
+            'value at fetch() time.',
+      );
+    }
+  }
 
   final String _host;
   final Duration _timeout;

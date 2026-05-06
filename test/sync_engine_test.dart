@@ -1584,4 +1584,167 @@ void main() {
       );
     });
   });
+
+  group('SyncEngine duplicate source id rejection', () {
+    // The Marzullo sweep optimises for *distinct authorities* at the
+    // consensus moment (see lib/src/marzullo.dart). Two sources sharing
+    // a `TrustedTimeSource.id` collapse to a single authority for both
+    // the quorum check and `participantCount`, so a config that appears
+    // to have N sources can silently become unsatisfiable when
+    // duplicates are in play. The production constructor rejects this
+    // up front; `withSources` keeps the carve-out so engine-internal
+    // duplicate-id regressions can continue to exercise the defensive
+    // paths in marzullo.dart and the lowest-RTT anchor reduction.
+
+    final baseClock = PlatformMonotonicClock();
+
+    test('throws ArgumentError when httpsSources contains the same URL '
+        'twice', () {
+      const config = TrustedTimeConfig(
+        httpsSources: ['https://a.example.com', 'https://a.example.com'],
+        ntsServers: [],
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('throws ArgumentError when ntsServers contains the same host '
+        'twice', () {
+      const config = TrustedTimeConfig(
+        httpsSources: [],
+        ntsServers: ['time.example.com', 'time.example.com'],
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('throws ArgumentError when an additionalSource id collides with '
+        'a built-in HTTPS probe id', () {
+      // Built-in HTTPS probe id is `https:<url>`. A custom source
+      // declaring the same id collapses both to a single authority.
+      final config = TrustedTimeConfig(
+        httpsSources: const ['https://a.example.com'],
+        ntsServers: const [],
+        additionalSources: [
+          _FakeTimeSource(
+            id: 'https:https://a.example.com',
+            networkUtc: DateTime.utc(2024, 6, 15, 12),
+          ),
+        ],
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('throws ArgumentError when an additionalSource id collides with '
+        'a built-in NTS probe id', () {
+      // Built-in NTS probe id is `nts:<host>`. Same collapse rule.
+      final config = TrustedTimeConfig(
+        httpsSources: const [],
+        ntsServers: const ['time.example.com'],
+        additionalSources: [
+          _FakeTimeSource(
+            id: 'nts:time.example.com',
+            networkUtc: DateTime.utc(2024, 6, 15, 12),
+          ),
+        ],
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('throws ArgumentError when two additionalSources share an id', () {
+      final config = TrustedTimeConfig(
+        httpsSources: const [],
+        ntsServers: const [],
+        minimumQuorum: 1,
+        additionalSources: [
+          _FakeTimeSource(id: 'dup', networkUtc: DateTime.utc(2024, 6, 15, 12)),
+          _FakeTimeSource(id: 'dup', networkUtc: DateTime.utc(2024, 6, 15, 12)),
+        ],
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('error message names every duplicate id', () {
+      // Pin the message contract so a future refactor that swaps
+      // ArgumentError for a less-helpful diagnostic doesn't drop the
+      // duplicate-id list silently. Tests both the ntsServers and
+      // httpsSources collisions in one config to verify multiple
+      // duplicates are reported, not just the first.
+      const config = TrustedTimeConfig(
+        httpsSources: ['https://a.example.com', 'https://a.example.com'],
+        ntsServers: ['time.example.com', 'time.example.com'],
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message.toString(),
+            'message',
+            allOf(
+              contains('https:https://a.example.com'),
+              contains('nts:time.example.com'),
+            ),
+          ),
+        ),
+      );
+    });
+
+    test('unique source ids across all three lists pass through', () {
+      final config = TrustedTimeConfig(
+        httpsSources: const ['https://a.example.com', 'https://b.example.com'],
+        ntsServers: const ['time-a.example.com', 'time-b.example.com'],
+        additionalSources: [
+          _FakeTimeSource(
+            id: 'custom-a',
+            networkUtc: DateTime.utc(2024, 6, 15, 12),
+          ),
+        ],
+      );
+      expect(
+        () => SyncEngine(config: config, clock: baseClock),
+        returnsNormally,
+      );
+    });
+
+    test('withSources does not enforce duplicate-id rejection', () {
+      // Engine-internal regressions for the Marzullo sweep's
+      // duplicate-id defensive paths and the sample-identity
+      // anchor reduction rely on this carve-out (see e.g. the
+      // 'anchor uptime ignores same-source-id outliers' test).
+      const config = TrustedTimeConfig(
+        httpsSources: [],
+        ntsServers: [],
+        minimumQuorum: 1,
+      );
+      expect(
+        () => SyncEngine.withSources(
+          config: config,
+          sources: [
+            _FakeTimeSource(
+              id: 'dup',
+              networkUtc: DateTime.utc(2024, 6, 15, 12),
+            ),
+            _FakeTimeSource(
+              id: 'dup',
+              networkUtc: DateTime.utc(2024, 6, 15, 12),
+            ),
+          ],
+        ),
+        returnsNormally,
+      );
+    });
+  });
 }

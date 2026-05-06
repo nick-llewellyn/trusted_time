@@ -130,6 +130,27 @@ final class SyncEngine {
   /// per-request bounds — only the built-in probes constructed here
   /// from [TrustedTimeConfig.httpsSources] / [TrustedTimeConfig.ntsServers]
   /// consume the validated knobs.
+  ///
+  /// Also rejects configs whose assembled source list contains
+  /// duplicate [TrustedTimeSource.id] values. The Marzullo sweep
+  /// optimises for *distinct authorities* at the consensus moment
+  /// (see `lib/src/marzullo.dart`); two sources with the same id
+  /// collapse to a single authority for both quorum and
+  /// [ConsensusResult.participantCount], so a config that appears
+  /// to have N sources can silently become unsatisfiable
+  /// (`minimumQuorum` unreachable) when duplicates are in play.
+  /// The collision space includes the same URL listed twice in
+  /// [TrustedTimeConfig.httpsSources], the same host listed twice
+  /// in [TrustedTimeConfig.ntsServers], and an
+  /// [TrustedTimeConfig.additionalSources] entry whose `id` matches
+  /// a built-in probe's id (which is `'https:$url'` for HTTPS and
+  /// `'nts:$host'` for NTS). Rejecting at construction surfaces the
+  /// misconfig loudly at startup rather than as a downstream
+  /// `QuorumException` whose message would not name duplication as
+  /// the cause. The [SyncEngine.withSources] test seam intentionally
+  /// does not enforce uniqueness so engine-internal regressions can
+  /// continue to exercise the duplicate-id defensive paths in the
+  /// Marzullo sweep and the lowest-RTT anchor reduction.
   static TrustedTimeConfig _validateConfig(TrustedTimeConfig config) {
     if (config.httpsSources.isNotEmpty &&
         config.httpsRequestTimeout <= Duration.zero) {
@@ -153,6 +174,36 @@ final class SyncEngine {
             'query to fire its inner ceiling immediately and the '
             'whole burst to surface as `failed`. See '
             'TrustedTimeConfig.ntsRequestTimeout dartdoc.',
+      );
+    }
+    final seen = <String>{};
+    final duplicates = <String>{};
+    void note(String id) {
+      if (!seen.add(id)) duplicates.add(id);
+    }
+
+    for (final host in config.ntsServers) {
+      note('nts:$host');
+    }
+    for (final url in config.httpsSources) {
+      note('https:$url');
+    }
+    for (final source in config.additionalSources) {
+      note(source.id);
+    }
+    if (duplicates.isNotEmpty) {
+      final sorted = duplicates.toList()..sort();
+      throw ArgumentError.value(
+        sorted,
+        'config',
+        'TrustedTimeSource.id values must be unique across the '
+            'assembled source list (ntsServers, httpsSources, and '
+            'additionalSources combined); the Marzullo sweep counts '
+            'distinct authorities at the consensus moment, so '
+            'collisions silently collapse N configured sources into '
+            'fewer than N authorities and may make minimumQuorum '
+            'unreachable. Duplicate id(s): $sorted. Built-in probe '
+            'ids are "https:<url>" and "nts:<host>" respectively.',
       );
     }
     return config;

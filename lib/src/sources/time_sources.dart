@@ -50,6 +50,15 @@ export 'nts_source_stub.dart' if (dart.library.io) 'nts_source_io.dart';
 /// `TrustedTimeConfig.httpsRequestTimeout` here automatically; this
 /// constructor parameter exists for callers wiring `HttpsSource`
 /// directly through `TrustedTimeConfig.additionalSources` or in tests.
+/// A non-positive [requestTimeout] is rejected at construction with
+/// [ArgumentError] (in both debug and release builds): zero or
+/// negative values fire the inner ceiling on first scheduler tick
+/// and the source would bucket every probe as `failed` before any
+/// request reaches the network. The same gate applies on the
+/// config-driven path via `SyncEngine._validateConfig`; this
+/// constructor enforces it independently so callers wiring
+/// `HttpsSource` through `additionalSources` cannot ship a source
+/// that deterministically fails every sync.
 final class HttpsSource implements TrustedTimeSource {
   HttpsSource(
     this._url, {
@@ -59,6 +68,16 @@ final class HttpsSource implements TrustedTimeSource {
   }) : _client = client ?? http.Client(),
        _clock = clock ?? PlatformMonotonicClock(),
        _requestTimeout = requestTimeout {
+    if (requestTimeout <= Duration.zero) {
+      throw ArgumentError.value(
+        requestTimeout,
+        'requestTimeout',
+        'must be a positive Duration; a non-positive value would '
+            'fire the inner ceiling on first scheduler tick and '
+            'every fetch() would surface as a TimeoutException '
+            'before the request reaches the network.',
+      );
+    }
     final Uri parsed;
     try {
       parsed = Uri.parse(_url);
