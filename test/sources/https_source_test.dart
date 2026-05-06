@@ -27,6 +27,23 @@ class _HangingClient extends http.BaseClient {
   }
 }
 
+/// Tracks `close()` calls so the no-leak-on-validation-failure
+/// regression can pin that a user-supplied client is left alone when
+/// the constructor throws. `send()` is never reached in these tests
+/// because the throw fires before any request is issued.
+class _CloseTrackingClient extends http.BaseClient {
+  int closeCount = 0;
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    throw StateError('send() should not be called in these tests');
+  }
+
+  @override
+  void close() {
+    closeCount++;
+  }
+}
+
 /// Returns 405 on HEAD (which triggers the GET fallback inside
 /// `HttpsSource.fetch()`) and hangs forever on GET. Pins the contract
 /// that the GET branch is wrapped in `_requestTimeout` too — a
@@ -140,6 +157,53 @@ void main() {
       );
       addTearDown(source.dispose);
       expect(source.requestTimeoutForTesting, const Duration(milliseconds: 1));
+    });
+  });
+
+  group('HttpsSource constructor leaves user-supplied client untouched on '
+      'validation failure', () {
+    // The factory constructor validates [url] and [requestTimeout]
+    // before allocating the default `http.Client`, so a default
+    // client is never created when validation throws — there is
+    // nothing for the caller to leak. The companion contract for a
+    // *user-supplied* client is that the constructor must not close
+    // it on validation failure either: the caller still owns it. The
+    // factory pattern satisfies this implicitly (validation runs
+    // before any field assignment, so the user's client is never
+    // referenced through `_client`), but we pin it as a regression so
+    // a future refactor that moves the user-supplied path back into
+    // an initializer list followed by a body throw — re-introducing
+    // a partially-constructed instance the caller can't dispose —
+    // would fail loudly here.
+    test('non-positive requestTimeout does not close the supplied client', () {
+      final client = _CloseTrackingClient();
+      expect(
+        () => HttpsSource(
+          'https://www.example.com',
+          client: client,
+          requestTimeout: Duration.zero,
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(client.closeCount, 0);
+    });
+
+    test('non-https scheme does not close the supplied client', () {
+      final client = _CloseTrackingClient();
+      expect(
+        () => HttpsSource('http://www.example.com', client: client),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(client.closeCount, 0);
+    });
+
+    test('missing host does not close the supplied client', () {
+      final client = _CloseTrackingClient();
+      expect(
+        () => HttpsSource('https://', client: client),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(client.closeCount, 0);
     });
   });
 

@@ -60,14 +60,19 @@ export 'nts_source_stub.dart' if (dart.library.io) 'nts_source_io.dart';
 /// `HttpsSource` through `additionalSources` cannot ship a source
 /// that deterministically fails every sync.
 final class HttpsSource implements TrustedTimeSource {
-  HttpsSource(
-    this._url, {
+  /// Validates [url] and [requestTimeout] *before* allocating any
+  /// owned resources (the default `http.Client` when [client] is
+  /// `null`), so a construction failure cannot leak a client that the
+  /// caller never gets a reference to and therefore cannot
+  /// [dispose]. A user-supplied [client] is left untouched on
+  /// validation failure — the caller still owns it and is responsible
+  /// for closing it.
+  factory HttpsSource(
+    String url, {
     http.Client? client,
     MonotonicClock? clock,
     Duration requestTimeout = const Duration(seconds: 30),
-  }) : _client = client ?? http.Client(),
-       _clock = clock ?? PlatformMonotonicClock(),
-       _requestTimeout = requestTimeout {
+  }) {
     if (requestTimeout <= Duration.zero) {
       throw ArgumentError.value(
         requestTimeout,
@@ -80,13 +85,13 @@ final class HttpsSource implements TrustedTimeSource {
     }
     final Uri parsed;
     try {
-      parsed = Uri.parse(_url);
+      parsed = Uri.parse(url);
     } on FormatException catch (e) {
-      throw ArgumentError.value(_url, 'url', 'Not a valid URI: ${e.message}');
+      throw ArgumentError.value(url, 'url', 'Not a valid URI: ${e.message}');
     }
     if (parsed.scheme != 'https') {
       throw ArgumentError.value(
-        _url,
+        url,
         'url',
         'HttpsSource requires the https scheme; got "${parsed.scheme}". '
             'Clear-text HTTP would silently drop the TLS binding the '
@@ -94,9 +99,17 @@ final class HttpsSource implements TrustedTimeSource {
       );
     }
     if (parsed.host.isEmpty) {
-      throw ArgumentError.value(_url, 'url', 'URI is missing a host.');
+      throw ArgumentError.value(url, 'url', 'URI is missing a host.');
     }
+    return HttpsSource._(
+      url,
+      client ?? http.Client(),
+      clock ?? PlatformMonotonicClock(),
+      requestTimeout,
+    );
   }
+
+  HttpsSource._(this._url, this._client, this._clock, this._requestTimeout);
 
   final String _url;
   final http.Client _client;

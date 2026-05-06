@@ -126,9 +126,19 @@ final class MarzulloEngine {
 
     // Sort by time; at equal times, lower endpoints come first so overlap
     // counting uses closed-interval semantics (touching intervals overlap).
+    // Two endpoints sharing both `timeMicros` and `type` are equal in the
+    // ordering, so the comparator returns 0 — falling through to the
+    // lower-before-upper tie-break in that case would return a non-zero
+    // value for equal-by-the-defined-order inputs, violating Dart's
+    // `Comparator` contract (`compare(a, b) == 0` when `a` and `b` are
+    // equal in the ordering). The sweep result is invariant to the
+    // ordering of same-type-same-time endpoints (both lowers increment
+    // `activeSourceCounts` before any best-window snapshot; both uppers
+    // decrement after), so returning 0 here costs no correctness.
     endpoints.sort((a, b) {
       final cmp = a.timeMicros.compareTo(b.timeMicros);
       if (cmp != 0) return cmp;
+      if (a.type == b.type) return 0;
       return a.type == _EndpointType.lower ? -1 : 1;
     });
 
