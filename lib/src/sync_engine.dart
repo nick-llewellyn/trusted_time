@@ -65,6 +65,7 @@ final class SyncEngine {
         port: _config.ntsPort,
         dnsConcurrencyCap:
             _config.ntsDnsConcurrencyCap ?? _config.ntsServers.length + 2,
+        maxLatency: _config.maxLatency,
       ),
     ..._config.additionalSources,
   ];

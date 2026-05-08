@@ -43,16 +43,29 @@ final class NtsSource implements TimeSource, Warmable {
   /// (`0`), which inherits the package's built-in cap of 4. [SyncEngine]
   /// overrides this with `ntsServers.length + 2` so multi-host pools do
   /// not lose admission races against the global resolver pool.
+  ///
+  /// [maxLatency] is forwarded as `ntsQuery`'s `timeoutMs`. [SyncEngine]
+  /// passes [TrustedTimeConfig.maxLatency] so the inner per-query budget
+  /// matches the outer `.timeout(_config.maxLatency)` wrapper. Without
+  /// this, an inner timeout longer than the outer would always be
+  /// pre-empted by Dart's `TimeoutException`, swallowing the
+  /// phase-tagged `NtsError.timeout(TimeoutPhase)` payload that drives
+  /// the [TransientSourceError] cooldown-bypass path. The default of 5 s
+  /// preserves the package's pre-coordination behaviour for direct
+  /// callers.
   NtsSource(
     this._host, {
     int port = 4460,
     int dnsConcurrencyCap = nts.kDefaultDnsConcurrencyCap,
+    Duration maxLatency = const Duration(seconds: 5),
   }) : _spec = nts.NtsServerSpec(host: _host, port: port),
-       _dnsConcurrencyCap = dnsConcurrencyCap;
+       _dnsConcurrencyCap = dnsConcurrencyCap,
+       _timeoutMs = maxLatency.inMilliseconds;
 
   final String _host;
   final nts.NtsServerSpec _spec;
   final int _dnsConcurrencyCap;
+  final int _timeoutMs;
 
   /// Memoized NTS-KE warm task. `null` until [warm] is first invoked,
   /// so constructing an [NtsSource] never touches the FFI surface.
@@ -85,7 +98,7 @@ final class NtsSource implements TimeSource, Warmable {
     try {
       result = await nts.ntsQuery(
         spec: _spec,
-        timeoutMs: 5000,
+        timeoutMs: _timeoutMs,
         dnsConcurrencyCap: _dnsConcurrencyCap,
       );
     } on nts.NtsError_Timeout catch (e) {
