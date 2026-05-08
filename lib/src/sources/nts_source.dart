@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart' as nts;
 
 import '../domain/time_sample.dart';
 import '../domain/time_source.dart';
 import '../domain/time_interval.dart';
+import '../exceptions.dart';
 import '../models.dart';
 import 'nts_auth_level.dart';
 
@@ -79,11 +81,37 @@ final class NtsSource implements TimeSource, Warmable {
     // in its dedicated warming phase, so this is a no-op in that path.
     await warm();
 
-    final result = await nts.ntsQuery(
-      spec: _spec,
-      timeoutMs: 5000,
-      dnsConcurrencyCap: _dnsConcurrencyCap,
-    );
+    final nts.NtsTimeSample result;
+    try {
+      result = await nts.ntsQuery(
+        spec: _spec,
+        timeoutMs: 5000,
+        dnsConcurrencyCap: _dnsConcurrencyCap,
+      );
+    } on nts.NtsError_Timeout catch (e) {
+      // Dns(Saturation) means the bounded DNS resolver pool was at
+      // capacity for this call. The host itself is healthy; SyncEngine
+      // should retry on the next cycle without applying exponential
+      // cooldown. Other timeout phases (Connect, Tls, KeRecordIo, Ntp,
+      // DnsTimeout) propagate as-is and follow the standard cooldown
+      // path.
+      if (e.field0 == nts.TimeoutPhase.dnsSaturation) {
+        throw TransientSourceError(e);
+      }
+      rethrow;
+    }
+
+    if (kDebugMode) {
+      final p = result.phaseTimings;
+      debugPrint(
+        '[TrustedTime] nts:$_host '
+        'rtt=${(result.roundTripMicros / 1000).toStringAsFixed(1)}ms '
+        'dns=${(p.dnsMicros / 1000).toStringAsFixed(1)}ms '
+        'connect=${(p.connectMicros / 1000).toStringAsFixed(1)}ms '
+        'tls=${(p.tlsHandshakeMicros / 1000).toStringAsFixed(1)}ms '
+        'ke=${(p.keRecordIoMicros / 1000).toStringAsFixed(1)}ms',
+      );
+    }
 
     // Calculate uncertainty from network RTT (convert microseconds to
     // milliseconds).

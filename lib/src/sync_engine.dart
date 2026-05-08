@@ -4,7 +4,7 @@ import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
 import 'domain/time_interval.dart';
-import 'exceptions.dart';
+import 'exceptions.dart' show TransientSourceError, TrustedTimeSyncException;
 import 'models.dart';
 import 'monotonic_clock.dart';
 import 'sources/time_sources.dart';
@@ -397,6 +397,14 @@ final class SyncEngine {
       _sourceHealth[source.id] = 0; // Reset failure count on success
       _blacklistUntil.remove(source.id);
       return sample;
+    } on TransientSourceError catch (e) {
+      // Source classified the failure as transient (e.g. NtsSource saw
+      // NtsError.timeout(TimeoutPhase.dnsSaturation): the DNS resolver
+      // pool was momentarily full). Notify the observer but do not bump
+      // the failure score or blacklist the host — the next sync cycle
+      // is expected to succeed once contention clears.
+      _observer?.onSourceFailed(source.id, e);
+      return null;
     } catch (e) {
       _observer?.onSourceFailed(source.id, e);
 
