@@ -4,7 +4,7 @@ import '../domain/time_source.dart';
 /// NTS time source stub — actual implementation in `nts_source.dart`.
 final class NtsSource implements TimeSource {
   /// Documented.
-  NtsSource(this._host, {int port = 4460});
+  NtsSource(this._host, {int port = 4460, int dnsConcurrencyCap = 0});
 
   final String _host;
 

@@ -47,11 +47,25 @@ final class SyncEngine {
   final MarzulloEngine _engine;
 
   /// Lazily-initialized list of authoritative time sources.
+  ///
+  /// NTS sources receive a `dnsConcurrencyCap` of
+  /// `ntsServers.length + 2` (or the explicit
+  /// [TrustedTimeConfig.ntsDnsConcurrencyCap] override when set) so the
+  /// per-cycle burst of resolutions stays under the `package:nts`
+  /// process-wide pool ceiling. The `+ 2` margin absorbs incidental
+  /// concurrent resolutions (e.g., warming overlapping with the start
+  /// of a cycle) without forcing every caller to think about cap
+  /// sizing.
   late final List<TimeSource> _sources = [
     for (final host in _config.ntpServers) NtpSource(host),
     for (final url in _config.httpsSources) HttpsSource(url),
     for (final host in _config.ntsServers)
-      NtsSource(host, port: _config.ntsPort),
+      NtsSource(
+        host,
+        port: _config.ntsPort,
+        dnsConcurrencyCap:
+            _config.ntsDnsConcurrencyCap ?? _config.ntsServers.length + 2,
+      ),
     ..._config.additionalSources,
   ];
 

@@ -43,6 +43,7 @@ final class TrustedTimeConfig {
     ],
     this.ntsServers = const ['time.cloudflare.com'],
     this.ntsPort = 4460,
+    this.ntsDnsConcurrencyCap,
     this.additionalSources = const [],
     this.minQuorumRatio = 0.6,
     this.minimumQuorum = 2,
@@ -96,6 +97,20 @@ final class TrustedTimeConfig {
   /// Defaults to 4460 as per RFC 8915.
   final int ntsPort;
 
+  /// Per-call ceiling on `package:nts`'s process-wide bounded DNS
+  /// resolver pool, forwarded to every `ntsQuery` and `ntsWarmCookies`
+  /// the engine issues.
+  ///
+  /// When `null` (the default), [SyncEngine] auto-sizes the cap as
+  /// `ntsServers.length + 2`, which keeps each cycle's concurrent
+  /// resolutions safely under the limit and avoids the deterministic
+  /// `NtsError.timeout` refusals that occur when more than four
+  /// resolutions race for admission. Set this explicitly when the
+  /// process hosts other concurrent `package:nts` callers (the pool is
+  /// process-global, so every admitted worker counts toward every
+  /// caller's threshold).
+  final int? ntsDnsConcurrencyCap;
+
   /// Custom [TimeSource] implementations provided by the application developer.
   final List<TimeSource> additionalSources;
 
@@ -148,6 +163,7 @@ final class TrustedTimeConfig {
     List<String>? httpsSources,
     List<String>? ntsServers,
     int? ntsPort,
+    int? ntsDnsConcurrencyCap,
     List<TimeSource>? additionalSources,
     double? minQuorumRatio,
     int? minimumQuorum,
@@ -165,6 +181,8 @@ final class TrustedTimeConfig {
       httpsSources: httpsSources ?? this.httpsSources,
       ntsServers: ntsServers ?? this.ntsServers,
       ntsPort: ntsPort ?? this.ntsPort,
+      ntsDnsConcurrencyCap:
+          ntsDnsConcurrencyCap ?? this.ntsDnsConcurrencyCap,
       additionalSources: additionalSources ?? this.additionalSources,
       minQuorumRatio: minQuorumRatio ?? this.minQuorumRatio,
       minimumQuorum: minimumQuorum ?? this.minimumQuorum,

@@ -35,11 +35,22 @@ import 'nts_auth_level.dart';
 /// empty (the default), no NTS connections are made.
 final class NtsSource implements TimeSource, Warmable {
   /// Creates an NTS source for the given NTS-KE server.
-  NtsSource(this._host, {int port = 4460})
-    : _spec = nts.NtsServerSpec(host: _host, port: port);
+  ///
+  /// [dnsConcurrencyCap] is forwarded verbatim to every `ntsQuery` and
+  /// `ntsWarmCookies` call. Defaults to [nts.kDefaultDnsConcurrencyCap]
+  /// (`0`), which inherits the package's built-in cap of 4. [SyncEngine]
+  /// overrides this with `ntsServers.length + 2` so multi-host pools do
+  /// not lose admission races against the global resolver pool.
+  NtsSource(
+    this._host, {
+    int port = 4460,
+    int dnsConcurrencyCap = nts.kDefaultDnsConcurrencyCap,
+  }) : _spec = nts.NtsServerSpec(host: _host, port: port),
+       _dnsConcurrencyCap = dnsConcurrencyCap;
 
   final String _host;
   final nts.NtsServerSpec _spec;
+  final int _dnsConcurrencyCap;
 
   /// Memoized NTS-KE warm task. `null` until [warm] is first invoked,
   /// so constructing an [NtsSource] never touches the FFI surface.
@@ -68,7 +79,11 @@ final class NtsSource implements TimeSource, Warmable {
     // in its dedicated warming phase, so this is a no-op in that path.
     await warm();
 
-    final result = await nts.ntsQuery(spec: _spec, timeoutMs: 5000);
+    final result = await nts.ntsQuery(
+      spec: _spec,
+      timeoutMs: 5000,
+      dnsConcurrencyCap: _dnsConcurrencyCap,
+    );
 
     // Calculate uncertainty from network RTT (convert microseconds to
     // milliseconds).
@@ -88,7 +103,10 @@ final class NtsSource implements TimeSource, Warmable {
 
   Future<void> _performWarming() async {
     try {
-      await nts.ntsWarmCookies(spec: _spec);
+      await nts.ntsWarmCookies(
+        spec: _spec,
+        dnsConcurrencyCap: _dnsConcurrencyCap,
+      );
     } catch (_) {
       // Swallow: missing Rust binaries (test envs), TLS failures, etc.
       // ntsQuery handles a cold-start handshake transparently when the
