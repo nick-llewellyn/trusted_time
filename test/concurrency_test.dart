@@ -716,11 +716,19 @@ void main() {
 
     setUp(() {
       clock = MockMonotonicClock();
+      // Override every default source list so the engine only queries
+      // the test's `additionalSources`. Without `ntsServers: const []`,
+      // the default `['time.cloudflare.com']` would instantiate an
+      // NtsSource that either fails fast (RustLib.init not called in
+      // the test harness) or attempts real network I/O on machines
+      // where the native is initialised — both are unrelated noise
+      // for the cooldown-semantics assertion.
       config = const TrustedTimeConfig(
         minimumQuorum: 2,
         minGroupCount: 1,
         ntpServers: [],
         httpsSources: [],
+        ntsServers: [],
       );
     });
 
