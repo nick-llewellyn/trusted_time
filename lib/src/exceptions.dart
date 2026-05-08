@@ -68,7 +68,7 @@ final class TrustedTimePersistenceException implements Exception {
   String toString() => 'TrustedTimePersistenceException: $message';
 }
 
-/// Thrown by a [TimeSource] to signal that the failure was transient and
+/// Thrown by a `TimeSource` to signal that the failure was transient and
 /// the source should be retried on the next sync cycle without the
 /// exponential cooldown that other failures incur.
 ///
