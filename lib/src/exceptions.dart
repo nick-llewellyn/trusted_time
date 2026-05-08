@@ -72,7 +72,7 @@ final class TrustedTimePersistenceException implements Exception {
 /// the source should be retried on the next sync cycle without the
 /// exponential cooldown that other failures incur.
 ///
-/// Example: an `NtsSource` whose [`ntsQuery`] returned
+/// Example: an `NtsSource` whose `ntsQuery` returned
 /// `NtsError.timeout(TimeoutPhase.dnsSaturation)` because the bounded DNS
 /// resolver pool was momentarily full. The host itself is healthy; the
 /// next cycle will probably succeed once peers release their resolver
