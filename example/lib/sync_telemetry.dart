@@ -174,13 +174,12 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
     // Mirror to the Flutter console using the same single-line layout
     // that _TelemetryRow renders, so terminal logs can be copy-pasted
     // straight into bug reports during device testing. Gated on
-    // kDebugMode so release builds neither pay the formatting cost
-    // nor leak telemetry to logcat / oslog.
+    // kDebugMode so release builds do not leak telemetry to logcat /
+    // oslog. Delegates to TelemetryEvent.toString so this layout, the
+    // on-screen terminal, and BenchmarkLogger's on-disk transcript all
+    // share one definition.
     if (kDebugMode) {
-      debugPrint(
-        '${event.elapsedMs.toString().padLeft(7)}ms  '
-        '${event.kind.name.padRight(13)}  ${event.detail}',
-      );
+      debugPrint(event.toString());
     }
     notifyListeners();
   }

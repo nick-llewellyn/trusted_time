@@ -10,12 +10,14 @@ import 'sync_telemetry.dart';
 /// application documents directory, in the `nts_benchmarks/` folder.
 ///
 /// One file is opened per [BenchmarkLogger] instance, named
-/// `nts_session_YYYYMMDD_HHMMSS.log` based on wall-clock time at
-/// [start]. Writes are issued through an [IOSink] in append mode so
-/// they are queued and serialised by the runtime, which keeps the
-/// per-event cost low enough to sustain multi-hour benchmarking
-/// sessions without buffering the entire transcript in RAM. A periodic
-/// flush bounds how much data can be lost if the process is killed.
+/// `nts_session_YYYYMMDD_HHMMSS_mmm.log` based on wall-clock time at
+/// [start] — millisecond precision so two loggers started in the same
+/// wall-clock second cannot collide on the same path. Writes are
+/// issued through an [IOSink] in append mode so they are queued and
+/// serialised by the runtime, which keeps the per-event cost low
+/// enough to sustain multi-hour benchmarking sessions without
+/// buffering the entire transcript in RAM. A periodic flush bounds
+/// how much data can be lost if the process is killed.
 class BenchmarkLogger {
   BenchmarkLogger({
     Duration flushInterval = const Duration(seconds: 5),
@@ -123,10 +125,11 @@ class BenchmarkLogger {
   void _writeEvent(TelemetryEvent event) {
     final sink = _sink;
     if (sink == null) return;
-    sink.writeln(
-      '${event.elapsedMs.toString().padLeft(7)}ms  '
-      '${event.kind.name.padRight(13)}  ${event.detail}',
-    );
+    // Delegates to TelemetryEvent.toString so the on-disk session
+    // log, the on-screen terminal in _SyncTelemetryPanel, and the
+    // debugPrint mirror in TelemetryRecorder._add all share the same
+    // single-line layout. Format changes happen in one place.
+    sink.writeln(event.toString());
   }
 
   static String _formatStamp(DateTime t) {
