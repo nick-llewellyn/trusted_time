@@ -432,6 +432,14 @@ class _HomePageState extends State<HomePage> {
         ),
       );
       TrustedTime.registerObserver(widget.telemetry);
+      // Pause state is reset on every TrustedTime.initialize() by
+      // design (see TrustedTime.pauseAutomaticRefresh docs). When
+      // continuous sync is on, re-pause immediately so the engine's
+      // refresh timer does not race the inter-cycle slider — the
+      // slider becomes the sole scheduler for the next cycle.
+      if (_continuousSyncEnabled) {
+        TrustedTime.pauseAutomaticRefresh();
+      }
     } finally {
       if (mounted) setState(() => _reconfiguring = false);
     }
@@ -661,10 +669,21 @@ class _HomePageState extends State<HomePage> {
                     }
                   });
                   if (val) {
+                    // Suppress the engine's internal refresh timer
+                    // for the duration of continuous mode so the
+                    // slider's inter-cycle delay is the sole
+                    // scheduler. Without this the engine's
+                    // refreshInterval (30 s here) raced the slider,
+                    // collapsing the configured cadence to whichever
+                    // timer fired first.
+                    TrustedTime.pauseAutomaticRefresh();
                     // Kick the loop immediately rather than waiting
-                    // for the next refresh interval to elapse.
+                    // for the slider's first inter-cycle delay.
                     unawaited(TrustedTime.forceResync());
                   } else {
+                    // Restore the engine's automatic cadence so a
+                    // long-idle app still refreshes its anchor.
+                    TrustedTime.resumeAutomaticRefresh();
                     // Drop any pending inter-cycle timer so the loop
                     // stops right now, not after the current delay.
                     _cancelInterCycleTimer();
