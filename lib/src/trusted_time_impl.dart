@@ -372,9 +372,13 @@ final class TrustedTimeImpl {
   /// Resumes the automatic refresh timer using the active interval
   /// (see [activeRefreshInterval]).
   ///
-  /// Schedules the next refresh from the time of the call. Idempotent
-  /// when already running. No-op if the active interval is
-  /// non-positive.
+  /// Always reschedules the next refresh from the time of the call:
+  /// any pending refresh timer is cancelled and re-armed for the
+  /// active interval. Calling this while already enabled therefore
+  /// pushes the next-refresh deadline out — safe to call repeatedly
+  /// without raising, but the deadline is not invariant. Use
+  /// [automaticRefreshActive] to gate calls when that matters. No-op
+  /// if the active interval is non-positive.
   void resumeAutomaticRefresh() {
     _automaticRefreshPaused = false;
     _scheduleRefresh();

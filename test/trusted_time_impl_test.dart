@@ -217,15 +217,21 @@ void main() {
     // TrustedTimeImpl singleton.
     tearDown(TrustedTime.resetOverride);
 
-    Future<void> initEmpty() => TrustedTime.initialize(
-      config: const TrustedTimeConfig(
-        ntpServers: [],
-        httpsSources: [],
-        ntsServers: [],
-        persistState: false,
-        refreshInterval: Duration(minutes: 5),
-      ),
-    );
+    Future<void> initEmpty() async {
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+          refreshInterval: Duration(minutes: 5),
+        ),
+      );
+      // Cancel the engine's retry timer at teardown so the failed
+      // bootstrap (no-quorum) can't fire a stray _performSync into
+      // a sibling test in this group.
+      addTearDown(TrustedTimeImpl.instance.dispose);
+    }
 
     test('automaticRefreshActive is true after a fresh initialize', () async {
       await initEmpty();
@@ -329,8 +335,10 @@ void main() {
         addTearDown(mock.dispose);
         TrustedTime.overrideForTesting(mock);
 
-        // Should not throw, and should not interact with any
-        // TrustedTimeImpl singleton (none exists in this group yet).
+        // Pins the override-path contract: the pause / resume /
+        // setRefreshInterval entry points return without raising and
+        // without touching any TrustedTimeImpl singleton, regardless
+        // of whether earlier tests in this group have created one.
         expect(() => TrustedTime.pauseAutomaticRefresh(), returnsNormally);
         expect(() => TrustedTime.resumeAutomaticRefresh(), returnsNormally);
         expect(
