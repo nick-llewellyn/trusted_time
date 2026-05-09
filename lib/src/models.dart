@@ -30,6 +30,22 @@ enum ConfidenceLevel {
 ///
 /// This class defines the behavioral policy of the engine, including quorum
 /// requirements, security thresholds, and background synchronization intervals.
+///
+/// ## Mutability contract
+///
+/// [TrustedTimeConfig] is annotated `@immutable` and its scalar
+/// fields are `final`. The list-typed fields ([ntpServers],
+/// [httpsSources], [ntsServers], [additionalSources]) are stored by
+/// reference for `const`-constructibility — the canonical
+/// production usage is to pass `const`-list literals, which are
+/// already deeply immutable.
+///
+/// Callers that construct a non-`const` [TrustedTimeConfig] from
+/// growable lists **must not mutate those lists after construction**.
+/// Doing so will silently break the value-equality and `hashCode`
+/// contracts (potentially corrupting any [Set] or [Map] keyed on
+/// the config) and will make the live engine config drift from the
+/// snapshot returned by [TrustedTime.config].
 final class TrustedTimeConfig {
   /// Creates a new configuration instance with sensible production defaults.
   const TrustedTimeConfig({
@@ -181,8 +197,7 @@ final class TrustedTimeConfig {
       httpsSources: httpsSources ?? this.httpsSources,
       ntsServers: ntsServers ?? this.ntsServers,
       ntsPort: ntsPort ?? this.ntsPort,
-      ntsDnsConcurrencyCap:
-          ntsDnsConcurrencyCap ?? this.ntsDnsConcurrencyCap,
+      ntsDnsConcurrencyCap: ntsDnsConcurrencyCap ?? this.ntsDnsConcurrencyCap,
       additionalSources: additionalSources ?? this.additionalSources,
       minQuorumRatio: minQuorumRatio ?? this.minQuorumRatio,
       minimumQuorum: minimumQuorum ?? this.minimumQuorum,
@@ -198,6 +213,76 @@ final class TrustedTimeConfig {
       backgroundSyncInterval:
           backgroundSyncInterval ?? this.backgroundSyncInterval,
     );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is TrustedTimeConfig &&
+        listEquals(other.ntpServers, ntpServers) &&
+        listEquals(other.httpsSources, httpsSources) &&
+        listEquals(other.ntsServers, ntsServers) &&
+        other.ntsPort == ntsPort &&
+        other.ntsDnsConcurrencyCap == ntsDnsConcurrencyCap &&
+        listEquals(other.additionalSources, additionalSources) &&
+        other.minQuorumRatio == minQuorumRatio &&
+        other.minimumQuorum == minimumQuorum &&
+        other.minGroupCount == minGroupCount &&
+        other.maxLatency == maxLatency &&
+        other.refreshInterval == refreshInterval &&
+        other.maxAllowedUncertaintyMs == maxAllowedUncertaintyMs &&
+        other.persistState == persistState &&
+        other.earlyExit == earlyExit &&
+        other.oscillatorDriftFactor == oscillatorDriftFactor &&
+        other.backgroundSyncInterval == backgroundSyncInterval;
+  }
+
+  @override
+  int get hashCode => Object.hashAll([
+    Object.hashAll(ntpServers),
+    Object.hashAll(httpsSources),
+    Object.hashAll(ntsServers),
+    ntsPort,
+    ntsDnsConcurrencyCap,
+    Object.hashAll(additionalSources),
+    minQuorumRatio,
+    minimumQuorum,
+    minGroupCount,
+    maxLatency,
+    refreshInterval,
+    maxAllowedUncertaintyMs,
+    persistState,
+    earlyExit,
+    oscillatorDriftFactor,
+    backgroundSyncInterval,
+  ]);
+
+  @override
+  String toString() {
+    // Multi-line layout because the source pools and quorum knobs are
+    // the fields operators most often want to confirm during a
+    // benchmarking session, and a single-line dump runs off the edge
+    // of a typical terminal long before it gets to the scalar
+    // settings. Keep field order in sync with the constructor so a
+    // diff between an expected and actual config reads top-to-bottom.
+    return 'TrustedTimeConfig(\n'
+        '  ntpServers: $ntpServers,\n'
+        '  httpsSources: $httpsSources,\n'
+        '  ntsServers: $ntsServers,\n'
+        '  ntsPort: $ntsPort,\n'
+        '  ntsDnsConcurrencyCap: $ntsDnsConcurrencyCap,\n'
+        '  additionalSources: $additionalSources,\n'
+        '  minQuorumRatio: $minQuorumRatio,\n'
+        '  minimumQuorum: $minimumQuorum,\n'
+        '  minGroupCount: $minGroupCount,\n'
+        '  maxLatency: $maxLatency,\n'
+        '  refreshInterval: $refreshInterval,\n'
+        '  maxAllowedUncertaintyMs: $maxAllowedUncertaintyMs,\n'
+        '  persistState: $persistState,\n'
+        '  earlyExit: $earlyExit,\n'
+        '  oscillatorDriftFactor: $oscillatorDriftFactor,\n'
+        '  backgroundSyncInterval: $backgroundSyncInterval,\n'
+        ')';
   }
 }
 
