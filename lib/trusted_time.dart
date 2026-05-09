@@ -348,12 +348,15 @@ abstract final class TrustedTime {
   /// Reflects the library's intent — `false` when
   /// [pauseAutomaticRefresh] has been called or when
   /// [setRefreshInterval] was called with a non-positive duration —
-  /// not whether a [Timer] object is armed at this exact moment. The
-  /// refresh timer is only re-armed at the end of a successful sync
-  /// cycle, so this getter can return `true` while no timer is yet
-  /// pending (e.g. after a fresh [initialize] before the bootstrap
-  /// sync has completed, or in the recovery window after a failed
-  /// sync where only the retry timer is armed).
+  /// not whether a [Timer] object is armed at this exact moment.
+  /// The library's *automatic* re-arming runs at the end of a
+  /// successful sync cycle, so this getter can return `true` while
+  /// no timer is yet pending (e.g. after a fresh [initialize] before
+  /// the bootstrap sync has completed, or in the recovery window
+  /// after a failed sync where only the retry timer is armed).
+  /// Explicit calls to [resumeAutomaticRefresh] and
+  /// [setRefreshInterval] also arm a fresh refresh timer from the
+  /// time of the call independent of cycle completion.
   ///
   /// Sync cycles triggered by [forceResync], integrity events, or
   /// background platform schedulers still run while this is `false`.

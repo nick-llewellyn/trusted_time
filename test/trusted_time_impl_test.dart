@@ -254,7 +254,10 @@ void main() {
         TrustedTime.resumeAutomaticRefresh();
         expect(TrustedTime.automaticRefreshActive, isTrue);
 
-        // Idempotent.
+        // Calling resume again keeps automaticRefreshActive true
+        // (idempotent in terms of the getter); the underlying
+        // refresh-timer deadline is reset on each call, but this
+        // test only pins the user-facing flag.
         TrustedTime.resumeAutomaticRefresh();
         expect(TrustedTime.automaticRefreshActive, isTrue);
       },
