@@ -95,20 +95,33 @@ abstract final class TrustedTime {
     // Initialize the flutter_rust_bridge runtime backing package:nts
     // before any NtsSource is constructed.  Gated on
     // ntsServers.isNotEmpty to preserve the package's "zero overhead
-    // when unused" guarantee.  If RustLib.init fails (missing native
-    // assets, architecture mismatch, etc.), strip ntsServers from the
-    // config so SyncEngine never instantiates an NtsSource and the
-    // process falls back to NTP/HTTPS sources for its lifetime.
+    // when unused" guarantee.  RustLib uses a process-wide singleton:
+    // a second init() call within the same process throws
+    // `StateError: Should not initialize flutter_rust_bridge twice`.
+    // That happens whenever the host app re-initialises TrustedTime
+    // (benchmark UIs that cycle the engine through different source
+    // pools, hot-restart in development, etc.). We treat the
+    // "already initialised" StateError as success so re-init flows
+    // do not silently strip ntsServers and leave the engine with
+    // zero sources for the rest of the process lifetime. Other
+    // exceptions (missing native asset, arch mismatch, etc.) are
+    // still treated as real failures and disable NTS for this
+    // configuration.
     if (config.ntsServers.isNotEmpty) {
       try {
         await nts.RustLib.init();
       } catch (e) {
-        if (kDebugMode) {
-          debugPrint(
-            '[TrustedTime] NTS disabled — RustLib.init failed: $e',
-          );
+        final alreadyInitialised =
+            e is StateError &&
+            e.message.contains(
+              'Should not initialize flutter_rust_bridge twice',
+            );
+        if (!alreadyInitialised) {
+          if (kDebugMode) {
+            debugPrint('[TrustedTime] NTS disabled — RustLib.init failed: $e');
+          }
+          config = config.copyWith(ntsServers: const []);
         }
-        config = config.copyWith(ntsServers: const []);
       }
     }
 
@@ -176,6 +189,23 @@ abstract final class TrustedTime {
   static double get confidenceScore {
     if (_override != null) return 1.0;
     return TrustedTimeImpl.instance.anchor?.confidenceScore ?? 0.0;
+  }
+
+  /// Returns the [TrustedTimeConfig] the engine is currently running
+  /// against.
+  ///
+  /// Useful for verifying the active server pool, quorum thresholds,
+  /// and refresh interval at runtime — for example, to confirm in a
+  /// benchmarking UI that the chip-grid selection matches the live
+  /// engine configuration. The returned object is the same immutable
+  /// instance that was passed to [initialize]; reading list-typed
+  /// fields is safe across isolates.
+  ///
+  /// Under a test override returns a default [TrustedTimeConfig] so
+  /// callers do not need to special-case the mocked path.
+  static TrustedTimeConfig get config {
+    if (_override != null) return const TrustedTimeConfig();
+    return TrustedTimeImpl.instance.config;
   }
 
   /// Advanced retrieval that enforces specific security and integrity constraints.

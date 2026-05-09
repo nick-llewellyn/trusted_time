@@ -41,7 +41,14 @@ final class TrustedTimeImpl {
     _syncEngine = SyncEngine(
       config: config,
       clock: clock,
-      observer: _ProxySyncObserver(() => _instance!._observers),
+      // Bind the proxy observer to *this* instance's _observers set
+      // rather than to the static _instance. _instance is not assigned
+      // until _bootstrap() completes (see init()), and _bootstrap's
+      // first sync cycle synchronously invokes onSyncStarted, which
+      // would dereference a null _instance on the very first init() —
+      // surfacing as 'Null check operator used on a null value' inside
+      // _performSync's catch and silently failing the bootstrap sync.
+      observer: _ProxySyncObserver(() => _observers),
       cache:
           _cache, // Shared cache between impl and engine for state propagation
     );
@@ -95,6 +102,16 @@ final class TrustedTimeImpl {
 
   /// The currently active trust anchor.
   TrustAnchor? get anchor => _anchor;
+
+  /// The [TrustedTimeConfig] this instance was constructed with.
+  ///
+  /// Exposed so callers can verify the live engine settings (server
+  /// pool, quorum thresholds, refresh interval, etc.) without
+  /// shadowing the configuration on the call site. The returned
+  /// instance is the same immutable object passed to [init], so
+  /// reading list-typed fields like [TrustedTimeConfig.ntsServers]
+  /// is safe across isolates and event loops.
+  TrustedTimeConfig get config => _config;
 
   /// Whether the current trust anchor is cryptographically secure.
   bool get isSecure => _anchor?.authLevel == NtsAuthLevel.verified;

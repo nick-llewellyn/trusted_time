@@ -93,9 +93,7 @@ final class SyncEngine {
   /// individual sources are swallowed: warming is best-effort, and
   /// [sync] retains its existing JIT-warm fallback path.
   Future<void> warmAllSources() async {
-    final warmables = _sources.whereType<Warmable>().toList(
-      growable: false,
-    );
+    final warmables = _sources.whereType<Warmable>().toList(growable: false);
     if (warmables.isEmpty) return;
     await Future.wait(
       warmables.map((s) async {
@@ -119,6 +117,28 @@ final class SyncEngine {
     _observer?.onSyncStarted();
     final swSync = Stopwatch()..start();
 
+    // Empty-pool fast path: bail out *before* allocating the
+    // StreamController. A single-subscription StreamController whose
+    // listener is never attached has a `close()` future that does not
+    // complete on the test event loop, so awaiting it from the finally
+    // block of the try/catch below would hang the whole sync cycle
+    // (and the bootstrap that waits on it). Surfacing the failure
+    // through the observer here keeps the no-op cycle's telemetry
+    // shape identical to a populated cycle that produced zero
+    // eligible samples.
+    final now = DateTime.now();
+    final activeSources = _sources.where((s) {
+      final until = _blacklistUntil[s.id];
+      return until == null || now.isAfter(until);
+    }).toList();
+    if (activeSources.isEmpty) {
+      final emptyError = TrustedTimeSyncException(
+        'All available time sources are currently in exponential cooldown due to persistent failures.',
+      );
+      _markSyncFailed(emptyError);
+      throw emptyError;
+    }
+
     final samples = <TimeSample>[];
     final completer = Completer<TrustAnchor>();
     var streamClosed = false;
@@ -126,18 +146,7 @@ final class SyncEngine {
     final sampleController = StreamController<TimeSample?>();
 
     try {
-      final now = DateTime.now();
-      final activeSources = _sources.where((s) {
-        final until = _blacklistUntil[s.id];
-        return until == null || now.isAfter(until);
-      }).toList();
-
       var pendingQueries = activeSources.length;
-      if (pendingQueries == 0) {
-        throw TrustedTimeSyncException(
-          'All available time sources are currently in exponential cooldown due to persistent failures.',
-        );
-      }
 
       TimeInterval? lastStabilityInterval;
       var stableCount = 0;
@@ -294,9 +303,18 @@ final class SyncEngine {
       _cache?.update(anchor);
       return anchor;
     } catch (e) {
-      _observer?.onSyncFailed(e);
-      _syncAttempts++;
-      if (!completer.isCompleted) completer.completeError(e);
+      _markSyncFailed(e);
+      // The local `completer` has exactly one consumer: the
+      // `completer.future.timeout(...)` await at the top of this
+      // method. The rethrow below already propagates the error to
+      // that awaiter (or to the catch site if the throw happened
+      // before we reached the await). Calling completer.completeError
+      // here would error a future whose only listener is the derived
+      // timeout-wrapped future — which is already done by the time we
+      // reach this catch in the timeout / quorum-failure paths —
+      // resulting in an unhandled async error that flutter_test's
+      // FakeAsync zone surfaces as a test failure. Leaving the
+      // completer pending lets it be collected without leaking.
       rethrow;
     } finally {
       streamClosed = true;
@@ -334,6 +352,19 @@ final class SyncEngine {
 
       if (!completer.isCompleted) completer.complete(anchor);
     } catch (e) {
+      // Unlike the redundant `completer.completeError(e)` removed from
+      // sync()'s catch block, this one is the *only* path that
+      // propagates the failure to the awaiter. _completeSync runs
+      // inside the per-source pipeline (via the unawaited fan-out at
+      // sync() line ~268 → sample stream listener → _completeSync),
+      // so any throw here happens on a future the awaiter never sees
+      // directly — the only listener is sync()'s
+      // `completer.future.timeout(...)`. Without this completeError,
+      // a failure inside _createAnchor (e.g., monotonic clock channel
+      // throws, or the consensus result has no participant samples)
+      // would be swallowed and sync() would block until its outer
+      // timeout fires, masking the real cause behind a generic
+      // 'Synchronization timed out' message.
       if (!completer.isCompleted) completer.completeError(e);
     }
   }
@@ -418,6 +449,16 @@ final class SyncEngine {
 
       return null;
     }
+  }
+
+  /// Records a failed sync cycle: notifies the observer and bumps the
+  /// exponential-backoff attempt counter. Centralised so the early-bail
+  /// empty-pool path and the main try/catch path stay in lockstep — any
+  /// future addition (e.g. metrics, structured logging) only needs to
+  /// land here.
+  void _markSyncFailed(Object error) {
+    _observer?.onSyncFailed(error);
+    _syncAttempts++;
   }
 
   /// Calculates the next retry delay for the entire engine.
