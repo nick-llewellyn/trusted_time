@@ -217,6 +217,22 @@ void main() {
     // TrustedTimeImpl singleton.
     tearDown(TrustedTime.resetOverride);
 
+    // Tracks whether the dispose-at-teardown hook has already been
+    // registered in the active test, so multiple initEmpty() calls
+    // in a single test (e.g. the "pause state does not persist
+    // across re-initialize" test) don't queue redundant teardowns.
+    // Reset between tests by setUp below. dispose() itself is
+    // idempotent, so this guard is belt-and-braces — the previous
+    // version queued two teardowns referring to two different
+    // instances (the first instance is disposed by init's own
+    // re-init path, then disposed again at teardown), which the
+    // idempotency guard now handles cleanly. Tracking the
+    // registration here keeps the teardown queue minimal regardless.
+    var teardownRegistered = false;
+    setUp(() {
+      teardownRegistered = false;
+    });
+
     Future<void> initEmpty() async {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
@@ -229,8 +245,14 @@ void main() {
       );
       // Cancel the engine's retry timer at teardown so the failed
       // bootstrap (no-quorum) can't fire a stray _performSync into
-      // a sibling test in this group.
-      addTearDown(TrustedTimeImpl.instance.dispose);
+      // a sibling test in this group. Only register once per test;
+      // the closure resolves TrustedTimeImpl.instance at teardown
+      // time, so it always picks up whichever instance is current
+      // at the end of the test (the most recently initialized one).
+      if (!teardownRegistered) {
+        teardownRegistered = true;
+        addTearDown(() => TrustedTimeImpl.instance.dispose());
+      }
     }
 
     test('automaticRefreshActive is true after a fresh initialize', () async {

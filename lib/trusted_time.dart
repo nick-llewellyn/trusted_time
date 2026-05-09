@@ -374,6 +374,19 @@ abstract final class TrustedTime {
   /// timer (benchmarking harnesses, deterministic test harnesses,
   /// battery-sensitive consumers that schedule their own checks).
   ///
+  /// Pause only suppresses the *automatic refresh* timer. The
+  /// following continue to operate while paused:
+  ///  * the retry timer scheduled by a failed sync (recovery from a
+  ///    failed bootstrap or a failed refresh still proceeds);
+  ///  * sync cycles triggered by [forceResync];
+  ///  * sync cycles triggered by integrity events (clock jumps,
+  ///    detected reboots);
+  ///  * platform background sync if it was enabled.
+  /// Consumers that want to fully suppress all engine-driven syncs
+  /// should pause this timer *and* either avoid configuring
+  /// background sync at init or call into the platform layer
+  /// directly to disable it.
+  ///
   /// Idempotent. Resume with [resumeAutomaticRefresh] or by calling
   /// [setRefreshInterval] with a positive duration.
   static void pauseAutomaticRefresh() {
@@ -385,13 +398,24 @@ abstract final class TrustedTime {
   /// (see [setRefreshInterval]; defaults to the
   /// [TrustedTimeConfig.refreshInterval] passed to [initialize]).
   ///
-  /// Always reschedules the next refresh from the time of the call:
-  /// any pending refresh timer is cancelled and re-armed for the
-  /// active interval. Calling this while already enabled therefore
-  /// pushes the next refresh out — safe to call repeatedly without
-  /// raising, but not idempotent in the sense that the next-refresh
-  /// deadline is invariant. Use [automaticRefreshActive] to gate
-  /// calls when that matters.
+  /// Arms a refresh timer immediately, scheduled for one active
+  /// interval from the time of this call. Any previously-pending
+  /// refresh timer is cancelled and re-armed. Calling this while
+  /// already enabled therefore pushes the next-refresh deadline
+  /// out — safe to call repeatedly without raising, but the
+  /// deadline is not invariant. Use [automaticRefreshActive] to
+  /// gate calls when that matters.
+  ///
+  /// The "from the time of the call" deadline is itself only the
+  /// *initial* arming. If a sync runs between this call and the
+  /// timer firing — whether driven by [forceResync], an integrity
+  /// event, or platform background sync — the engine cancels the
+  /// pending refresh at the start of the cycle and (on success)
+  /// re-arms a fresh refresh timer measured from that cycle's
+  /// completion. The deadline is therefore best treated as
+  /// "no later than `activeInterval` from the most recent of
+  /// `[resumeAutomaticRefresh, setRefreshInterval(positive),
+  /// successful sync completion]`".
   static void resumeAutomaticRefresh() {
     if (_override != null) return;
     TrustedTimeImpl.instance.resumeAutomaticRefresh();
@@ -400,16 +424,25 @@ abstract final class TrustedTime {
   /// Replaces the automatic refresh interval at runtime without
   /// requiring a full [initialize] call.
   ///
-  /// The next refresh is scheduled for [interval] from the time of
-  /// the call. An [interval] of [Duration.zero] (or negative) is
-  /// equivalent to [pauseAutomaticRefresh] — the timer is cancelled
-  /// and not re-armed. The previously-set positive interval is
-  /// preserved across this pause: a subsequent
-  /// [resumeAutomaticRefresh] re-arms the timer using the most
-  /// recent positive value (rather than treating
-  /// [Duration.zero] as the new active interval). To replace the
-  /// active interval with a different positive value, call this
-  /// method again with that value.
+  /// Arms a refresh timer immediately, scheduled for [interval]
+  /// from the time of this call (any pending refresh is cancelled
+  /// and re-armed). As with [resumeAutomaticRefresh], any sync that
+  /// runs before the timer fires (via [forceResync], an integrity
+  /// event, or platform background sync) cancels the pending
+  /// refresh and the success path re-arms from cycle completion
+  /// using the new active interval — the deadline is therefore best
+  /// treated as "no later than [interval] from the most recent of
+  /// `[setRefreshInterval(interval), resumeAutomaticRefresh,
+  /// successful sync completion]`".
+  ///
+  /// An [interval] of [Duration.zero] (or negative) is equivalent
+  /// to [pauseAutomaticRefresh] — the timer is cancelled and not
+  /// re-armed. The previously-set positive interval is preserved
+  /// across this pause: a subsequent [resumeAutomaticRefresh]
+  /// re-arms the timer using the most recent positive value
+  /// (rather than treating [Duration.zero] as the new active
+  /// interval). To replace the active interval with a different
+  /// positive value, call this method again with that value.
   ///
   /// The original at-init value remains accessible via
   /// [TrustedTime.config].

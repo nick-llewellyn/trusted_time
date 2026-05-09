@@ -93,6 +93,16 @@ final class TrustedTimeImpl {
   Completer<void>? _syncInProgress;
   int? _offlineLastUtcMs;
   int? _offlineLastWallMs;
+  // Idempotency guard for [dispose]. Composed inner resources have
+  // mixed semantics — SyncClock and HttpsClient.close are
+  // idempotent, but IntegrityMonitor's StreamController.close is
+  // documented as idempotent in Dart's API but can throw under
+  // older SDKs / unusual subclass overrides. Calling dispose twice
+  // most commonly happens when [init] is called more than once
+  // (init disposes the previous singleton first) and the consumer's
+  // own teardown logic also calls dispose on the prior instance.
+  // The guard makes that scenario safe regardless of SDK version.
+  bool _disposed = false;
 
   // Runtime-mutable refresh schedule. Distinct from
   // [TrustedTimeConfig.refreshInterval] which captures the at-init
@@ -393,12 +403,22 @@ final class TrustedTimeImpl {
   /// Resumes the automatic refresh timer using the active interval
   /// (see [activeRefreshInterval]).
   ///
-  /// Always reschedules the next refresh from the time of the call:
-  /// any pending refresh timer is cancelled and re-armed for the
-  /// active interval. Calling this while already enabled therefore
-  /// pushes the next-refresh deadline out — safe to call repeatedly
-  /// without raising, but the deadline is not invariant. Use
-  /// [automaticRefreshActive] to gate calls when that matters.
+  /// Arms a refresh timer immediately, scheduled for one active
+  /// interval from the time of this call. Any previously-pending
+  /// refresh timer is cancelled and re-armed. Calling this while
+  /// already enabled therefore pushes the next-refresh deadline
+  /// out — safe to call repeatedly without raising, but the
+  /// deadline is not invariant. Use [automaticRefreshActive] to
+  /// gate calls when that matters.
+  ///
+  /// The "from the time of the call" deadline is itself only the
+  /// *initial* arming. [_performSync] cancels [_refreshTimer] at
+  /// the start of every sync cycle and the success path calls
+  /// [_scheduleRefresh] from cycle completion, so any sync that
+  /// runs before the timer fires (driven by [forceResync], an
+  /// integrity event, or [_invokeBackgroundSync]) shifts the
+  /// effective next-refresh time to one active interval after that
+  /// cycle's completion.
   ///
   /// The internal pause flag is always cleared, but if the active
   /// interval is non-positive (i.e. the schedule was last set via
@@ -413,10 +433,16 @@ final class TrustedTimeImpl {
 
   /// Replaces the active refresh interval at runtime.
   ///
-  /// The next refresh is scheduled for [interval] from the time of
-  /// the call (any pending refresh is cancelled and re-armed). An
-  /// [interval] of [Duration.zero] (or negative) is equivalent to
-  /// [pauseAutomaticRefresh] — the timer is cancelled and not
+  /// Arms a refresh timer immediately, scheduled for [interval]
+  /// from the time of this call (any pending refresh is cancelled
+  /// and re-armed). As with [resumeAutomaticRefresh], any sync that
+  /// runs before the timer fires shifts the effective next-refresh
+  /// time to one [interval] after that cycle's completion (because
+  /// [_performSync] cancels [_refreshTimer] at cycle entry and the
+  /// success branch re-arms via [_scheduleRefresh]).
+  ///
+  /// An [interval] of [Duration.zero] (or negative) is equivalent
+  /// to [pauseAutomaticRefresh] — the timer is cancelled and not
   /// re-armed until [setRefreshInterval] is called again with a
   /// positive duration or [resumeAutomaticRefresh] is called (which
   /// re-arms with the most recent positive interval).
@@ -455,7 +481,17 @@ final class TrustedTimeImpl {
   }
 
   /// Documented.
+  ///
+  /// Idempotent: subsequent calls are no-ops. The composed inner
+  /// resources have mixed disposal semantics, and the safest
+  /// contract for consumers is "call dispose; we will sort out
+  /// double-dispose for you" — particularly because [init] disposes
+  /// the previous singleton on re-init and applications often have
+  /// their own teardown logic that calls dispose on whatever
+  /// instance they remember.
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     _refreshTimer?.cancel();
     _refreshTimer = null;
     _retryTimer?.cancel();
