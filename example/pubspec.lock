@@ -344,7 +344,7 @@ packages:
     source: hosted
     version: "2.0.0"
   nts:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: nts
       sha256: ba5acfa1e0dbb00b739e97c318b357ddad22877970000250b3fc61ec8f1c6d10
@@ -368,7 +368,7 @@ packages:
     source: hosted
     version: "1.9.1"
   path_provider:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: path_provider
       sha256: "50c5dd5b6e1aaf6fb3a78b33f6aa3afca52bf903a8a5298f53101fdaee55bbcd"
