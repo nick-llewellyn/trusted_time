@@ -303,7 +303,18 @@ final class TrustedTimeImpl {
     // after manual sync clears the guard" case. _scheduleRefresh in
     // the success branch re-arms a fresh window from this cycle's
     // completion.
+    //
+    // Pair cancel() with = null so the field never retains a
+    // reference to a cancelled Timer between this point and the
+    // next _scheduleRefresh / _scheduleRetry. Without this, a
+    // failed sync would leave the field pointing at the cancelled
+    // timer indefinitely (the catch path goes to _scheduleRetry,
+    // not _scheduleRefresh, so the rebind in _scheduleRefresh would
+    // not happen). Keeping the invariant uniform across all call
+    // sites makes "_refreshTimer == null" a reliable signal for
+    // diagnostics and any future introspection that depends on it.
     _refreshTimer?.cancel();
+    _refreshTimer = null;
     try {
       final anchor = await _syncEngine.sync();
       _applyAnchor(anchor);
@@ -446,9 +457,13 @@ final class TrustedTimeImpl {
   /// Documented.
   void dispose() {
     _refreshTimer?.cancel();
+    _refreshTimer = null;
     _retryTimer?.cancel();
+    _retryTimer = null;
     _desktopBgTimer?.cancel();
+    _desktopBgTimer = null;
     _integritySub?.cancel();
+    _integritySub = null;
     _syncEngine.dispose();
     _monitor.dispose();
     _syncClock.dispose();
