@@ -402,7 +402,14 @@ abstract final class TrustedTime {
   ///
   /// The next refresh is scheduled for [interval] from the time of
   /// the call. An [interval] of [Duration.zero] (or negative) is
-  /// equivalent to [pauseAutomaticRefresh].
+  /// equivalent to [pauseAutomaticRefresh] — the timer is cancelled
+  /// and not re-armed. The previously-set positive interval is
+  /// preserved across this pause: a subsequent
+  /// [resumeAutomaticRefresh] re-arms the timer using the most
+  /// recent positive value (rather than treating
+  /// [Duration.zero] as the new active interval). To replace the
+  /// active interval with a different positive value, call this
+  /// method again with that value.
   ///
   /// The original at-init value remains accessible via
   /// [TrustedTime.config].
