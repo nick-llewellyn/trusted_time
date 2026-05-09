@@ -771,11 +771,15 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
   // has scrolled up to inspect a specific failure.
   static const double _stickyThresholdPx = 20.0;
 
-  // Tracks the event count observed at the previous build so the
-  // post-frame autoscroll fires only on growth. Without this, every
-  // ChangeNotifier rebuild (e.g. `recorder.reset`) would yank the
-  // viewport even though nothing was appended.
-  int _lastEventCount = 0;
+  // Tracks the recorder's monotonic event counter observed at the
+  // previous build so the post-frame autoscroll fires only on growth.
+  // Uses `totalEventsRecorded` (not `events.length`) because the
+  // recorder's ring buffer saturates at 200 entries — once full,
+  // `events.length` stops increasing and a length-based trigger would
+  // silently disable autoscroll for the rest of the session. Without
+  // this guard, every ChangeNotifier rebuild (e.g. `recorder.reset`)
+  // would yank the viewport even though nothing was appended.
+  int _lastEventSeq = 0;
 
   // Live snapshot of `package:nts`'s process-wide DNS resolver pool
   // counters. ntsDnsPoolStats() is documented as four atomic-relaxed
@@ -826,24 +830,35 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
       listenable: widget.recorder,
       builder: (context, _) {
         final events = widget.recorder.events;
-        final grew = events.length > _lastEventCount;
-        _lastEventCount = events.length;
+        final seq = widget.recorder.totalEventsRecorded;
+        final grew = seq > _lastEventSeq;
+        _lastEventSeq = seq;
 
         if (grew) {
-          // Defer to post-frame so the ListView has laid out the new
-          // row and maxScrollExtent reflects the updated content. The
-          // sticky check uses the *pre-frame* offset so an operator
-          // who scrolled up between events stays parked.
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!_scrollController.hasClients) return;
-            final position = _scrollController.position;
-            final wasNearBottom =
-                (position.maxScrollExtent - position.pixels) <=
-                    _stickyThresholdPx;
-            if (wasNearBottom) {
-              _scrollController.jumpTo(position.maxScrollExtent);
-            }
-          });
+          // Capture the sticky-bottom decision from the *pre-append*
+          // scroll geometry: the post-frame callback runs after the
+          // ListView has laid out the new row, by which point
+          // maxScrollExtent has grown by ~one row. If we computed
+          // `wasNearBottom` inside the callback, an operator parked
+          // exactly at the bottom would see (newMax - oldPixels) ==
+          // newRowHeight, which exceeds _stickyThresholdPx and
+          // wrongly flips the decision to "not near bottom". The
+          // hasClients guard short-circuits the very first build
+          // (controller not yet attached), in which case we skip the
+          // jump entirely — the initial layout already lands at
+          // offset 0 with no content above it.
+          final wasNearBottom = _scrollController.hasClients &&
+              (_scrollController.position.maxScrollExtent -
+                      _scrollController.position.pixels) <=
+                  _stickyThresholdPx;
+          if (wasNearBottom) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!_scrollController.hasClients) return;
+              _scrollController.jumpTo(
+                _scrollController.position.maxScrollExtent,
+              );
+            });
+          }
         }
 
         return Column(

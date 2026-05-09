@@ -69,9 +69,19 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
   final List<TelemetryEvent> _events = [];
   final List<void Function(TelemetryEvent)> _listeners = [];
   final List<void Function()> _cycleListeners = [];
+  int _totalRecorded = 0;
 
   /// Snapshot of recorded events, oldest first.
   List<TelemetryEvent> get events => List.unmodifiable(_events);
+
+  /// Monotonically-increasing count of every [TelemetryEvent] ever
+  /// `_add`ed since the last [reset]. Distinct from `events.length`,
+  /// which saturates at [_maxEvents] once the ring buffer fills:
+  /// downstream listeners that need an "is there a new event since
+  /// last build?" signal must compare against this counter rather
+  /// than the snapshot length, otherwise growth becomes invisible
+  /// after the first 200 entries. Reset to zero by [reset].
+  int get totalEventsRecorded => _totalRecorded;
 
   /// Subscribes [listener] to receive every [TelemetryEvent] as it is
   /// recorded. The benchmarking log writer uses this to mirror events
@@ -122,6 +132,7 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
       detail: detail,
     );
     _events.add(event);
+    _totalRecorded++;
     if (_events.length > _maxEvents) {
       _events.removeRange(0, _events.length - _maxEvents);
     }
@@ -163,6 +174,7 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
   /// Removes all recorded events and resets the elapsed-time origin.
   void reset() {
     _events.clear();
+    _totalRecorded = 0;
     _start
       ..reset()
       ..start();
