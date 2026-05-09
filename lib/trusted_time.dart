@@ -118,13 +118,18 @@ abstract final class TrustedTime {
         // contract; matching just the package name is robust to
         // wording / capitalisation drift across frb releases while
         // still narrow enough not to swallow unrelated StateErrors
-        // from other code paths. If frb starts throwing StateError
-        // for genuinely new structural failures we will need to
-        // revisit, but the failure mode of an unrecognised double-
-        // init (silently disabling NTS) is significantly worse than
-        // the failure mode of an unrecognised real error (the engine
-        // will surface it at first NTS use).
-        final message = e is StateError ? e.message : '';
+        // from other code paths. The case-insensitive comparison
+        // (lowercasing both sides) is the source of that
+        // capitalisation robustness — without it we would only
+        // accept the canonical lowercase package name as it appears
+        // in upstream's current panic, defeating the safety margin
+        // the loose match was added for. If frb starts throwing
+        // StateError for genuinely new structural failures we will
+        // need to revisit, but the failure mode of an unrecognised
+        // double-init (silently disabling NTS) is significantly
+        // worse than the failure mode of an unrecognised real error
+        // (the engine will surface it at first NTS use).
+        final message = e is StateError ? e.message.toLowerCase() : '';
         final alreadyInitialised =
             e is StateError && message.contains('flutter_rust_bridge');
         if (!alreadyInitialised) {
