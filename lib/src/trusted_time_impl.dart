@@ -93,6 +93,28 @@ final class TrustedTimeImpl {
   Completer<void>? _syncInProgress;
   int? _offlineLastUtcMs;
   int? _offlineLastWallMs;
+  // Idempotency guard for [dispose]. Composed inner resources have
+  // mixed semantics — SyncClock and HttpsClient.close are
+  // idempotent, but IntegrityMonitor's StreamController.close is
+  // documented as idempotent in Dart's API but can throw under
+  // older SDKs / unusual subclass overrides. Calling dispose twice
+  // most commonly happens when [init] is called more than once
+  // (init disposes the previous singleton first) and the consumer's
+  // own teardown logic also calls dispose on the prior instance.
+  // The guard makes that scenario safe regardless of SDK version.
+  bool _disposed = false;
+
+  // Runtime-mutable refresh schedule. Distinct from
+  // [TrustedTimeConfig.refreshInterval] which captures the at-init
+  // value and is never mutated. [_activeRefreshInterval] is what
+  // [_scheduleRefresh] actually uses; consumers can override it via
+  // [setRefreshInterval] without re-initialising the engine.
+  // [_automaticRefreshPaused] suppresses the timer entirely
+  // regardless of the interval value. Both default to a fresh-start
+  // configuration on every [init] (pause state is intentionally not
+  // persisted across re-init).
+  late Duration _activeRefreshInterval = _config.refreshInterval;
+  bool _automaticRefreshPaused = false;
 
   /// Documented.
   Stream<IntegrityEvent> get onIntegrityLost => _monitor.events;
@@ -291,7 +313,18 @@ final class TrustedTimeImpl {
     // after manual sync clears the guard" case. _scheduleRefresh in
     // the success branch re-arms a fresh window from this cycle's
     // completion.
+    //
+    // Pair cancel() with = null so the field never retains a
+    // reference to a cancelled Timer between this point and the
+    // next _scheduleRefresh / _scheduleRetry. Without this, a
+    // failed sync would leave the field pointing at the cancelled
+    // timer indefinitely (the catch path goes to _scheduleRetry,
+    // not _scheduleRefresh, so the rebind in _scheduleRefresh would
+    // not happen). Keeping the invariant uniform across all call
+    // sites makes "_refreshTimer == null" a reliable signal for
+    // diagnostics and any future introspection that depends on it.
     _refreshTimer?.cancel();
+    _refreshTimer = null;
     try {
       final anchor = await _syncEngine.sync();
       _applyAnchor(anchor);
@@ -317,8 +350,110 @@ final class TrustedTimeImpl {
   }
 
   void _scheduleRefresh() {
+    // Always null out alongside cancel() so the field never retains a
+    // reference to a cancelled Timer across the early-return paths
+    // below. Mirrors pauseAutomaticRefresh's cancel/null pairing and
+    // keeps "is _refreshTimer null?" a reliable signal of whether a
+    // live timer is armed (used by introspection in tests / future
+    // diagnostics).
     _refreshTimer?.cancel();
-    _refreshTimer = Timer(_config.refreshInterval, _performSync);
+    _refreshTimer = null;
+    if (_automaticRefreshPaused) return;
+    if (_activeRefreshInterval <= Duration.zero) return;
+    _refreshTimer = Timer(_activeRefreshInterval, _performSync);
+  }
+
+  /// Whether automatic refresh is currently enabled.
+  ///
+  /// Reflects the schedule's intent — `false` when
+  /// [pauseAutomaticRefresh] has been called or when
+  /// [setRefreshInterval] was called with a non-positive duration —
+  /// not whether [_refreshTimer] is armed at this exact moment.
+  /// [_scheduleRefresh] is invoked from three sites: the success
+  /// branch of [_performSync] (the *automatic* re-arm), and the
+  /// explicit [resumeAutomaticRefresh] / [setRefreshInterval] entry
+  /// points (which arm a fresh timer from the time of the call
+  /// independent of cycle completion). This getter can therefore
+  /// return `true` while no timer is yet pending — post-init pre-
+  /// bootstrap, or in the recovery window after a failed sync where
+  /// only the retry timer is armed.
+  bool get automaticRefreshActive =>
+      !_automaticRefreshPaused && _activeRefreshInterval > Duration.zero;
+
+  /// The currently active refresh interval used by the automatic
+  /// refresh timer.
+  ///
+  /// Defaults to [TrustedTimeConfig.refreshInterval] but may be
+  /// overridden at runtime via [setRefreshInterval]. The original
+  /// at-init value remains accessible via [config].
+  Duration get activeRefreshInterval => _activeRefreshInterval;
+
+  /// Pauses the automatic refresh timer.
+  ///
+  /// Cancels any pending refresh and prevents subsequent successful
+  /// syncs from re-arming it. Idempotent. Does not affect the retry
+  /// timer (recovery from a failed sync still proceeds) or
+  /// integrity-event-driven syncs.
+  void pauseAutomaticRefresh() {
+    _automaticRefreshPaused = true;
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
+  }
+
+  /// Resumes the automatic refresh timer using the active interval
+  /// (see [activeRefreshInterval]).
+  ///
+  /// Arms a refresh timer immediately, scheduled for one active
+  /// interval from the time of this call. Any previously-pending
+  /// refresh timer is cancelled and re-armed. Calling this while
+  /// already enabled therefore pushes the next-refresh deadline
+  /// out — safe to call repeatedly without raising, but the
+  /// deadline is not invariant. Use [automaticRefreshActive] to
+  /// gate calls when that matters.
+  ///
+  /// The "from the time of the call" deadline is itself only the
+  /// *initial* arming. [_performSync] cancels [_refreshTimer] at
+  /// the start of every sync cycle and the success path calls
+  /// [_scheduleRefresh] from cycle completion, so any sync that
+  /// runs before the timer fires (driven by [forceResync], an
+  /// integrity event, or [_invokeBackgroundSync]) shifts the
+  /// effective next-refresh time to one active interval after that
+  /// cycle's completion.
+  ///
+  /// The internal pause flag is always cleared, but if the active
+  /// interval is non-positive (i.e. the schedule was last set via
+  /// [setRefreshInterval] with [Duration.zero] or a negative value)
+  /// no timer is scheduled — clearing the flag has no observable
+  /// effect until [setRefreshInterval] is called with a positive
+  /// duration.
+  void resumeAutomaticRefresh() {
+    _automaticRefreshPaused = false;
+    _scheduleRefresh();
+  }
+
+  /// Replaces the active refresh interval at runtime.
+  ///
+  /// Arms a refresh timer immediately, scheduled for [interval]
+  /// from the time of this call (any pending refresh is cancelled
+  /// and re-armed). As with [resumeAutomaticRefresh], any sync that
+  /// runs before the timer fires shifts the effective next-refresh
+  /// time to one [interval] after that cycle's completion (because
+  /// [_performSync] cancels [_refreshTimer] at cycle entry and the
+  /// success branch re-arms via [_scheduleRefresh]).
+  ///
+  /// An [interval] of [Duration.zero] (or negative) is equivalent
+  /// to [pauseAutomaticRefresh] — the timer is cancelled and not
+  /// re-armed until [setRefreshInterval] is called again with a
+  /// positive duration or [resumeAutomaticRefresh] is called (which
+  /// re-arms with the most recent positive interval).
+  void setRefreshInterval(Duration interval) {
+    if (interval <= Duration.zero) {
+      pauseAutomaticRefresh();
+      return;
+    }
+    _activeRefreshInterval = interval;
+    _automaticRefreshPaused = false;
+    _scheduleRefresh();
   }
 
   void _scheduleRetry() {
@@ -346,11 +481,25 @@ final class TrustedTimeImpl {
   }
 
   /// Documented.
+  ///
+  /// Idempotent: subsequent calls are no-ops. The composed inner
+  /// resources have mixed disposal semantics, and the safest
+  /// contract for consumers is "call dispose; we will sort out
+  /// double-dispose for you" — particularly because [init] disposes
+  /// the previous singleton on re-init and applications often have
+  /// their own teardown logic that calls dispose on whatever
+  /// instance they remember.
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     _refreshTimer?.cancel();
+    _refreshTimer = null;
     _retryTimer?.cancel();
+    _retryTimer = null;
     _desktopBgTimer?.cancel();
+    _desktopBgTimer = null;
     _integritySub?.cancel();
+    _integritySub = null;
     _syncEngine.dispose();
     _monitor.dispose();
     _syncClock.dispose();
