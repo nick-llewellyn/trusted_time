@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/exceptions.dart';
 import 'package:trusted_time/src/sync_engine.dart';
 import 'package:trusted_time/src/models.dart';
 import 'package:trusted_time/src/domain/marzullo_engine.dart';
@@ -31,6 +32,41 @@ class RaceConditionSource implements TimeSource {
   @override
   Future<TimeSample> getTime() async {
     await Future.delayed(delay);
+    return TimeSample(
+      interval: TimeInterval(startMs: utcMs - 10, endMs: utcMs + 10),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
+}
+
+/// Test source that throws a configurable error on the first [getTime]
+/// call and returns a valid sample on every subsequent call. Records its
+/// call count so tests can assert whether it was retried after a failure
+/// (i.e., not blacklisted by the engine's cooldown path).
+class FlakySource implements TimeSource {
+  FlakySource({
+    required this.id,
+    required this.utcMs,
+    required this.firstCallError,
+    this.groupId = 'test-group',
+  });
+
+  @override
+  final String id;
+  @override
+  final String groupId;
+  final int utcMs;
+  final Object firstCallError;
+
+  int callCount = 0;
+
+  @override
+  Future<TimeSample> getTime() async {
+    callCount++;
+    if (callCount == 1) {
+      throw firstCallError;
+    }
     return TimeSample(
       interval: TimeInterval(startMs: utcMs - 10, endMs: utcMs + 10),
       sourceId: id,
@@ -669,6 +705,118 @@ void main() {
           ),
           isTrue,
           reason: 'healthy.warm-end did not run despite sibling failures',
+        );
+      },
+    );
+  });
+
+  group('SyncEngine TransientSourceError handling', () {
+    late MockMonotonicClock clock;
+    late TrustedTimeConfig config;
+
+    setUp(() {
+      clock = MockMonotonicClock();
+      // Override every default source list so the engine only queries
+      // the test's `additionalSources`. Without `ntsServers: const []`,
+      // the default `['time.cloudflare.com']` would instantiate an
+      // NtsSource that either fails fast (RustLib.init not called in
+      // the test harness) or attempts real network I/O on machines
+      // where the native is initialised — both are unrelated noise
+      // for the cooldown-semantics assertion.
+      config = const TrustedTimeConfig(
+        minimumQuorum: 2,
+        minGroupCount: 1,
+        ntpServers: [],
+        httpsSources: [],
+        ntsServers: [],
+      );
+    });
+
+    test(
+      'TransientSourceError is reported to observer and does not blacklist '
+      'the source on the next sync cycle',
+      () async {
+        final observer = RecordingObserver();
+        final flaky = FlakySource(
+          id: 'flaky',
+          groupId: 'g-flaky',
+          utcMs: 1000000,
+          firstCallError: const TransientSourceError('dnsSaturation stub'),
+        );
+        // Two healthy sources so the first cycle still reaches quorum
+        // when flaky throws.
+        final healthy1 = RaceConditionSource('h1', Duration.zero, 1000000, 'g-h1');
+        final healthy2 = RaceConditionSource('h2', Duration.zero, 1000000, 'g-h2');
+
+        final engine = SyncEngine(
+          config: config.copyWith(
+            additionalSources: [flaky, healthy1, healthy2],
+          ),
+          clock: clock,
+          observer: observer,
+        );
+
+        // Cycle 1: flaky throws TransientSourceError; quorum still met.
+        await engine.sync();
+
+        // Observer must have been notified with the TransientSourceError
+        // instance itself, not a stringified or wrapped form.
+        final flakyFailures = observer.sourceFailures
+            .where((f) => f.sourceId == 'flaky')
+            .toList();
+        expect(flakyFailures, hasLength(1));
+        expect(flakyFailures.single.error, isA<TransientSourceError>());
+
+        // Cycle 2: flaky must be queried again. If the engine had treated
+        // the failure as cooldown-eligible, _blacklistUntil would skip it
+        // (default cooldown = 2^1 = 2 minutes, which would push the next
+        // attempt well past this test's wall clock).
+        await engine.sync();
+        expect(
+          flaky.callCount,
+          2,
+          reason: 'flaky.getTime was not retried on cycle 2; '
+              'TransientSourceError appears to have triggered cooldown',
+        );
+      },
+    );
+
+    test(
+      'a non-transient exception does blacklist the source on the next '
+      'sync cycle (contrast case)',
+      () async {
+        final observer = RecordingObserver();
+        final flaky = FlakySource(
+          id: 'flaky',
+          groupId: 'g-flaky',
+          utcMs: 1000000,
+          firstCallError: StateError('regular failure'),
+        );
+        final healthy1 = RaceConditionSource('h1', Duration.zero, 1000000, 'g-h1');
+        final healthy2 = RaceConditionSource('h2', Duration.zero, 1000000, 'g-h2');
+
+        final engine = SyncEngine(
+          config: config.copyWith(
+            additionalSources: [flaky, healthy1, healthy2],
+          ),
+          clock: clock,
+          observer: observer,
+        );
+
+        await engine.sync();
+
+        final flakyFailures = observer.sourceFailures
+            .where((f) => f.sourceId == 'flaky')
+            .toList();
+        expect(flakyFailures, hasLength(1));
+        expect(flakyFailures.single.error, isA<StateError>());
+
+        await engine.sync();
+        expect(
+          flaky.callCount,
+          1,
+          reason: 'flaky.getTime should have been blacklisted after a '
+              'non-transient failure but was retried on cycle 2',
         );
       },
     );

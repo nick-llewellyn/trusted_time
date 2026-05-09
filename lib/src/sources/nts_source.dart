@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart' as nts;
 
 import '../domain/time_sample.dart';
 import '../domain/time_source.dart';
 import '../domain/time_interval.dart';
+import '../exceptions.dart';
 import '../models.dart';
 import 'nts_auth_level.dart';
 
@@ -41,16 +43,29 @@ final class NtsSource implements TimeSource, Warmable {
   /// (`0`), which inherits the package's built-in cap of 4. [SyncEngine]
   /// overrides this with `ntsServers.length + 2` so multi-host pools do
   /// not lose admission races against the global resolver pool.
+  ///
+  /// [maxLatency] is forwarded as `ntsQuery`'s `timeoutMs`. [SyncEngine]
+  /// passes [TrustedTimeConfig.maxLatency] so the inner per-query budget
+  /// matches the outer `.timeout(_config.maxLatency)` wrapper. Without
+  /// this, an inner timeout longer than the outer would always be
+  /// pre-empted by Dart's `TimeoutException`, swallowing the
+  /// phase-tagged `NtsError.timeout(TimeoutPhase)` payload that drives
+  /// the [TransientSourceError] cooldown-bypass path. The default of 5 s
+  /// preserves the package's pre-coordination behaviour for direct
+  /// callers.
   NtsSource(
     this._host, {
     int port = 4460,
     int dnsConcurrencyCap = nts.kDefaultDnsConcurrencyCap,
+    Duration maxLatency = const Duration(seconds: 5),
   }) : _spec = nts.NtsServerSpec(host: _host, port: port),
-       _dnsConcurrencyCap = dnsConcurrencyCap;
+       _dnsConcurrencyCap = dnsConcurrencyCap,
+       _timeoutMs = maxLatency.inMilliseconds;
 
   final String _host;
   final nts.NtsServerSpec _spec;
   final int _dnsConcurrencyCap;
+  final int _timeoutMs;
 
   /// Memoized NTS-KE warm task. `null` until [warm] is first invoked,
   /// so constructing an [NtsSource] never touches the FFI surface.
@@ -79,11 +94,37 @@ final class NtsSource implements TimeSource, Warmable {
     // in its dedicated warming phase, so this is a no-op in that path.
     await warm();
 
-    final result = await nts.ntsQuery(
-      spec: _spec,
-      timeoutMs: 5000,
-      dnsConcurrencyCap: _dnsConcurrencyCap,
-    );
+    final nts.NtsTimeSample result;
+    try {
+      result = await nts.ntsQuery(
+        spec: _spec,
+        timeoutMs: _timeoutMs,
+        dnsConcurrencyCap: _dnsConcurrencyCap,
+      );
+    } on nts.NtsError_Timeout catch (e) {
+      // Dns(Saturation) means the bounded DNS resolver pool was at
+      // capacity for this call. The host itself is healthy; SyncEngine
+      // should retry on the next cycle without applying exponential
+      // cooldown. Other timeout phases (Connect, Tls, KeRecordIo, Ntp,
+      // DnsTimeout) propagate as-is and follow the standard cooldown
+      // path.
+      if (e.field0 == nts.TimeoutPhase.dnsSaturation) {
+        throw TransientSourceError(e);
+      }
+      rethrow;
+    }
+
+    if (kDebugMode) {
+      final p = result.phaseTimings;
+      debugPrint(
+        '[TrustedTime] nts:$_host '
+        'rtt=${(result.roundTripMicros / 1000).toStringAsFixed(1)}ms '
+        'dns=${(p.dnsMicros / 1000).toStringAsFixed(1)}ms '
+        'connect=${(p.connectMicros / 1000).toStringAsFixed(1)}ms '
+        'tls=${(p.tlsHandshakeMicros / 1000).toStringAsFixed(1)}ms '
+        'ke=${(p.keRecordIoMicros / 1000).toStringAsFixed(1)}ms',
+      );
+    }
 
     // Calculate uncertainty from network RTT (convert microseconds to
     // milliseconds).
