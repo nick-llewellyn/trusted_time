@@ -48,8 +48,15 @@ class BenchmarkLogger {
     }
 
     final stamp = _formatStamp(DateTime.now());
-    _filePath = '${dir.path}/nts_session_$stamp.log';
-    _sink = File(_filePath!).openWrite(mode: FileMode.writeOnlyAppend);
+    final candidatePath = '${dir.path}/nts_session_$stamp.log';
+    // Open the sink first; only commit `_filePath` to instance state
+    // once the sink construction has succeeded so the UI can never
+    // surface a path that doesn't actually back a writable log file
+    // (openWrite can throw on permission-denied / disk-full / invalid
+    // path conditions).
+    final sink = File(candidatePath).openWrite(mode: FileMode.writeOnlyAppend);
+    _sink = sink;
+    _filePath = candidatePath;
 
     _writeHeader();
     _unsubscribe = recorder.addEventListener(_writeEvent);
@@ -75,7 +82,12 @@ class BenchmarkLogger {
   }
 
   /// Detaches from the recorder, flushes any buffered output, and
-  /// closes the file handle. Safe to call multiple times.
+  /// closes the file handle. Safe to call multiple times. Does not
+  /// throw: I/O failures during the final flush/close are swallowed
+  /// (with a debug-only log) so callers can `unawaited(dispose())`
+  /// from a widget teardown without the risk of an unhandled async
+  /// error escaping into the zone — same swallow-and-log policy as
+  /// the periodic flush in [start].
   Future<void> dispose() async {
     _flushTimer?.cancel();
     _flushTimer = null;
@@ -86,8 +98,17 @@ class BenchmarkLogger {
     if (sink != null) {
       try {
         await sink.flush();
-      } finally {
+      } catch (e, s) {
+        if (kDebugMode) {
+          debugPrint('[BenchmarkLogger] dispose flush failed: $e\n$s');
+        }
+      }
+      try {
         await sink.close();
+      } catch (e, s) {
+        if (kDebugMode) {
+          debugPrint('[BenchmarkLogger] dispose close failed: $e\n$s');
+        }
       }
     }
   }

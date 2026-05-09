@@ -37,7 +37,13 @@ void main() {
     TrustedTime.overrideForTesting(mock);
 
     await tester.pumpWidget(MyApp(telemetry: TelemetryRecorder()));
-    await tester.pumpAndSettle();
+    // Two pumps lay out the SingleChildScrollView and its eagerly
+    // built children; pumpAndSettle would block on _HomePageState's
+    // 1 s UI ticker (Timer.periodic in initState) which never
+    // naturally idles. Mirrors the bounded-pump strategy used by
+    // the real-engine test below.
+    await tester.pump();
+    await tester.pump();
 
     expect(find.text('TrustedTime V2 Features'), findsOneWidget);
     expect(find.text('Section 1 — Live Clock'), findsOneWidget);
@@ -77,7 +83,11 @@ void main() {
       );
 
       await tester.pumpWidget(MyApp(telemetry: TelemetryRecorder()));
-      await tester.pumpAndSettle();
+      // Bounded pumps for the same reason as the sibling test above:
+      // _HomePageState's 1 s UI ticker prevents pumpAndSettle from
+      // ever returning. Two pumps are enough to lay out Section 7.
+      await tester.pump();
+      await tester.pump();
 
       final chipFinder = find.byType(FilterChip);
       expect(chipFinder, findsWidgets);
