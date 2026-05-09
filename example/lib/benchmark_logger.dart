@@ -28,8 +28,11 @@ class BenchmarkLogger {
   Timer? _flushTimer;
   VoidCallback? _unsubscribe;
 
-  /// Path of the log file once [start] has resolved, or `null` while the
-  /// logger is uninitialised or has been [dispose]d.
+  /// Path of the log file once [start] has resolved, or `null` while
+  /// the logger is uninitialised. Intentionally retained across
+  /// [dispose] so the UI can continue to surface "the run was
+  /// written to …" after the operator stops a benchmark; clear it
+  /// at the call site if a stale-path display is undesirable.
   String? get filePath => _filePath;
 
   /// Opens a fresh session log under `<docs>/nts_benchmarks/` and

@@ -296,10 +296,23 @@ class _HomePageState extends State<HomePage> {
     final refusedDelta = now.refused - prev.refused;
     final recoveredDelta = now.recovered - prev.recovered;
     final hwmDelta = now.highWaterMark - prev.highWaterMark;
-    final sliceLast = (prevOffset + _worldwideSubsetSize - 1)
-        .clamp(0, extendedNtsPool.length - 1);
+    // Match the wrap-aware slice math in _currentWorldwideSubset so
+    // the logged label accurately describes the hosts measured.
+    // When the slice wraps the end of the pool we render it as two
+    // contiguous ranges (e.g. "slice 76-80, 0-2") rather than
+    // collapsing to a clamped single range that would silently hide
+    // the wrap-around.
+    final poolLen = extendedNtsPool.length;
+    final size = _worldwideSubsetSize;
+    final String sliceLabel;
+    if (prevOffset + size <= poolLen) {
+      sliceLabel = 'slice $prevOffset–${prevOffset + size - 1}';
+    } else {
+      final wrapEnd = (prevOffset + size) % poolLen - 1;
+      sliceLabel = 'slice $prevOffset–${poolLen - 1}, 0–$wrapEnd';
+    }
     widget.telemetry.logDnsDelta(
-      'slice $prevOffset–$sliceLast '
+      '$sliceLabel '
       'refused+$refusedDelta recovered+$recoveredDelta '
       'hwmΔ$hwmDelta inFlight=${now.inFlight}',
     );
@@ -643,7 +656,14 @@ class _HomePageState extends State<HomePage> {
                 reconfiguring: _reconfiguring,
                 interCycleDelaySeconds: _interCycleDelaySeconds,
                 ntsDnsConcurrencyCapOverride: _ntsDnsConcurrencyCapOverride,
-                autoSizedDnsCap: _selectedServers.length + 2,
+                // Mirror the live engine's heuristic
+                // (ntsServers.length + 2) so the displayed cap
+                // reflects what the running engine is actually
+                // sized to — rotation mode reconfigures with
+                // 8-host slices regardless of the chip selection,
+                // so basing this on _selectedServers.length would
+                // surface the wrong number during a worldwide run.
+                autoSizedDnsCap: TrustedTime.config.ntsServers.length + 2,
                 logFilePath: _benchmarkLogger.filePath,
                 onRunWorldwide: _runWorldwideBenchmark,
                 onDnsCapOverrideChanged: (val) {
