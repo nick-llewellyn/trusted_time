@@ -131,9 +131,16 @@ class BenchmarkLogger {
 
   static String _formatStamp(DateTime t) {
     String two(int v) => v.toString().padLeft(2, '0');
+    String three(int v) => v.toString().padLeft(3, '0');
     final d = '${t.year.toString().padLeft(4, '0')}'
         '${two(t.month)}${two(t.day)}';
     final h = '${two(t.hour)}${two(t.minute)}${two(t.second)}';
-    return '${d}_$h';
+    // Millisecond suffix so two BenchmarkLoggers started in the same
+    // wall-clock second (hot restart, multi-instance test harness)
+    // never collide on the same nts_session_*.log path. openWrite
+    // uses append mode, so without the ms component a collision
+    // would interleave both sessions' lines into a single file.
+    final ms = three(t.millisecond);
+    return '${d}_${h}_$ms';
   }
 }

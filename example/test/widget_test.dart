@@ -34,6 +34,12 @@ void main() {
     WidgetTester tester,
   ) async {
     final mock = TrustedTimeMock(initial: DateTime.utc(2024, 1, 1, 12));
+    // Register cleanup before the override so a failed expectation
+    // in the test body cannot leak the override into sibling tests.
+    addTearDown(() {
+      TrustedTime.resetOverride();
+      mock.dispose();
+    });
     TrustedTime.overrideForTesting(mock);
 
     await tester.pumpWidget(MyApp(telemetry: TelemetryRecorder()));
@@ -47,9 +53,6 @@ void main() {
 
     expect(find.text('TrustedTime V2 Features'), findsOneWidget);
     expect(find.text('Section 1 — Live Clock'), findsOneWidget);
-
-    TrustedTime.resetOverride();
-    mock.dispose();
   });
 
   testWidgets(
@@ -125,6 +128,7 @@ void main() {
 
   testWidgets(
     'real engine: chips reflect TrustedTime.config after initialize',
+    timeout: const Timeout(Duration(seconds: 30)),
     (WidgetTester tester) async {
       // End-to-end integration test: drive the actual TrustedTimeImpl
       // (no override) through TrustedTime.initialize, then verify the
@@ -140,6 +144,20 @@ void main() {
       // "chips == TrustedTime.config.ntsServers" rather than
       // "chips == requested ntsServers" — so the test passes whether
       // or not the bundled Rust dylib is available.
+      //
+      // Hermetic-CI design notes:
+      //  - With RustLib unavailable (the standard `flutter test` host
+      //    environment), initialize() takes the empty-pool fast path
+      //    after stripping ntsServers and returns in <1 s of wall
+      //    clock — no network I/O is attempted.
+      //  - With RustLib available (rare in `flutter test`; expected
+      //    in `flutter test integration_test/`), initialize() will
+      //    attempt three NTS-KE handshakes. The bounded 30 s timeout
+      //    surfaces a wedged handshake as a test failure rather than
+      //    an indefinite hang.
+      //  - refreshInterval is set to 1 hour so the bootstrap retry
+      //    timer cannot fire during the test body, removing one
+      //    source of pending async work for pumpWidget to handle.
       TrustedTime.resetOverride();
       addTearDown(TrustedTime.resetOverride);
 

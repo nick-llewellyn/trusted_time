@@ -39,6 +39,17 @@ class TelemetryEvent {
   final int elapsedMs;
   final TelemetryKind kind;
   final String detail;
+
+  /// Single-line representation matching the layout the recorder
+  /// emits to the on-screen terminal and the BenchmarkLogger writes
+  /// to disk, so error logs that interpolate `$event` (e.g. the
+  /// listener-fan-out catch in TelemetryRecorder._add) carry the
+  /// same actionable timestamp/kind/detail context as the rest of
+  /// the telemetry trail.
+  @override
+  String toString() =>
+      '${elapsedMs.toString().padLeft(7)}ms  '
+      '${kind.name.padRight(13)}  $detail';
 }
 
 /// A [SyncObserver] that records every callback into a bounded ring of
