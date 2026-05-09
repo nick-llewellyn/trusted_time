@@ -5,6 +5,44 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time_example/main.dart';
 import 'package:trusted_time_example/sync_telemetry.dart';
 import 'package:trusted_time/trusted_time.dart';
+// TimeSource is currently only reachable via src/ even though
+// TrustedTimeConfig.additionalSources is part of the public API and
+// typed as List<TimeSource>. Importing src/ from this test is a
+// pragmatic stop-gap; promoting TimeSource to the public exports
+// is tracked separately so consumers (and future tests) can build
+// custom sources without reaching into src/.
+import 'package:trusted_time/src/domain/time_source.dart';
+
+/// Deterministic [TimeSource] used by the real-engine widget test to
+/// guarantee the bootstrap sync reaches consensus instead of failing
+/// and arming an exponential retry timer that would leak into sibling
+/// tests. Two instances with distinct [groupId]s are passed via
+/// [TrustedTimeConfig.additionalSources] so MarzulloEngine sees a
+/// pair of overlapping samples (its hard floor for consensus is two
+/// independent groups).
+class _FakeTimeSource implements TimeSource {
+  _FakeTimeSource({required this.id, required this.groupId});
+
+  @override
+  final String id;
+
+  @override
+  final String groupId;
+
+  @override
+  Future<TimeSample> getTime() async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    // ±50 ms window around wall-clock now: wide enough that two
+    // fakes sampled in the same async tick will overlap reliably,
+    // narrow enough not to mask any real bug that ever lets these
+    // samples slip through into a production-bound code path.
+    return TimeSample(
+      interval: TimeInterval(startMs: now - 50, endMs: now + 50),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -147,17 +185,25 @@ void main() {
       //
       // Hermetic-CI design notes:
       //  - With RustLib unavailable (the standard `flutter test` host
-      //    environment), initialize() takes the empty-pool fast path
-      //    after stripping ntsServers and returns in <1 s of wall
-      //    clock — no network I/O is attempted.
+      //    environment), initialize() rewrites ntsServers to []. The
+      //    two _FakeTimeSource instances in additionalSources keep
+      //    the engine's source pool non-empty so the bootstrap sync
+      //    reaches consensus, succeeds, and does not arm the
+      //    exponential retry timer that would otherwise leak into
+      //    sibling tests for the rest of the suite.
       //  - With RustLib available (rare in `flutter test`; expected
       //    in `flutter test integration_test/`), initialize() will
-      //    attempt three NTS-KE handshakes. The bounded 30 s timeout
-      //    surfaces a wedged handshake as a test failure rather than
-      //    an indefinite hang.
-      //  - refreshInterval is set to 1 hour so the bootstrap retry
-      //    timer cannot fire during the test body, removing one
-      //    source of pending async work for pumpWidget to handle.
+      //    attempt three NTS-KE handshakes alongside the two fake
+      //    samples. The bounded 30 s timeout surfaces a wedged
+      //    handshake as a test failure rather than an indefinite
+      //    hang.
+      //  - refreshInterval is set to 1 hour so even after a
+      //    successful bootstrap the automatic refresh timer cannot
+      //    fire during the test body, eliminating one more source of
+      //    pending async work for pumpWidget to deal with.
+      //  - addTearDown also pauses automatic refresh as belt-and-
+      //    braces in case a future change to the test makes the
+      //    bootstrap take longer than the test body.
       TrustedTime.resetOverride();
       addTearDown(TrustedTime.resetOverride);
 
@@ -169,20 +215,46 @@ void main() {
 
       await tester.runAsync(() async {
         await TrustedTime.initialize(
-          config: const TrustedTimeConfig(
-            ntpServers: [],
-            httpsSources: [],
+          config: TrustedTimeConfig(
+            ntpServers: const [],
+            httpsSources: const [],
             ntsServers: requested,
+            // Two distinct group ids so MarzulloEngine treats them as
+            // independent samples and consensus is reachable on the
+            // bootstrap cycle even when ntsServers is stripped to []
+            // by the RustLib-unavailable path.
+            additionalSources: [
+              _FakeTimeSource(id: 'fake:a', groupId: 'fake-a'),
+              _FakeTimeSource(id: 'fake:b', groupId: 'fake-b'),
+            ],
             minimumQuorum: 2,
-            minQuorumRatio: 0.4,
-            // Long enough that the bootstrap retry timer cannot fire
-            // during the test body, eliminating one source of pending
-            // async work for pumpWidget to deal with.
-            refreshInterval: Duration(hours: 1),
+            // Ratio 1.0 over 2 sources lifts MarzulloEngine's
+            // requiredQuorum to 2 (ceil(2 * 1.0) == 2). The default
+            // 0.4 used by the production benchmarking code would
+            // produce ceil(2 * 0.4) == 1, which trips the engine's
+            // hard "requiredQuorum < 2 → return null" floor and
+            // reproduces exactly the failure mode this test is
+            // trying to avoid. With three or more real sources the
+            // 0.4 ratio reaches 2 naturally; we use a tighter ratio
+            // here purely to satisfy the floor with two fakes.
+            minQuorumRatio: 1.0,
+            // Long enough that the automatic refresh timer cannot
+            // fire during the test body, eliminating one source of
+            // pending async work for pumpWidget to deal with.
+            refreshInterval: const Duration(hours: 1),
             persistState: false,
           ),
         );
       });
+      // Belt-and-braces: even if a future change to the test ever
+      // makes the bootstrap fail (e.g. network-only sources added
+      // back without a fake), pausing the automatic refresh and
+      // setting the interval to zero ensure no scheduled work
+      // outlives the test. The retry timer is not affected by these
+      // calls (see TrustedTime.pauseAutomaticRefresh docs), but
+      // additionalSources above is what actually keeps the retry
+      // timer from being scheduled in the first place.
+      addTearDown(TrustedTime.pauseAutomaticRefresh);
 
       final activeServers = TrustedTime.config.ntsServers.toSet();
 
