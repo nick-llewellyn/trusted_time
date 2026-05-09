@@ -329,7 +329,14 @@ final class TrustedTimeImpl {
   }
 
   void _scheduleRefresh() {
+    // Always null out alongside cancel() so the field never retains a
+    // reference to a cancelled Timer across the early-return paths
+    // below. Mirrors pauseAutomaticRefresh's cancel/null pairing and
+    // keeps "is _refreshTimer null?" a reliable signal of whether a
+    // live timer is armed (used by introspection in tests / future
+    // diagnostics).
     _refreshTimer?.cancel();
+    _refreshTimer = null;
     if (_automaticRefreshPaused) return;
     if (_activeRefreshInterval <= Duration.zero) return;
     _refreshTimer = Timer(_activeRefreshInterval, _performSync);
@@ -380,8 +387,14 @@ final class TrustedTimeImpl {
   /// active interval. Calling this while already enabled therefore
   /// pushes the next-refresh deadline out — safe to call repeatedly
   /// without raising, but the deadline is not invariant. Use
-  /// [automaticRefreshActive] to gate calls when that matters. No-op
-  /// if the active interval is non-positive.
+  /// [automaticRefreshActive] to gate calls when that matters.
+  ///
+  /// The internal pause flag is always cleared, but if the active
+  /// interval is non-positive (i.e. the schedule was last set via
+  /// [setRefreshInterval] with [Duration.zero] or a negative value)
+  /// no timer is scheduled — clearing the flag has no observable
+  /// effect until [setRefreshInterval] is called with a positive
+  /// duration.
   void resumeAutomaticRefresh() {
     _automaticRefreshPaused = false;
     _scheduleRefresh();
