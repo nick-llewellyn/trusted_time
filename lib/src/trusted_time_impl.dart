@@ -108,9 +108,11 @@ final class TrustedTimeImpl {
   /// Exposed so callers can verify the live engine settings (server
   /// pool, quorum thresholds, refresh interval, etc.) without
   /// shadowing the configuration on the call site. The returned
-  /// instance is the same immutable object passed to [init], so
-  /// reading list-typed fields like [TrustedTimeConfig.ntsServers]
-  /// is safe across isolates and event loops.
+  /// instance is the same object passed to [init]; reading
+  /// list-typed fields like [TrustedTimeConfig.ntsServers] is safe
+  /// without defensive copying as long as the caller honours
+  /// [TrustedTimeConfig]'s "do not mutate after construction"
+  /// contract.
   TrustedTimeConfig get config => _config;
 
   /// Whether the current trust anchor is cryptographically secure.

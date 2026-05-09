@@ -197,9 +197,19 @@ abstract final class TrustedTime {
   /// Useful for verifying the active server pool, quorum thresholds,
   /// and refresh interval at runtime — for example, to confirm in a
   /// benchmarking UI that the chip-grid selection matches the live
-  /// engine configuration. The returned object is the same immutable
-  /// instance that was passed to [initialize]; reading list-typed
-  /// fields is safe across isolates.
+  /// engine configuration.
+  ///
+  /// The returned object is typically the same instance that was
+  /// passed to [initialize], but [initialize] may normalise it before
+  /// handing it to the engine — most notably by stripping
+  /// [TrustedTimeConfig.ntsServers] when the underlying NTS runtime
+  /// fails to load — so do not rely on
+  /// `identical(TrustedTime.config, suppliedConfig)` holding.
+  ///
+  /// Reading list-typed fields is safe to do without defensive
+  /// copying as long as the caller does not mutate the lists they
+  /// passed to [initialize]; see [TrustedTimeConfig] for the
+  /// immutability contract.
   ///
   /// Under a test override returns a default [TrustedTimeConfig] so
   /// callers do not need to special-case the mocked path.

@@ -30,6 +30,22 @@ enum ConfidenceLevel {
 ///
 /// This class defines the behavioral policy of the engine, including quorum
 /// requirements, security thresholds, and background synchronization intervals.
+///
+/// ## Mutability contract
+///
+/// [TrustedTimeConfig] is annotated `@immutable` and its scalar
+/// fields are `final`. The list-typed fields ([ntpServers],
+/// [httpsSources], [ntsServers], [additionalSources]) are stored by
+/// reference for `const`-constructibility — the canonical
+/// production usage is to pass `const`-list literals, which are
+/// already deeply immutable.
+///
+/// Callers that construct a non-`const` [TrustedTimeConfig] from
+/// growable lists **must not mutate those lists after construction**.
+/// Doing so will silently break the value-equality and `hashCode`
+/// contracts (potentially corrupting any [Set] or [Map] keyed on
+/// the config) and will make the live engine config drift from the
+/// snapshot returned by [TrustedTime.config].
 final class TrustedTimeConfig {
   /// Creates a new configuration instance with sensible production defaults.
   const TrustedTimeConfig({
