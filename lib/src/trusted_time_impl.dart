@@ -94,6 +94,18 @@ final class TrustedTimeImpl {
   int? _offlineLastUtcMs;
   int? _offlineLastWallMs;
 
+  // Runtime-mutable refresh schedule. Distinct from
+  // [TrustedTimeConfig.refreshInterval] which captures the at-init
+  // value and is never mutated. [_activeRefreshInterval] is what
+  // [_scheduleRefresh] actually uses; consumers can override it via
+  // [setRefreshInterval] without re-initialising the engine.
+  // [_automaticRefreshPaused] suppresses the timer entirely
+  // regardless of the interval value. Both default to a fresh-start
+  // configuration on every [init] (pause state is intentionally not
+  // persisted across re-init).
+  late Duration _activeRefreshInterval = _config.refreshInterval;
+  bool _automaticRefreshPaused = false;
+
   /// Documented.
   Stream<IntegrityEvent> get onIntegrityLost => _monitor.events;
 
@@ -318,7 +330,70 @@ final class TrustedTimeImpl {
 
   void _scheduleRefresh() {
     _refreshTimer?.cancel();
-    _refreshTimer = Timer(_config.refreshInterval, _performSync);
+    if (_automaticRefreshPaused) return;
+    if (_activeRefreshInterval <= Duration.zero) return;
+    _refreshTimer = Timer(_activeRefreshInterval, _performSync);
+  }
+
+  /// Whether the engine's automatic refresh timer is currently
+  /// driving periodic sync cycles.
+  ///
+  /// Returns `false` when [pauseAutomaticRefresh] has been called or
+  /// when [setRefreshInterval] was called with a non-positive
+  /// duration. Note that the engine may still run sync cycles
+  /// triggered by [forceResync], integrity events, or background
+  /// platform schedulers when this is `false`.
+  bool get automaticRefreshActive =>
+      !_automaticRefreshPaused && _activeRefreshInterval > Duration.zero;
+
+  /// The currently active refresh interval used by the automatic
+  /// refresh timer.
+  ///
+  /// Defaults to [TrustedTimeConfig.refreshInterval] but may be
+  /// overridden at runtime via [setRefreshInterval]. The original
+  /// at-init value remains accessible via [config].
+  Duration get activeRefreshInterval => _activeRefreshInterval;
+
+  /// Pauses the automatic refresh timer.
+  ///
+  /// Cancels any pending refresh and prevents subsequent successful
+  /// syncs from re-arming it. Idempotent. Does not affect the retry
+  /// timer (recovery from a failed sync still proceeds) or
+  /// integrity-event-driven syncs.
+  void pauseAutomaticRefresh() {
+    _automaticRefreshPaused = true;
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
+  }
+
+  /// Resumes the automatic refresh timer using the active interval
+  /// (see [activeRefreshInterval]).
+  ///
+  /// Schedules the next refresh from the time of the call. Idempotent
+  /// when already running. No-op if the active interval is
+  /// non-positive.
+  void resumeAutomaticRefresh() {
+    _automaticRefreshPaused = false;
+    _scheduleRefresh();
+  }
+
+  /// Replaces the active refresh interval at runtime.
+  ///
+  /// The next refresh is scheduled for [interval] from the time of
+  /// the call (any pending refresh is cancelled and re-armed). An
+  /// [interval] of [Duration.zero] (or negative) is equivalent to
+  /// [pauseAutomaticRefresh] — the timer is cancelled and not
+  /// re-armed until [setRefreshInterval] is called again with a
+  /// positive duration or [resumeAutomaticRefresh] is called (which
+  /// re-arms with the most recent positive interval).
+  void setRefreshInterval(Duration interval) {
+    if (interval <= Duration.zero) {
+      pauseAutomaticRefresh();
+      return;
+    }
+    _activeRefreshInterval = interval;
+    _automaticRefreshPaused = false;
+    _scheduleRefresh();
   }
 
   void _scheduleRetry() {

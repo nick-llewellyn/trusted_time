@@ -211,6 +211,137 @@ void main() {
     });
   });
 
+  group('TrustedTime refresh schedule control', () {
+    // Live-engine tests; tear down any leftover override from earlier
+    // groups so the static surface drops into the real
+    // TrustedTimeImpl singleton.
+    tearDown(TrustedTime.resetOverride);
+
+    Future<void> initEmpty() => TrustedTime.initialize(
+      config: const TrustedTimeConfig(
+        ntpServers: [],
+        httpsSources: [],
+        ntsServers: [],
+        persistState: false,
+        refreshInterval: Duration(minutes: 5),
+      ),
+    );
+
+    test('automaticRefreshActive is true after a fresh initialize', () async {
+      await initEmpty();
+      expect(TrustedTime.automaticRefreshActive, isTrue);
+    });
+
+    test(
+      'pauseAutomaticRefresh flips automaticRefreshActive to false; '
+      'resumeAutomaticRefresh restores it',
+      () async {
+        await initEmpty();
+
+        TrustedTime.pauseAutomaticRefresh();
+        expect(TrustedTime.automaticRefreshActive, isFalse);
+
+        // Idempotent.
+        TrustedTime.pauseAutomaticRefresh();
+        expect(TrustedTime.automaticRefreshActive, isFalse);
+
+        TrustedTime.resumeAutomaticRefresh();
+        expect(TrustedTime.automaticRefreshActive, isTrue);
+
+        // Idempotent.
+        TrustedTime.resumeAutomaticRefresh();
+        expect(TrustedTime.automaticRefreshActive, isTrue);
+      },
+    );
+
+    test(
+      'setRefreshInterval(Duration.zero) is equivalent to '
+      'pauseAutomaticRefresh',
+      () async {
+        await initEmpty();
+
+        TrustedTime.setRefreshInterval(Duration.zero);
+        expect(TrustedTime.automaticRefreshActive, isFalse);
+
+        // resumeAutomaticRefresh re-arms with the most recent positive
+        // interval (the at-init default in this case, since
+        // setRefreshInterval(Duration.zero) does not overwrite the
+        // active interval — see TrustedTimeImpl.setRefreshInterval).
+        TrustedTime.resumeAutomaticRefresh();
+        expect(TrustedTime.automaticRefreshActive, isTrue);
+      },
+    );
+
+    test(
+      'setRefreshInterval with a positive value also resumes from a '
+      'paused state',
+      () async {
+        await initEmpty();
+
+        TrustedTime.pauseAutomaticRefresh();
+        expect(TrustedTime.automaticRefreshActive, isFalse);
+
+        TrustedTime.setRefreshInterval(const Duration(seconds: 10));
+        expect(TrustedTime.automaticRefreshActive, isTrue);
+      },
+    );
+
+    test(
+      'TrustedTime.config still reports the at-init refreshInterval after '
+      'setRefreshInterval mutates the active value',
+      () async {
+        // Pinning the contract that config is a snapshot of init-time
+        // values; the runtime-mutable interval is intentionally not
+        // exposed via [config] (preserves backwards compatibility for
+        // consumers reading config.refreshInterval to display the
+        // configured cadence).
+        await initEmpty();
+
+        TrustedTime.setRefreshInterval(const Duration(seconds: 7));
+
+        expect(
+          TrustedTime.config.refreshInterval,
+          const Duration(minutes: 5),
+        );
+      },
+    );
+
+    test('pause state does not persist across re-initialize', () async {
+      await initEmpty();
+      TrustedTime.pauseAutomaticRefresh();
+      expect(TrustedTime.automaticRefreshActive, isFalse);
+
+      await initEmpty();
+      expect(
+        TrustedTime.automaticRefreshActive,
+        isTrue,
+        reason:
+            're-init must give a fresh schedule; consumers that want to '
+            'preserve the paused state should re-call '
+            'pauseAutomaticRefresh after initialize',
+      );
+    });
+
+    test(
+      'pause/resume/setRefreshInterval are no-ops under a test override',
+      () async {
+        final mock = TrustedTimeMock(initial: DateTime.utc(2024, 6, 15, 12));
+        addTearDown(mock.dispose);
+        TrustedTime.overrideForTesting(mock);
+
+        // Should not throw, and should not interact with any
+        // TrustedTimeImpl singleton (none exists in this group yet).
+        expect(() => TrustedTime.pauseAutomaticRefresh(), returnsNormally);
+        expect(() => TrustedTime.resumeAutomaticRefresh(), returnsNormally);
+        expect(
+          () => TrustedTime.setRefreshInterval(const Duration(minutes: 1)),
+          returnsNormally,
+        );
+        expect(TrustedTime.automaticRefreshActive, isFalse);
+      },
+    );
+  });
+
   group('TrustedTimeConfig value equality', () {
     test('two non-const instances with identical fields compare equal', () {
       // `new TrustedTimeConfig(...)` (without `const`) defeats Dart's

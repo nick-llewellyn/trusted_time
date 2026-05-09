@@ -343,6 +343,60 @@ abstract final class TrustedTime {
     return TrustedTimeImpl.instance.enableBackgroundSync(interval);
   }
 
+  /// Whether the engine's automatic refresh timer is currently
+  /// driving periodic sync cycles.
+  ///
+  /// Returns `false` when [pauseAutomaticRefresh] has been called or
+  /// when [setRefreshInterval] was called with a non-positive
+  /// duration. Sync cycles triggered by [forceResync], integrity
+  /// events, or background platform schedulers still run while this
+  /// is `false`.
+  static bool get automaticRefreshActive {
+    if (_override != null) return false;
+    return TrustedTimeImpl.instance.automaticRefreshActive;
+  }
+
+  /// Pauses the engine's automatic refresh timer.
+  ///
+  /// Cancels any pending refresh and prevents subsequent successful
+  /// syncs from re-arming it. Use this when an application-level
+  /// scheduler wants to drive sync cadence directly via
+  /// [forceResync] without contention from the library's internal
+  /// timer (benchmarking harnesses, deterministic test harnesses,
+  /// battery-sensitive consumers that schedule their own checks).
+  ///
+  /// Idempotent. Resume with [resumeAutomaticRefresh] or by calling
+  /// [setRefreshInterval] with a positive duration.
+  static void pauseAutomaticRefresh() {
+    if (_override != null) return;
+    TrustedTimeImpl.instance.pauseAutomaticRefresh();
+  }
+
+  /// Resumes the automatic refresh timer using the active interval
+  /// (see [setRefreshInterval]; defaults to the
+  /// [TrustedTimeConfig.refreshInterval] passed to [initialize]).
+  ///
+  /// Schedules the next refresh for the active interval from the
+  /// time of the call. Idempotent when already running.
+  static void resumeAutomaticRefresh() {
+    if (_override != null) return;
+    TrustedTimeImpl.instance.resumeAutomaticRefresh();
+  }
+
+  /// Replaces the automatic refresh interval at runtime without
+  /// requiring a full [initialize] call.
+  ///
+  /// The next refresh is scheduled for [interval] from the time of
+  /// the call. An [interval] of [Duration.zero] (or negative) is
+  /// equivalent to [pauseAutomaticRefresh].
+  ///
+  /// The original at-init value remains accessible via
+  /// [TrustedTime.config].
+  static void setRefreshInterval(Duration interval) {
+    if (_override != null) return;
+    TrustedTimeImpl.instance.setRefreshInterval(interval);
+  }
+
   /// Returns trusted local time in the specified IANA timezone.
   ///
   /// Converts the trusted UTC time to the target timezone using the
