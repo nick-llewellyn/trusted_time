@@ -282,6 +282,14 @@ final class TrustedTimeImpl {
     final completer = Completer<void>();
     _syncInProgress = completer;
     _retryTimer?.cancel();
+    // Cancel any pending automatic refresh as well: without this, a
+    // _refreshTimer armed by a prior successful cycle could fire
+    // moments after this cycle completes — the in-flight guard above
+    // only catches overlap, not the "stale refresh fires shortly
+    // after manual sync clears the guard" case. _scheduleRefresh in
+    // the success branch re-arms a fresh window from this cycle's
+    // completion.
+    _refreshTimer?.cancel();
     try {
       final anchor = await _syncEngine.sync();
       _applyAnchor(anchor);
