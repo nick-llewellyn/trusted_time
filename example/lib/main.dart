@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:nts/nts.dart' show NtsDnsPoolStats, ntsDnsPoolStats;
 import 'package:trusted_time/trusted_time.dart';
@@ -429,6 +430,7 @@ class _HomePageState extends State<HomePage> {
     // forceResync against the engine instance we are about to dispose.
     _cancelInterCycleTimer();
     setState(() => _reconfiguring = true);
+    var failed = false;
     try {
       final shuffled =
           (List<String>.of(servers)..shuffle(Random())).toList(growable: false);
@@ -453,9 +455,40 @@ class _HomePageState extends State<HomePage> {
       if (_continuousSyncEnabled) {
         TrustedTime.pauseAutomaticRefresh();
       }
+    } catch (e, s) {
+      // Centralised catch so a failed re-init cannot bubble up as an
+      // unhandled async error from any of this method's call sites
+      // (manual Apply Selection, Run Worldwide press, or the
+      // unawaited _scheduleRotationAdvance step). Keeping the
+      // recovery here rather than at every .catchError site means
+      // the rotation/continuous-flag teardown is identical across
+      // entry points.
+      failed = true;
+      if (kDebugMode) {
+        debugPrint('[example] TrustedTime.initialize failed: $e\n$s');
+      }
+      widget.telemetry.logReconfigureFailure(e.toString());
+      if (mounted) {
+        // Stop the rotation loop and continuous mode so a
+        // persistently-failing config doesn't spin forever firing
+        // the same failure on every advance. The operator can
+        // re-arm by pressing Apply Selection or Run Worldwide
+        // again with a different chip set.
+        setState(() {
+          _worldwideRotationActive = false;
+          _continuousSyncEnabled = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Reconfigure failed: $e'),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
     } finally {
       if (mounted) setState(() => _reconfiguring = false);
     }
+    if (failed) return;
     // Anchor the rotation clock to reconfigure-completion. This must
     // run after _reconfiguring is cleared so the schedule check
     // inside _scheduleRotationAdvance does not bail out.
@@ -679,6 +712,15 @@ class _HomePageState extends State<HomePage> {
                   });
                 },
                 onToggleContinuous: (val) {
+                  // Defence in depth: the SwitchListTile passes
+                  // null to onChanged while _reconfiguring (see
+                  // _BenchmarkingPanel) so the user can't fire this
+                  // path during a re-init window. Re-check here to
+                  // keep the contract enforced even if the parent
+                  // forgets to wire the disable, since the body
+                  // calls into TrustedTime methods that would hit a
+                  // disposed engine instance during initialize().
+                  if (_reconfiguring) return;
                   setState(() {
                     _continuousSyncEnabled = val;
                     if (!val) {
@@ -1146,7 +1188,12 @@ class _BenchmarkingPanel extends StatelessWidget {
             style: const TextStyle(fontSize: 12),
           ),
           value: continuousEnabled,
-          onChanged: onToggleContinuous,
+          // Disabled mid-reconfigure: the toggle handler calls
+          // TrustedTime.pauseAutomaticRefresh() / forceResync(),
+          // both of which would hit the previous engine instance
+          // mid-dispose during initialize(). The handler itself
+          // also re-checks _reconfiguring as belt-and-braces.
+          onChanged: reconfiguring ? null : onToggleContinuous,
         ),
         const SizedBox(height: 4),
         // Inter-cycle delay slider — investigative knob to avoid

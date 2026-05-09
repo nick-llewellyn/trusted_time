@@ -125,6 +125,20 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
     _add(TelemetryKind.dnsStats, detail);
   }
 
+  /// Records a [TelemetryKind.syncFailed] entry tagged
+  /// `reconfigure: <detail>` so a re-init failure inside
+  /// [TrustedTime.initialize] (called by the benchmarking UI's
+  /// reconfigure path) is visible in the same terminal/log stream as
+  /// SyncObserver-reported failures. The `reconfigure: ` prefix
+  /// mirrors the engine's own `warm: ` convention for warming-phase
+  /// failures, keeping all error rows visually grouped under the
+  /// `syncFailed` kind. Does not call any cycle-end listeners — a
+  /// reconfigure failure means the rotation loop should stop, not
+  /// schedule another advance.
+  void logReconfigureFailure(String detail) {
+    _add(TelemetryKind.syncFailed, 'reconfigure: $detail');
+  }
+
   void _add(TelemetryKind kind, String detail) {
     final event = TelemetryEvent(
       elapsedMs: _start.elapsedMilliseconds,
