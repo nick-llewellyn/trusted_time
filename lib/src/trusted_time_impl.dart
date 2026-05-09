@@ -335,14 +335,17 @@ final class TrustedTimeImpl {
     _refreshTimer = Timer(_activeRefreshInterval, _performSync);
   }
 
-  /// Whether the engine's automatic refresh timer is currently
-  /// driving periodic sync cycles.
+  /// Whether automatic refresh is currently enabled.
   ///
-  /// Returns `false` when [pauseAutomaticRefresh] has been called or
-  /// when [setRefreshInterval] was called with a non-positive
-  /// duration. Note that the engine may still run sync cycles
-  /// triggered by [forceResync], integrity events, or background
-  /// platform schedulers when this is `false`.
+  /// Reflects the schedule's intent — `false` when
+  /// [pauseAutomaticRefresh] has been called or when
+  /// [setRefreshInterval] was called with a non-positive duration —
+  /// not whether [_refreshTimer] is armed at this exact moment. The
+  /// refresh timer is only re-armed by [_scheduleRefresh] in the
+  /// success branch of [_performSync], so this getter can return
+  /// `true` while no timer is yet pending (post-init pre-bootstrap,
+  /// or in the recovery window after a failed sync where only the
+  /// retry timer is armed).
   bool get automaticRefreshActive =>
       !_automaticRefreshPaused && _activeRefreshInterval > Duration.zero;
 

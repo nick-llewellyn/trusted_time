@@ -343,14 +343,20 @@ abstract final class TrustedTime {
     return TrustedTimeImpl.instance.enableBackgroundSync(interval);
   }
 
-  /// Whether the engine's automatic refresh timer is currently
-  /// driving periodic sync cycles.
+  /// Whether automatic refresh is currently enabled.
   ///
-  /// Returns `false` when [pauseAutomaticRefresh] has been called or
-  /// when [setRefreshInterval] was called with a non-positive
-  /// duration. Sync cycles triggered by [forceResync], integrity
-  /// events, or background platform schedulers still run while this
-  /// is `false`.
+  /// Reflects the library's intent — `false` when
+  /// [pauseAutomaticRefresh] has been called or when
+  /// [setRefreshInterval] was called with a non-positive duration —
+  /// not whether a [Timer] object is armed at this exact moment. The
+  /// refresh timer is only re-armed at the end of a successful sync
+  /// cycle, so this getter can return `true` while no timer is yet
+  /// pending (e.g. after a fresh [initialize] before the bootstrap
+  /// sync has completed, or in the recovery window after a failed
+  /// sync where only the retry timer is armed).
+  ///
+  /// Sync cycles triggered by [forceResync], integrity events, or
+  /// background platform schedulers still run while this is `false`.
   static bool get automaticRefreshActive {
     if (_override != null) return false;
     return TrustedTimeImpl.instance.automaticRefreshActive;
@@ -376,8 +382,13 @@ abstract final class TrustedTime {
   /// (see [setRefreshInterval]; defaults to the
   /// [TrustedTimeConfig.refreshInterval] passed to [initialize]).
   ///
-  /// Schedules the next refresh for the active interval from the
-  /// time of the call. Idempotent when already running.
+  /// Always reschedules the next refresh from the time of the call:
+  /// any pending refresh timer is cancelled and re-armed for the
+  /// active interval. Calling this while already enabled therefore
+  /// pushes the next refresh out — safe to call repeatedly without
+  /// raising, but not idempotent in the sense that the next-refresh
+  /// deadline is invariant. Use [automaticRefreshActive] to gate
+  /// calls when that matters.
   static void resumeAutomaticRefresh() {
     if (_override != null) return;
     TrustedTimeImpl.instance.resumeAutomaticRefresh();
