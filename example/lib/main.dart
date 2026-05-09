@@ -1209,13 +1209,21 @@ class _RotationStatusLine extends StatelessWidget {
   Widget build(BuildContext context) {
     final endExclusive = offset + subsetSize;
     final wraps = endExclusive > poolSize;
-    final lastIncl = wraps
-        ? '${poolSize - 1} + ${endExclusive % poolSize - 1}'
-        : '${endExclusive - 1}';
+    // Match the wrap-aware slice-label format used for DNS deltas
+    // (see _logSliceDnsDeltaIfAvailable in main.dart) so the
+    // operator sees the same '76-80, 0-2' shape on screen and in
+    // the session log when a slice straddles the pool boundary.
+    final String hostsLabel;
+    if (wraps) {
+      final wrapEnd = endExclusive % poolSize - 1;
+      hostsLabel = '$offset–${poolSize - 1}, 0–$wrapEnd';
+    } else {
+      hostsLabel = '$offset–${endExclusive - 1}';
+    }
     final cyclesPerPass = (poolSize / subsetSize).ceil();
     final currentCycle = (offset / subsetSize).floor() + 1;
     return Text(
-      'Rotation: hosts $offset–$lastIncl '
+      'Rotation: hosts $hostsLabel '
       '(cycle $currentCycle / $cyclesPerPass per pass)',
       style: TextStyle(
         fontSize: 11,

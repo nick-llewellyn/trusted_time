@@ -53,7 +53,25 @@ class BenchmarkLogger {
 
     _writeHeader();
     _unsubscribe = recorder.addEventListener(_writeEvent);
-    _flushTimer = Timer.periodic(_flushInterval, (_) => _sink?.flush());
+    // IOSink.flush returns a Future; the Timer.periodic callback
+    // is `void Function(Timer)`, so without the wrapper the
+    // returned future is dropped and any flush failure (disk full,
+    // permission denied) propagates to the zone as an unhandled
+    // async exception. Swallow with a debug-only log: data lost in
+    // a flush still sits in the IOSink's internal buffer for the
+    // next flush cycle, and a final flush in dispose() catches
+    // anything still pending at shutdown.
+    _flushTimer = Timer.periodic(_flushInterval, (_) {
+      final sink = _sink;
+      if (sink == null) return;
+      unawaited(
+        sink.flush().catchError((Object e, StackTrace s) {
+          if (kDebugMode) {
+            debugPrint('[BenchmarkLogger] periodic flush failed: $e\n$s');
+          }
+        }),
+      );
+    });
   }
 
   /// Detaches from the recorder, flushes any buffered output, and

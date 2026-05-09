@@ -118,8 +118,22 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
     // its disposer (which mutates _listeners via List.remove) cannot
     // throw ConcurrentModificationError mid-fanout. Mirrors the same
     // guard already in _notifyCycleEnded; closes trusted_time-dmc.
+    //
+    // Per-listener try/catch so a thrower (e.g. BenchmarkLogger
+    // hitting a disk-full / permission-denied condition) cannot
+    // abort the rest of the fan-out and bubble up through the
+    // SyncObserver callbacks into the engine. In debug builds we
+    // surface the failure via debugPrint so the cause is visible
+    // during local development; in release builds we swallow
+    // silently because telemetry recording is best-effort.
     for (final l in List<void Function(TelemetryEvent)>.of(_listeners)) {
-      l(event);
+      try {
+        l(event);
+      } catch (e, s) {
+        if (kDebugMode) {
+          debugPrint('[TelemetryRecorder] listener threw on event $event: $e\n$s');
+        }
+      }
     }
     // Mirror to the Flutter console using the same single-line layout
     // that _TelemetryRow renders, so terminal logs can be copy-pasted
@@ -204,9 +218,21 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
 
   void _notifyCycleEnded() {
     // Snapshot to a local list so a listener that disposes itself
-    // mid-iteration cannot mutate the list we're walking.
+    // mid-iteration cannot mutate the list we're walking. Per-
+    // listener try/catch matches the _add fan-out so a thrower
+    // cannot abort delivery to its peers; cycle-end listeners are
+    // wired into application-level scheduling (see Section 7's
+    // continuous-sync hook in main.dart) and a thrown exception
+    // here would propagate out through the SyncObserver callback
+    // that triggered the cycle-end and into engine code.
     for (final l in List<void Function()>.of(_cycleListeners)) {
-      l();
+      try {
+        l();
+      } catch (e, s) {
+        if (kDebugMode) {
+          debugPrint('[TelemetryRecorder] cycle-end listener threw: $e\n$s');
+        }
+      }
     }
   }
 }
