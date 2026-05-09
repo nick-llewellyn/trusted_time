@@ -1,5 +1,6 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
 
 void main() {
@@ -151,6 +152,10 @@ void main() {
             persistState: false,
           ),
         );
+        // Cancel the engine's retry timer at teardown so the failed
+        // bootstrap (no-quorum) can't fire a stray _performSync into
+        // a sibling test in this suite.
+        addTearDown(TrustedTimeImpl.instance.dispose);
 
         final probe = _SyncStartedProbe();
         TrustedTime.registerObserver(probe);
@@ -185,6 +190,7 @@ void main() {
         );
 
         await TrustedTime.initialize(config: config);
+        addTearDown(TrustedTimeImpl.instance.dispose);
 
         expect(identical(TrustedTime.config, config), isTrue);
         expect(TrustedTime.config.refreshInterval, const Duration(minutes: 7));

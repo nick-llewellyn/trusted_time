@@ -132,9 +132,20 @@ final class SyncEngine {
       return until == null || now.isAfter(until);
     }).toList();
     if (activeSources.isEmpty) {
-      final emptyError = TrustedTimeSyncException(
-        'All available time sources are currently in exponential cooldown due to persistent failures.',
-      );
+      // Distinguish "no sources configured" from "all sources in
+      // cooldown" so the surfaced error is actionable. Both collapse
+      // to the same fast-path here, but the operator's next step is
+      // very different — adding sources vs. waiting for the
+      // exponential cooldown to expire.
+      final emptyError = _sources.isEmpty
+          ? const TrustedTimeSyncException(
+              'No time sources are configured: ntpServers, httpsSources, '
+              'ntsServers, and additionalSources are all empty.',
+            )
+          : const TrustedTimeSyncException(
+              'All configured time sources are currently in exponential '
+              'cooldown due to persistent failures.',
+            );
       _markSyncFailed(emptyError);
       throw emptyError;
     }

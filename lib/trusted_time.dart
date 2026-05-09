@@ -111,11 +111,22 @@ abstract final class TrustedTime {
       try {
         await nts.RustLib.init();
       } catch (e) {
+        // Detect "already initialised" loosely: any StateError whose
+        // message references flutter_rust_bridge. The exact phrase
+        // "Should not initialize flutter_rust_bridge twice" is the
+        // current upstream wording but is not part of any public API
+        // contract; matching just the package name is robust to
+        // wording / capitalisation drift across frb releases while
+        // still narrow enough not to swallow unrelated StateErrors
+        // from other code paths. If frb starts throwing StateError
+        // for genuinely new structural failures we will need to
+        // revisit, but the failure mode of an unrecognised double-
+        // init (silently disabling NTS) is significantly worse than
+        // the failure mode of an unrecognised real error (the engine
+        // will surface it at first NTS use).
+        final message = e is StateError ? e.message : '';
         final alreadyInitialised =
-            e is StateError &&
-            e.message.contains(
-              'Should not initialize flutter_rust_bridge twice',
-            );
+            e is StateError && message.contains('flutter_rust_bridge');
         if (!alreadyInitialised) {
           if (kDebugMode) {
             debugPrint('[TrustedTime] NTS disabled — RustLib.init failed: $e');
