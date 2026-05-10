@@ -116,6 +116,13 @@ class _HomePageState extends State<HomePage> {
   int _interCycleDelaySeconds = 5;
   Timer? _interCycleTimer;
   VoidCallback? _cycleEndDisposer;
+  // Stored so the Section 2 forensics subscription can be cancelled
+  // in dispose(). Without an explicit cancel the broadcast stream
+  // keeps the listener alive for the lifetime of the engine, which
+  // outlives this widget on hot reload / nested-Navigator pop /
+  // any future scenario that swaps the home page out — and the
+  // listener body calls setState, which throws after dispose.
+  StreamSubscription<IntegrityEvent>? _integritySub;
 
   // Worldwide Beauty Parade rotation state. When [_worldwideRotationActive]
   // is true, every cycle-end advances [_worldwideRotationOffset] by
@@ -181,8 +188,16 @@ class _HomePageState extends State<HomePage> {
       });
     });
 
-    // Section 2: Forensics subscription.
-    TrustedTime.onIntegrityLost.listen((event) {
+    // Section 2: Forensics subscription. Stored for cancellation in
+    // dispose() so a late event (broadcast streams keep emitting for
+    // the lifetime of the engine, which outlives this widget on hot
+    // reload or any nested-Navigator scenario) cannot fire setState
+    // after the State has been torn down. The mounted guard inside
+    // the callback is belt-and-braces for the window between event
+    // emission and the cancel propagating through the broadcast
+    // stream's internal scheduler.
+    _integritySub = TrustedTime.onIntegrityLost.listen((event) {
+      if (!mounted) return;
       setState(() {
         _lastEvent = event;
       });
@@ -241,8 +256,25 @@ class _HomePageState extends State<HomePage> {
       _interCycleTimer = null;
       if (!mounted) return;
       if (!_continuousSyncEnabled || _reconfiguring) return;
-      unawaited(TrustedTime.forceResync());
+      _forceResyncSafely();
     });
+  }
+
+  /// Fire-and-forget [TrustedTime.forceResync] for the cycle-end and
+  /// continuous-toggle paths. Sync failures already surface through
+  /// the SyncObserver fan-out (TelemetryRecorder records them as
+  /// `syncFailed` events for both the on-screen terminal and the
+  /// persisted session log), so swallowing them here only prevents
+  /// the otherwise-redundant unhandled async error from escaping to
+  /// the zone. debugPrint preserves the trace for local development.
+  void _forceResyncSafely() {
+    unawaited(
+      TrustedTime.forceResync().catchError((Object e, StackTrace s) {
+        if (kDebugMode) {
+          debugPrint('[example] forceResync failed: $e\n$s');
+        }
+      }),
+    );
   }
 
   /// Schedules the next rotation advance, called from
@@ -329,6 +361,8 @@ class _HomePageState extends State<HomePage> {
     _cancelInterCycleTimer();
     _cycleEndDisposer?.call();
     _ticker?.cancel();
+    unawaited(_integritySub?.cancel());
+    _integritySub = null;
     _tzController.dispose();
     unawaited(_benchmarkLogger.dispose());
     super.dispose();
@@ -741,7 +775,7 @@ class _HomePageState extends State<HomePage> {
                     TrustedTime.pauseAutomaticRefresh();
                     // Kick the loop immediately rather than waiting
                     // for the slider's first inter-cycle delay.
-                    unawaited(TrustedTime.forceResync());
+                    _forceResyncSafely();
                   } else {
                     // Restore the engine's automatic cadence so a
                     // long-idle app still refreshes its anchor.
