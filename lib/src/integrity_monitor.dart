@@ -164,9 +164,18 @@ final class IntegrityMonitor {
   ///
   /// A reboot is confirmed if the current hardware uptime is less than the
   /// uptime recorded when the cached anchor was established.
-  Future<bool> checkRebootOnWarmStart(TrustAnchor previousAnchor) async {
+  ///
+  /// Returns the reboot verdict alongside the freshly-sampled uptime so
+  /// that callers can reuse it (e.g., to compute the elapsed-time gap on
+  /// warm restore) without issuing a second platform-channel call.
+  Future<({bool rebooted, int currentUptimeMs})> checkRebootOnWarmStart(
+    TrustAnchor previousAnchor,
+  ) async {
     final currentUptime = await _clock.uptimeMs();
-    return currentUptime < previousAnchor.uptimeMs;
+    return (
+      rebooted: currentUptime < previousAnchor.uptimeMs,
+      currentUptimeMs: currentUptime,
+    );
   }
 
   void _emit(IntegrityEvent event) {

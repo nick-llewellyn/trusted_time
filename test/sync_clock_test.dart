@@ -58,5 +58,61 @@ void main() {
       expect(clock.lastWallMs, 0);
       expect(clock.elapsedSinceAnchorMs(), 0);
     });
+
+    test('initialElapsedMs seeds elapsed time for warm-restore gap', () {
+      // Regression for trusted_time-e9m: a persisted anchor restored
+      // 90s after capture must report ~90s of elapsed time, not 0s.
+      clock.update(
+        1000,
+        DateTime.now().millisecondsSinceEpoch,
+        initialElapsedMs: 90000,
+      );
+
+      final elapsed = clock.elapsedSinceAnchorMs();
+      expect(elapsed, greaterThanOrEqualTo(90000));
+      expect(elapsed, lessThan(90100)); // small tolerance for stopwatch tick
+    });
+
+    test('initialElapsedMs accumulates with stopwatch over time', () async {
+      clock.update(
+        1000,
+        DateTime.now().millisecondsSinceEpoch,
+        initialElapsedMs: 5000,
+      );
+
+      final t1 = clock.elapsedSinceAnchorMs();
+      await Future.delayed(const Duration(milliseconds: 50));
+      final t2 = clock.elapsedSinceAnchorMs();
+
+      expect(t1, greaterThanOrEqualTo(5000));
+      expect(t2, greaterThan(t1));
+      expect(t2 - t1, greaterThanOrEqualTo(40));
+    });
+
+    test('subsequent update without initialElapsedMs clears the offset', () {
+      // A fresh sync after a warm restore must not carry the stale gap.
+      clock.update(
+        1000,
+        DateTime.now().millisecondsSinceEpoch,
+        initialElapsedMs: 60000,
+      );
+      expect(clock.elapsedSinceAnchorMs(), greaterThanOrEqualTo(60000));
+
+      clock.update(2000, DateTime.now().millisecondsSinceEpoch);
+      final elapsed = clock.elapsedSinceAnchorMs();
+      expect(elapsed, lessThan(100));
+    });
+
+    test('dispose clears the initialElapsedMs offset', () {
+      clock.update(
+        1000,
+        DateTime.now().millisecondsSinceEpoch,
+        initialElapsedMs: 30000,
+      );
+      expect(clock.elapsedSinceAnchorMs(), greaterThanOrEqualTo(30000));
+
+      clock.dispose();
+      expect(clock.elapsedSinceAnchorMs(), 0);
+    });
   });
 }
