@@ -224,19 +224,29 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
 
   @override
   void onSourceFailed(String sourceId, Object error) {
+    // TransientSourceError is the engine's signal that a source failure
+    // (e.g. NTS DnsSaturation) was classified as transient and the
+    // source will be retried on the next cycle without exponential
+    // cooldown. Tag the row with `[transient, no cooldown]` so the
+    // panel makes the cooldown bypass visually distinct from regular
+    // failures, and unwrap `cause` so the rest of the formatter (NTS
+    // per-phase tagging below) still applies to the underlying error.
+    final isTransient = error is TransientSourceError;
+    final tag = isTransient ? ' [transient, no cooldown]' : '';
+    final cause = isTransient ? error.cause : error;
     // Surface the per-phase tag from package:nts so timeout failures
     // (DNS / connect / TLS / KE / NTP) are immediately distinguishable
     // in the terminal log without requiring the operator to decode the
     // freezed sealed-class toString. The `field0` accessor is the
     // FRB-generated public surface for the phase payload.
-    if (error is NtsError_Timeout) {
+    if (cause is NtsError_Timeout) {
       _add(
         TelemetryKind.sourceFailed,
-        '$sourceId: timeout during ${error.field0.name}',
+        '$sourceId$tag: timeout during ${cause.field0.name}',
       );
       return;
     }
-    _add(TelemetryKind.sourceFailed, '$sourceId: $error');
+    _add(TelemetryKind.sourceFailed, '$sourceId$tag: $cause');
   }
 
   @override
