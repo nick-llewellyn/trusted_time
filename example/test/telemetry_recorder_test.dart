@@ -1,4 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nts/nts.dart';
+import 'package:trusted_time/trusted_time.dart';
 import 'package:trusted_time_example/sync_telemetry.dart';
 
 /// Regression tests for `TelemetryRecorder` event fan-out.
@@ -67,6 +69,84 @@ void main() {
         dispose();
         recorder.onSyncStarted();
         expect(received, hasLength(1));
+      },
+    );
+  });
+
+  /// Closes bead `trusted_time-zy9`: when a source throws
+  /// `TransientSourceError`, the engine retries on the next cycle without
+  /// exponential cooldown. The telemetry row must surface this with a
+  /// `[transient, no cooldown]` tag, and the underlying cause must still
+  /// receive the same per-phase formatting as a raw failure.
+  group('TelemetryRecorder.onSourceFailed', () {
+    test('plain non-transient error formats as "<sourceId>: <error>"', () {
+      final recorder = TelemetryRecorder();
+      addTearDown(recorder.dispose);
+
+      recorder.onSourceFailed('https-google', 'connection refused');
+
+      final detail = recorder.events.last.detail;
+      expect(detail, 'https-google: connection refused');
+      expect(detail, isNot(contains('[transient')));
+    });
+
+    test(
+      'raw NtsError_Timeout surfaces the per-phase tag without transient prefix',
+      () {
+        final recorder = TelemetryRecorder();
+        addTearDown(recorder.dispose);
+
+        recorder.onSourceFailed(
+          'nts-cloudflare',
+          NtsError_Timeout(TimeoutPhase.dnsTimeout),
+        );
+
+        final detail = recorder.events.last.detail;
+        expect(detail, 'nts-cloudflare: timeout during dnsTimeout');
+        expect(detail, isNot(contains('[transient')));
+      },
+    );
+
+    test(
+      'TransientSourceError wrapping NtsError_Timeout surfaces both '
+      'the transient tag and the per-phase tag',
+      () {
+        final recorder = TelemetryRecorder();
+        addTearDown(recorder.dispose);
+
+        recorder.onSourceFailed(
+          'nts-cloudflare',
+          TransientSourceError(
+            NtsError_Timeout(TimeoutPhase.dnsSaturation),
+          ),
+        );
+
+        final detail = recorder.events.last.detail;
+        expect(
+          detail,
+          'nts-cloudflare [transient, no cooldown]: '
+          'timeout during dnsSaturation',
+        );
+      },
+    );
+
+    test(
+      'TransientSourceError wrapping a non-NTS cause surfaces the '
+      'transient tag and unwraps the cause',
+      () {
+        final recorder = TelemetryRecorder();
+        addTearDown(recorder.dispose);
+
+        recorder.onSourceFailed(
+          'http-time',
+          const TransientSourceError('socket exhausted'),
+        );
+
+        final detail = recorder.events.last.detail;
+        expect(
+          detail,
+          'http-time [transient, no cooldown]: socket exhausted',
+        );
       },
     );
   });
