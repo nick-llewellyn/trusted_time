@@ -49,8 +49,7 @@ class TelemetryEvent {
   /// same actionable timestamp/kind/detail context as the rest of
   /// the telemetry trail.
   @override
-  String toString() =>
-      '${elapsedMs.toString().padLeft(7)}ms  '
+  String toString() => '${elapsedMs.toString().padLeft(7)}ms  '
       '${kind.name.padRight(13)}  $detail';
 }
 
@@ -182,7 +181,8 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
         l(event);
       } catch (e, s) {
         if (kDebugMode) {
-          debugPrint('[TelemetryRecorder] listener threw on event $event: $e\n$s');
+          debugPrint(
+              '[TelemetryRecorder] listener threw on event $event: $e\n$s');
         }
       }
     }
