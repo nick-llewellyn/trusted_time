@@ -129,10 +129,21 @@ const List<String> curatedNtsPool = [
 /// Used by the Section 7 FilterChip grid so every host that may be
 /// present in the initial selection (or appear in subsequent operator
 /// edits) has a representable chip. [extendedNtsPool] entries come
-/// first to preserve the existing chip ordering; curated-only entries
-/// (e.g. the Malmö regional `mmo1.nts.netnod.se`) are appended after
-/// in their `curatedNtsPool` order. Computed rather than const so it
-/// stays correct if either pool gains or loses a host.
+/// first to preserve the existing chip ordering; any host that exists
+/// only in [curatedNtsPool] would be appended after in its
+/// `curatedNtsPool` order.
+///
+/// As of this writing every entry in [curatedNtsPool] is also in
+/// [extendedNtsPool], so the union currently has the same length as
+/// [extendedNtsPool] and the trailing comprehension is a no-op. The
+/// comprehension is retained as forward-compat: if [curatedNtsPool]
+/// ever gains a host that is intentionally absent from
+/// [extendedNtsPool] (e.g. a small experimental endpoint we want
+/// pinned for benchmarking but not promoted to the worldwide
+/// rotation pool), the chip grid picks it up automatically.
+///
+/// Computed rather than const so it stays correct if either pool
+/// gains or loses a host.
 final List<String> benchmarkChipPool = List<String>.unmodifiable([
   ...extendedNtsPool,
   for (final host in curatedNtsPool)

@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart';
 import 'package:trusted_time/trusted_time.dart';
@@ -67,12 +69,25 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
 
   final Stopwatch _start;
   final List<TelemetryEvent> _events = [];
+  late final UnmodifiableListView<TelemetryEvent> _eventsView =
+      UnmodifiableListView(_events);
   final List<void Function(TelemetryEvent)> _listeners = [];
   final List<void Function()> _cycleListeners = [];
   int _totalRecorded = 0;
 
-  /// Snapshot of recorded events, oldest first.
-  List<TelemetryEvent> get events => List.unmodifiable(_events);
+  /// Live unmodifiable view of recorded events, oldest first.
+  ///
+  /// Returns a stable [UnmodifiableListView] backed by the same
+  /// underlying buffer rather than a fresh `List.unmodifiable` copy
+  /// per access. The terminal panel rebuilds on every notifyListeners
+  /// (one rebuild per recorded event, plus the per-second DNS-stats
+  /// ticker) and the buffer is capped at [_maxEvents] = 200, so a
+  /// per-build copy was up to 200 allocations + GC pressure on every
+  /// cycle for no benefit. The view is read-only: any mutating call
+  /// (add / removeAt / etc.) on the returned list throws
+  /// UnsupportedError, matching the previous List.unmodifiable
+  /// contract for callers.
+  UnmodifiableListView<TelemetryEvent> get events => _eventsView;
 
   /// Monotonically-increasing count of every [TelemetryEvent] ever
   /// `_add`ed since the last [reset]. Distinct from `events.length`,
