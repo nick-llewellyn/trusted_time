@@ -50,6 +50,15 @@ export 'src/sources/nts_auth_level.dart' show NtsAuthLevel;
 export 'src/domain/time_sample.dart' show TimeSample;
 export 'src/domain/marzullo_engine.dart' show ConsensusResult;
 export 'src/domain/time_interval.dart' show TimeInterval;
+// TimeSource is the contract consumers must implement to plug
+// custom time-authority providers into the engine via
+// [TrustedTimeConfig.additionalSources]. Warmable is its optional
+// companion for sources whose one-time setup (e.g., NTS-KE
+// handshake, cache priming) must complete outside the per-query
+// latency budget. Exporting both closes the gap where
+// `additionalSources` was part of the public surface but the
+// types it required were only reachable via `src/`.
+export 'src/domain/time_source.dart' show TimeSource, Warmable;
 
 /// The primary gateway for high-integrity time synchronization and retrieval.
 ///
