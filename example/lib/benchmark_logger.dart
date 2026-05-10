@@ -18,6 +18,21 @@ import 'sync_telemetry.dart';
 /// enough to sustain multi-hour benchmarking sessions without
 /// buffering the entire transcript in RAM. A periodic flush bounds
 /// how much data can be lost if the process is killed.
+///
+/// **Platform scope: native (mobile / desktop) only.** This class
+/// imports `dart:io` and depends on `path_provider`'s
+/// `getApplicationDocumentsDirectory`, neither of which is available
+/// on Flutter web. The bundled `trusted_time_example` app is
+/// intentionally configured for android + ios only (no `example/web/`
+/// directory, no `platforms.web` entry in `example/pubspec.yaml`), so
+/// the on-disk transcript design is consistent with the example's
+/// actual deployment surface — multi-hour NTS benchmarking is a
+/// native-only diagnostic concern; browsers do not permit
+/// long-running file writes from app code anyway. If `example/web/`
+/// is ever added, this logger should be split behind a conditional
+/// import (`io.dart` vs a no-op `web.dart` stub) at that time. The
+/// core `trusted_time` package itself remains web-compatible — only
+/// this example-only diagnostic instrument is native-scoped.
 class BenchmarkLogger {
   BenchmarkLogger({
     Duration flushInterval = const Duration(seconds: 5),
