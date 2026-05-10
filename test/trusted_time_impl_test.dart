@@ -260,82 +260,67 @@ void main() {
       expect(TrustedTime.automaticRefreshActive, isTrue);
     });
 
-    test(
-      'pauseAutomaticRefresh flips automaticRefreshActive to false; '
-      'resumeAutomaticRefresh restores it',
-      () async {
-        await initEmpty();
+    test('pauseAutomaticRefresh flips automaticRefreshActive to false; '
+        'resumeAutomaticRefresh restores it', () async {
+      await initEmpty();
 
-        TrustedTime.pauseAutomaticRefresh();
-        expect(TrustedTime.automaticRefreshActive, isFalse);
+      TrustedTime.pauseAutomaticRefresh();
+      expect(TrustedTime.automaticRefreshActive, isFalse);
 
-        // Idempotent.
-        TrustedTime.pauseAutomaticRefresh();
-        expect(TrustedTime.automaticRefreshActive, isFalse);
+      // Idempotent.
+      TrustedTime.pauseAutomaticRefresh();
+      expect(TrustedTime.automaticRefreshActive, isFalse);
 
-        TrustedTime.resumeAutomaticRefresh();
-        expect(TrustedTime.automaticRefreshActive, isTrue);
+      TrustedTime.resumeAutomaticRefresh();
+      expect(TrustedTime.automaticRefreshActive, isTrue);
 
-        // Calling resume again keeps automaticRefreshActive true
-        // (idempotent in terms of the getter); the underlying
-        // refresh-timer deadline is reset on each call, but this
-        // test only pins the user-facing flag.
-        TrustedTime.resumeAutomaticRefresh();
-        expect(TrustedTime.automaticRefreshActive, isTrue);
-      },
-    );
+      // Calling resume again keeps automaticRefreshActive true
+      // (idempotent in terms of the getter); the underlying
+      // refresh-timer deadline is reset on each call, but this
+      // test only pins the user-facing flag.
+      TrustedTime.resumeAutomaticRefresh();
+      expect(TrustedTime.automaticRefreshActive, isTrue);
+    });
 
-    test(
-      'setRefreshInterval(Duration.zero) is equivalent to '
-      'pauseAutomaticRefresh',
-      () async {
-        await initEmpty();
+    test('setRefreshInterval(Duration.zero) is equivalent to '
+        'pauseAutomaticRefresh', () async {
+      await initEmpty();
 
-        TrustedTime.setRefreshInterval(Duration.zero);
-        expect(TrustedTime.automaticRefreshActive, isFalse);
+      TrustedTime.setRefreshInterval(Duration.zero);
+      expect(TrustedTime.automaticRefreshActive, isFalse);
 
-        // resumeAutomaticRefresh re-arms with the most recent positive
-        // interval (the at-init default in this case, since
-        // setRefreshInterval(Duration.zero) does not overwrite the
-        // active interval — see TrustedTimeImpl.setRefreshInterval).
-        TrustedTime.resumeAutomaticRefresh();
-        expect(TrustedTime.automaticRefreshActive, isTrue);
-      },
-    );
+      // resumeAutomaticRefresh re-arms with the most recent positive
+      // interval (the at-init default in this case, since
+      // setRefreshInterval(Duration.zero) does not overwrite the
+      // active interval — see TrustedTimeImpl.setRefreshInterval).
+      TrustedTime.resumeAutomaticRefresh();
+      expect(TrustedTime.automaticRefreshActive, isTrue);
+    });
 
-    test(
-      'setRefreshInterval with a positive value also resumes from a '
-      'paused state',
-      () async {
-        await initEmpty();
+    test('setRefreshInterval with a positive value also resumes from a '
+        'paused state', () async {
+      await initEmpty();
 
-        TrustedTime.pauseAutomaticRefresh();
-        expect(TrustedTime.automaticRefreshActive, isFalse);
+      TrustedTime.pauseAutomaticRefresh();
+      expect(TrustedTime.automaticRefreshActive, isFalse);
 
-        TrustedTime.setRefreshInterval(const Duration(seconds: 10));
-        expect(TrustedTime.automaticRefreshActive, isTrue);
-      },
-    );
+      TrustedTime.setRefreshInterval(const Duration(seconds: 10));
+      expect(TrustedTime.automaticRefreshActive, isTrue);
+    });
 
-    test(
-      'TrustedTime.config still reports the at-init refreshInterval after '
-      'setRefreshInterval mutates the active value',
-      () async {
-        // Pinning the contract that config is a snapshot of init-time
-        // values; the runtime-mutable interval is intentionally not
-        // exposed via [config] (preserves backwards compatibility for
-        // consumers reading config.refreshInterval to display the
-        // configured cadence).
-        await initEmpty();
+    test('TrustedTime.config still reports the at-init refreshInterval after '
+        'setRefreshInterval mutates the active value', () async {
+      // Pinning the contract that config is a snapshot of init-time
+      // values; the runtime-mutable interval is intentionally not
+      // exposed via [config] (preserves backwards compatibility for
+      // consumers reading config.refreshInterval to display the
+      // configured cadence).
+      await initEmpty();
 
-        TrustedTime.setRefreshInterval(const Duration(seconds: 7));
+      TrustedTime.setRefreshInterval(const Duration(seconds: 7));
 
-        expect(
-          TrustedTime.config.refreshInterval,
-          const Duration(minutes: 5),
-        );
-      },
-    );
+      expect(TrustedTime.config.refreshInterval, const Duration(minutes: 5));
+    });
 
     test('pause state does not persist across re-initialize', () async {
       await initEmpty();
