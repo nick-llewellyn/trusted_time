@@ -5,13 +5,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time_example/main.dart';
 import 'package:trusted_time_example/sync_telemetry.dart';
 import 'package:trusted_time/trusted_time.dart';
-// TimeSource is currently only reachable via src/ even though
-// TrustedTimeConfig.additionalSources is part of the public API and
-// typed as List<TimeSource>. Importing src/ from this test is a
-// pragmatic stop-gap; promoting TimeSource to the public exports
-// is tracked separately so consumers (and future tests) can build
-// custom sources without reaching into src/.
-import 'package:trusted_time/src/domain/time_source.dart';
 
 /// Deterministic [TimeSource] used by the real-engine widget test to
 /// guarantee the bootstrap sync reaches consensus instead of failing

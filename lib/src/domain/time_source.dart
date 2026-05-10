@@ -25,7 +25,7 @@ abstract interface class TimeSource {
 /// step (handshakes, key exchange, cache priming) which should
 /// complete *outside* the per-query latency budget.
 ///
-/// [SyncEngine] type-checks each active source for this interface and
+/// The engine type-checks each active source for this interface and
 /// runs [warm] before the timed query phase. Sources that do not need
 /// warming should not implement this; they will be queried directly.
 ///
