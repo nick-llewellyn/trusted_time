@@ -43,8 +43,9 @@ void main() {
           wallMs: DateTime.now().millisecondsSinceEpoch,
           uncertaintyMs: 10,
         );
-        final rebooted = await monitor.checkRebootOnWarmStart(anchor);
-        expect(rebooted, isTrue);
+        final result = await monitor.checkRebootOnWarmStart(anchor);
+        expect(result.rebooted, isTrue);
+        expect(result.currentUptimeMs, 500);
       },
     );
 
@@ -58,10 +59,28 @@ void main() {
           wallMs: DateTime.now().millisecondsSinceEpoch,
           uncertaintyMs: 10,
         );
-        final rebooted = await monitor.checkRebootOnWarmStart(anchor);
-        expect(rebooted, isFalse);
+        final result = await monitor.checkRebootOnWarmStart(anchor);
+        expect(result.rebooted, isFalse);
+        expect(result.currentUptimeMs, 20000);
       },
     );
+
+    test('checkRebootOnWarmStart returns the freshly-sampled uptime '
+        'so callers can compute the warm-restore gap without a second '
+        'platform-channel call', () async {
+      clock.value = 75000;
+      final anchor = TrustAnchor(
+        networkUtcMs: DateTime.now().millisecondsSinceEpoch,
+        uptimeMs: 15000,
+        wallMs: DateTime.now().millisecondsSinceEpoch,
+        uncertaintyMs: 10,
+      );
+      final result = await monitor.checkRebootOnWarmStart(anchor);
+      expect(result.rebooted, isFalse);
+      // Caller can compute (currentUptimeMs - anchor.uptimeMs) directly
+      // — no need for a second monitor.uptimeMs() round-trip.
+      expect(result.currentUptimeMs - anchor.uptimeMs, 60000);
+    });
 
     test('events stream is a broadcast stream', () {
       expect(monitor.events.isBroadcast, isTrue);
