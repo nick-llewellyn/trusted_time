@@ -28,6 +28,8 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
+  path_provider: ^2.1.5
+  nts: ^2.0.0
 
 dev_dependencies:
   integration_test:
@@ -41,6 +43,16 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^5.0.0
+
+# Native-asset build-hook user defines. Forwarded to transitive
+# packages' build hooks. Enabling nts.verbose_logs surfaces
+# phase-level NTS-KE / TLS / NTP diagnostics from the Rust layer
+# during the integration/bleeding-edge stress runs. Remove or set
+# to false for production builds.
+hooks:
+  user_defines:
+    nts:
+      verbose_logs: true
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
