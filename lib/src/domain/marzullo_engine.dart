@@ -115,9 +115,21 @@ final class MarzulloEngine {
     // In Marzullo's algorithm, for closed intervals, an 'upper' endpoint
     // at time T should be processed before a 'lower' endpoint at time T
     // to correctly count the depth at the point of overlap.
+    //
+    // Comparator contract: when both `timeMs` and `type` match the
+    // endpoints are equal under this ordering and the comparator must
+    // return 0. Returning a non-zero value for equal inputs violates
+    // Dart's `Comparator` typedef and produces undefined ordering on
+    // sort backends that depend on the contract (the current TimSort
+    // tolerates it). The sweep result is invariant to the relative
+    // order of same-type-same-time endpoints — both lowers increment
+    // `activeSourceCounts` before any best-window snapshot and both
+    // uppers decrement after — so this is a contract repair, not a
+    // behavioural change.
     endpoints.sort((a, b) {
       final cmp = a.timeMs.compareTo(b.timeMs);
       if (cmp != 0) return cmp;
+      if (a.type == b.type) return 0;
       return a.type == _EndpointType.upper ? -1 : 1;
     });
 
