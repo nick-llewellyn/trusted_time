@@ -475,41 +475,38 @@ final class SyncEngine {
         final streak = (_sourceTransientStreak[source.id] ?? 0) + 1;
         _sourceTransientStreak[source.id] = streak;
         if (streak >= threshold) {
-          // Increment the existing _sourceHealth score rather than
-          // resetting it, mirroring the regular catch arm below. A
-          // source that already accrued unrecovered regular-failure
-          // score before this transient streak began is now
-          // exhibiting two distinct unhealthiness signals; preserve
-          // the cumulative cooldown progression so it does not
-          // silently restart the ladder from one minute on every
-          // escalation.
-          final score = (_sourceHealth[source.id] ?? 0) + 1;
-          _sourceHealth[source.id] = score;
-          final cooldownMin = pow(2, min(score, 6)).toInt();
-          _blacklistUntil[source.id] = DateTime.now().add(
-            Duration(minutes: cooldownMin),
-          );
-          _sourceTransientStreak.remove(source.id);
+          _armCooldown(source.id);
         }
       }
       return null;
     } catch (e) {
       _observer?.onSourceFailed(source.id, e);
-      // A regular failure already arms the cooldown ladder, so any
-      // accumulated transient streak is moot — drop it to avoid
-      // double-counting toward a future escalation once the host
-      // returns from cooldown.
-      _sourceTransientStreak.remove(source.id);
-
-      final score = (_sourceHealth[source.id] ?? 0) + 1;
-      _sourceHealth[source.id] = score;
-      final cooldownMin = pow(2, min(score, 6)).toInt();
-      _blacklistUntil[source.id] = DateTime.now().add(
-        Duration(minutes: cooldownMin),
-      );
-
+      _armCooldown(source.id);
       return null;
     }
+  }
+
+  /// Increments [sourceId]'s failure score and arms the exponential
+  /// `2^min(score, 6)`-minute cooldown via `_blacklistUntil`. Drops any
+  /// accumulated transient-streak entry because the source is now on
+  /// the regular cooldown ladder; the streak is only meaningful for
+  /// sources currently outside cooldown.
+  ///
+  /// The score is incremented (not reset) so a source that already
+  /// accrued unrecovered failure score before this call — for example,
+  /// a regular failure that armed a short cooldown which has since
+  /// expired, followed by a transient streak that escalated here — is
+  /// treated as exhibiting cumulative unhealthiness and progresses
+  /// further along the cooldown ladder rather than silently restarting
+  /// from one minute every time.
+  void _armCooldown(String sourceId) {
+    _sourceTransientStreak.remove(sourceId);
+    final score = (_sourceHealth[sourceId] ?? 0) + 1;
+    _sourceHealth[sourceId] = score;
+    final cooldownMin = pow(2, min(score, 6)).toInt();
+    _blacklistUntil[sourceId] = DateTime.now().add(
+      Duration(minutes: cooldownMin),
+    );
   }
 
   /// Records a failed sync cycle: notifies the observer and bumps the

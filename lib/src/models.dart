@@ -170,36 +170,36 @@ final class TrustedTimeConfig {
   /// If null, background synchronization is disabled.
   final Duration? backgroundSyncInterval;
 
-  /// Number of consecutive [TransientSourceError] failures from a single
-  /// source before the engine escalates that source to the regular
-  /// exponential-cooldown ladder.
+  /// Number of consecutive [TransientSourceError] failures from a
+  /// single source before the engine escalates that source onto the
+  /// same exponential-cooldown ladder regular failures use.
   ///
-  /// `TransientSourceError` exists so the engine can retry an
+  /// [TransientSourceError] exists so the engine can retry an
   /// otherwise-healthy source on the next cycle without applying
   /// cooldown — the canonical case is `package:nts`'s
-  /// `NtsError.timeout(TimeoutPhase.dnsSaturation)`, where the bounded
-  /// DNS resolver pool was momentarily full and the source itself is
-  /// fine. A genuinely transient condition resolves within a cycle or
-  /// two; a "transient" condition that persists across many cycles is
-  /// indistinguishable from a sustained outage as far as quorum
-  /// participation goes, and should be treated like one.
+  /// `NtsError.timeout(TimeoutPhase.dnsSaturation)`, where the
+  /// bounded DNS resolver pool was momentarily full and the source
+  /// itself is fine. A genuinely transient condition resolves within
+  /// a cycle or two; a "transient" condition that persists across
+  /// many cycles is indistinguishable from a sustained outage as far
+  /// as quorum participation goes, and should be treated like one.
   ///
-  /// When this many consecutive transient failures accumulate from the
-  /// same source, the engine bumps its `_sourceHealth` score and arms a
-  /// `_blacklistUntil` entry with the same `2^score`-minute cooldown
-  /// the regular catch arm uses. The streak counter resets on a
-  /// successful query, on a regular (non-transient) failure, and on
-  /// each escalation.
+  /// When this many consecutive transient failures accumulate from
+  /// the same source, the engine increments that source's failure
+  /// score and applies the standard exponential `2^score`-minute
+  /// cooldown, identical to what a non-transient failure would
+  /// produce. The streak counter resets on a successful query, on a
+  /// regular (non-transient) failure, and on each escalation.
   ///
-  /// Default: `5`. With the default `refreshInterval` of 30 minutes
+  /// Default: `5`. With the default [refreshInterval] of 30 minutes
   /// this corresponds to ~2.5 hours of sustained transients before
   /// escalation, long enough that a real DNS-pool burst clears
-  /// naturally and short enough that a stuck host eventually surfaces
-  /// as unhealthy.
+  /// naturally and short enough that a stuck host eventually
+  /// surfaces as unhealthy.
   ///
-  /// Set to `0` to disable escalation entirely and preserve the
-  /// pre-streak-guard behaviour where transient failures retry
-  /// indefinitely.
+  /// Set to `0` (or any non-positive value) to disable escalation
+  /// entirely and preserve the pre-streak-guard behaviour where
+  /// transient failures retry indefinitely.
   final int transientStreakThreshold;
 
   /// Returns a new [TrustedTimeConfig] with the supplied fields replaced.
