@@ -76,6 +76,15 @@ final class SyncEngine {
   /// Precise timestamps until which a source is considered "blacklisted."
   final _blacklistUntil = <String, DateTime>{};
 
+  /// Counts consecutive [TransientSourceError] failures from a single
+  /// source so a sustained "transient" condition (e.g. permanent DNS
+  /// pool saturation) eventually escalates to the regular cooldown
+  /// ladder rather than retrying every cycle indefinitely. Reset on a
+  /// successful query, on a regular (non-transient) failure, and on
+  /// each escalation. The escalation threshold is
+  /// [TrustedTimeConfig.transientStreakThreshold].
+  final _sourceTransientStreak = <String, int>{};
+
   int _syncAttempts = 0;
 
   /// Eagerly invokes [Warmable.warm] on every source that supports it,
@@ -438,18 +447,45 @@ final class SyncEngine {
     try {
       final sample = await source.getTime().timeout(_config.maxLatency);
       _sourceHealth[source.id] = 0; // Reset failure count on success
+      _sourceTransientStreak.remove(source.id);
       _blacklistUntil.remove(source.id);
       return sample;
     } on TransientSourceError catch (e) {
       // Source classified the failure as transient (e.g. NtsSource saw
       // NtsError.timeout(TimeoutPhase.dnsSaturation): the DNS resolver
-      // pool was momentarily full). Notify the observer but do not bump
-      // the failure score or blacklist the host — the next sync cycle
-      // is expected to succeed once contention clears.
+      // pool was momentarily full). Notify the observer and skip the
+      // exponential cooldown — the next sync cycle is expected to
+      // succeed once contention clears.
+      //
+      // A genuinely transient condition resolves within a cycle or
+      // two; a "transient" condition that persists across many cycles
+      // is indistinguishable from a sustained outage and should be
+      // treated like one. Once the consecutive-streak counter reaches
+      // [TrustedTimeConfig.transientStreakThreshold], promote the
+      // failure to the regular cooldown ladder so the host gets
+      // exponential backoff and surfaces as unhealthy through the
+      // standard `_blacklistUntil` path.
       _observer?.onSourceFailed(source.id, e);
+      final threshold = _config.transientStreakThreshold;
+      final streak = (_sourceTransientStreak[source.id] ?? 0) + 1;
+      _sourceTransientStreak[source.id] = streak;
+      if (threshold > 0 && streak >= threshold) {
+        final score = (_sourceHealth[source.id] ?? 0) + 1;
+        _sourceHealth[source.id] = score;
+        final cooldownMin = pow(2, min(score, 6)).toInt();
+        _blacklistUntil[source.id] = DateTime.now().add(
+          Duration(minutes: cooldownMin),
+        );
+        _sourceTransientStreak.remove(source.id);
+      }
       return null;
     } catch (e) {
       _observer?.onSourceFailed(source.id, e);
+      // A regular failure already arms the cooldown ladder, so any
+      // accumulated transient streak is moot — drop it to avoid
+      // double-counting toward a future escalation once the host
+      // returns from cooldown.
+      _sourceTransientStreak.remove(source.id);
 
       final score = (_sourceHealth[source.id] ?? 0) + 1;
       _sourceHealth[source.id] = score;

@@ -40,6 +40,63 @@ class RaceConditionSource implements TimeSource {
   }
 }
 
+/// Test source that throws [TransientSourceError] on every [getTime]
+/// call. Records its call count so tests can assert whether the engine
+/// has escalated it to the regular cooldown path (after which it stops
+/// being called) versus retrying it forever (the pre-streak-guard
+/// behaviour). The thrown error carries its call ordinal so failure
+/// assertions can distinguish individual cycles in the recorded
+/// observer history.
+class RepeatingTransientSource implements TimeSource {
+  RepeatingTransientSource({required this.id, this.groupId = 'test-group'});
+
+  @override
+  final String id;
+  @override
+  final String groupId;
+
+  int callCount = 0;
+
+  @override
+  Future<TimeSample> getTime() async {
+    callCount++;
+    throw TransientSourceError('repeating stub call $callCount');
+  }
+}
+
+/// Test source that alternates between throwing [TransientSourceError]
+/// (odd-numbered calls) and returning a valid sample (even-numbered
+/// calls). Used to assert that a successful query resets the engine's
+/// transient-streak counter and prevents escalation.
+class AlternatingTransientSource implements TimeSource {
+  AlternatingTransientSource({
+    required this.id,
+    required this.utcMs,
+    this.groupId = 'test-group',
+  });
+
+  @override
+  final String id;
+  @override
+  final String groupId;
+  final int utcMs;
+
+  int callCount = 0;
+
+  @override
+  Future<TimeSample> getTime() async {
+    callCount++;
+    if (callCount.isOdd) {
+      throw TransientSourceError('alternating stub call $callCount');
+    }
+    return TimeSample(
+      interval: TimeInterval(startMs: utcMs - 10, endMs: utcMs + 10),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
+}
+
 /// Test source that throws a configurable error on the first [getTime]
 /// call and returns a valid sample on every subsequent call. Records its
 /// call count so tests can assert whether it was retried after a failure
@@ -814,6 +871,127 @@ void main() {
             'flaky.getTime should have been blacklisted after a '
             'non-transient failure but was retried on cycle 2',
       );
+    });
+
+    test('sustained TransientSourceError escalates to cooldown after '
+        'transientStreakThreshold cycles', () async {
+      final observer = RecordingObserver();
+      final stuck = RepeatingTransientSource(id: 'stuck', groupId: 'g-stuck');
+      // Two healthy sources so each pre-escalation cycle still reaches
+      // quorum and the engine does not abort cycle 2 with a
+      // quorum-failure exception before the escalation path runs.
+      final healthy1 = RaceConditionSource(
+        'h1',
+        Duration.zero,
+        1000000,
+        'g-h1',
+      );
+      final healthy2 = RaceConditionSource(
+        'h2',
+        Duration.zero,
+        1000000,
+        'g-h2',
+      );
+
+      final engine = SyncEngine(
+        config: config.copyWith(
+          additionalSources: [stuck, healthy1, healthy2],
+          transientStreakThreshold: 2,
+        ),
+        clock: clock,
+        observer: observer,
+      );
+
+      // Cycle 1: stuck throws transient. Streak=1 < threshold, so no
+      // cooldown is armed and the source must be retried next cycle.
+      await engine.sync();
+      // Cycle 2: stuck throws transient again. Streak=2 == threshold,
+      // so the engine escalates: bumps _sourceHealth and arms
+      // _blacklistUntil with a 2-minute cooldown (2^1).
+      await engine.sync();
+      expect(
+        stuck.callCount,
+        2,
+        reason:
+            'stuck.getTime should have been retried on cycle 2 '
+            'because the streak was still under threshold at cycle 1',
+      );
+
+      // Cycle 3: stuck must now be filtered by activeSources because
+      // _blacklistUntil['stuck'] > now. If escalation did not arm the
+      // cooldown, callCount would be 3 here.
+      await engine.sync();
+      expect(
+        stuck.callCount,
+        2,
+        reason:
+            'stuck.getTime should have been blacklisted after the '
+            'transient-streak escalation on cycle 2 but was retried '
+            'on cycle 3',
+      );
+
+      // Observer recorded exactly two transient-failure events
+      // (cycles 1 and 2); cycle 3 was a cooldown skip with no
+      // observer notification.
+      final stuckFailures = observer.sourceFailures
+          .where((f) => f.sourceId == 'stuck')
+          .toList();
+      expect(stuckFailures, hasLength(2));
+      expect(stuckFailures[0].error, isA<TransientSourceError>());
+      expect(stuckFailures[1].error, isA<TransientSourceError>());
+    });
+
+    test('a successful query resets the transient-streak counter so '
+        'escalation only fires on consecutive transient failures', () async {
+      final observer = RecordingObserver();
+      final flapping = AlternatingTransientSource(
+        id: 'flapping',
+        groupId: 'g-flapping',
+        utcMs: 1000000,
+      );
+      final healthy1 = RaceConditionSource(
+        'h1',
+        Duration.zero,
+        1000000,
+        'g-h1',
+      );
+      final healthy2 = RaceConditionSource(
+        'h2',
+        Duration.zero,
+        1000000,
+        'g-h2',
+      );
+
+      final engine = SyncEngine(
+        config: config.copyWith(
+          additionalSources: [flapping, healthy1, healthy2],
+          transientStreakThreshold: 2,
+        ),
+        clock: clock,
+        observer: observer,
+      );
+
+      // Five cycles: cycles 1, 3, 5 throw transient; cycles 2, 4 succeed.
+      // The streak reaches 1 between every pair of transients but is
+      // wiped to 0 by the success in between, so it can never reach the
+      // threshold of 2 and no cooldown is ever armed.
+      for (var i = 0; i < 5; i++) {
+        await engine.sync();
+      }
+
+      expect(
+        flapping.callCount,
+        5,
+        reason:
+            'flapping.getTime should have been called on every '
+            'cycle; intervening successes should have reset the '
+            'transient-streak counter and prevented escalation',
+      );
+
+      final flappingFailures = observer.sourceFailures
+          .where((f) => f.sourceId == 'flapping')
+          .toList();
+      expect(flappingFailures, hasLength(3));
     });
   });
 }
