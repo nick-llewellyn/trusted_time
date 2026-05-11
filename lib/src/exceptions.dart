@@ -68,15 +68,29 @@ final class TrustedTimePersistenceException implements Exception {
   String toString() => 'TrustedTimePersistenceException: $message';
 }
 
-/// Thrown by a `TimeSource` to signal that the failure was transient and
-/// the source should be retried on the next sync cycle without the
-/// exponential cooldown that other failures incur.
+/// Thrown by a `TimeSource` to signal that the failure was transient
+/// and the source should be retried immediately on the next sync
+/// cycle without the exponential cooldown a regular failure would arm.
 ///
 /// Example: an `NtsSource` whose `ntsQuery` returned
-/// `NtsError.timeout(TimeoutPhase.dnsSaturation)` because the bounded DNS
-/// resolver pool was momentarily full. The host itself is healthy; the
-/// next cycle will probably succeed once peers release their resolver
-/// slots, so blacklisting the source for minutes would be incorrect.
+/// `NtsError.timeout(TimeoutPhase.dnsSaturation)` because the bounded
+/// DNS resolver pool was momentarily full. The host itself is healthy;
+/// the next cycle will probably succeed once peers release their
+/// resolver slots, so blacklisting the source for minutes would be
+/// incorrect.
+///
+/// **Sustained-streak escalation:** the cooldown bypass applies only
+/// to the immediate per-event retry. A source that throws
+/// `TransientSourceError` on every consecutive cycle is escalated
+/// onto the regular cooldown ladder once the consecutive-failure
+/// streak reaches `TrustedTimeConfig.transientStreakThreshold`
+/// (default 5). The streak counter resets on a successful query, on a
+/// regular (non-transient) failure, and on each escalation. Set
+/// `transientStreakThreshold` to `0` (or any non-positive value) to
+/// disable the escalation guard and preserve the legacy retry-forever
+/// behaviour. UI code that surfaces the no-cooldown tag should treat
+/// it as describing the per-event classification, not a guarantee
+/// that the source can never transition into cooldown.
 final class TransientSourceError implements Exception {
   /// Creates a [TransientSourceError] wrapping the underlying [cause].
   const TransientSourceError(this.cause);

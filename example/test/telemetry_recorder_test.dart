@@ -74,10 +74,16 @@ void main() {
   });
 
   /// Closes bead `trusted_time-zy9`: when a source throws
-  /// `TransientSourceError`, the engine retries on the next cycle without
-  /// exponential cooldown. The telemetry row must surface this with a
-  /// `[transient, no cooldown]` tag, and the underlying cause must still
-  /// receive the same per-phase formatting as a raw failure.
+  /// `TransientSourceError`, the engine retries on the next cycle
+  /// without exponential cooldown for that specific event. The
+  /// telemetry row must surface this per-event classification with a
+  /// `[transient, no cooldown]` tag, and the underlying cause must
+  /// still receive the same per-phase formatting as a raw failure.
+  /// (The streak guard at `TrustedTimeConfig.transientStreakThreshold`
+  /// can still escalate sustained transient failures onto the regular
+  /// cooldown ladder; the tag describes the classification of the
+  /// individual failure event being rendered, not a permanent
+  /// no-cooldown guarantee for the source.)
   group('TelemetryRecorder.onSourceFailed', () {
     test('plain non-transient error formats as "<sourceId>: <error>"', () {
       final recorder = TelemetryRecorder();
