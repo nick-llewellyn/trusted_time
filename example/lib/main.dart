@@ -40,6 +40,15 @@ Future<void> main() async {
   // subsequent sync cycle (refreshes, Force Resync, integrity-triggered
   // syncs). The very first bootstrap sync is missed because the engine
   // instance does not exist until initialize() returns.
+  //
+  // The recorder is intentionally root-scoped and never disposed: its
+  // SyncObserver registration is process-wide, so disposing it from a
+  // widget's dispose() would silence the fan-out across hot-reloads
+  // and HomePage rebuilds. The custom listener registries (_listeners,
+  // _cycleListeners) are disposed by their consumers (the cycle-end
+  // disposer in _HomePageState.dispose), and ChangeNotifier listeners
+  // attached via ListenableBuilder auto-detach with their parents, so
+  // the missing dispose here does not leak per-build subscriptions.
   final telemetry = TelemetryRecorder();
   TrustedTime.registerObserver(telemetry);
 
