@@ -172,6 +172,60 @@ void main() {
     );
 
     test(
+      'concurrent forceResync calls converge on a single in-flight '
+      'cycle and emit exactly one onSyncStarted (trusted_time-exw)',
+      () async {
+        // Acceptance criterion from `bd-trusted_time-exw`: synchronously
+        // dispatch multiple sync requests in a tight loop and assert
+        // exactly one `onSyncStarted` is emitted. Validates the
+        // two-tier in-flight guard in `_performSync`: the synchronous
+        // [_syncEntryGuard] bool catches same-microtask re-entry
+        // before any await, and the [_syncInProgress] Completer makes
+        // the converging callers all complete on the same future.
+        //
+        // Without either guard tier the three `forceResync` calls
+        // would each reach `_syncEngine.sync()` independently and
+        // produce three observable `onSyncStarted` events.
+        await TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+          ),
+        );
+        addTearDown(TrustedTimeImpl.instance.dispose);
+
+        final probe = _SyncStartedProbe();
+        TrustedTime.registerObserver(probe);
+        addTearDown(() => TrustedTime.unregisterObserver(probe));
+
+        // Three back-to-back synchronous dispatches without awaiting
+        // between them. The first call enters `_performSync`,
+        // synchronously sets [_syncEntryGuard]+[_syncInProgress], and
+        // yields at `await _syncEngine.sync()`. Calls 2 and 3 then
+        // run in subsequent microtasks (each `forceResync` is an
+        // async function, so the caller yields after each call) and
+        // hit the guard.
+        final futures = <Future<void>>[
+          TrustedTime.forceResync(),
+          TrustedTime.forceResync(),
+          TrustedTime.forceResync(),
+        ];
+        await Future.wait(futures);
+
+        expect(
+          probe.startCount,
+          equals(1),
+          reason:
+              'Three concurrent forceResync calls must converge on '
+              'a single in-flight cycle; multiple onSyncStarted '
+              'events indicate the in-flight guard has regressed.',
+        );
+      },
+    );
+
+    test(
       'returns the same TrustedTimeConfig instance passed to initialize',
       () async {
         // Empty source lists keep the test fully offline: the engine
