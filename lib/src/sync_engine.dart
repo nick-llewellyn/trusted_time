@@ -123,6 +123,24 @@ final class SyncEngine {
   /// performs adaptive outlier filtering, and requires stability across
   /// multiple samples before finalizing an anchor.
   Future<TrustAnchor> sync() async {
+    // Per-cycle synchronous re-entry guard for [_completeSync].
+    // Allocated fresh on every [sync] call and captured by the sample
+    // listener closure, so the guard's lifetime is exactly one sync
+    // cycle. This is the deliberate alternative to an engine-instance
+    // flag with a top-of-`sync()` reset: a per-cycle holder is robust
+    // against overlapping `sync()` invocations (which would otherwise
+    // race on the engine-scoped reset).
+    //
+    // [SyncEngine] itself does not gate against concurrent `sync()`
+    // entries — that responsibility lives in the public-API wrapper
+    // (`TrustedTimeImpl._performSync` in `lib/src/trusted_time_impl.dart`,
+    // which uses a `_syncInProgress` Completer to coalesce concurrent
+    // callers into a single in-flight cycle). That guard is currently
+    // imperfect under tight retry/timer scheduling (tracked as
+    // `trusted_time-exw`), but even if two `sync()` invocations slip
+    // past it, each cycle's `_completeSync` pair operates on its own
+    // [_CompletionGuard] and cannot reset the other's in-flight state.
+    final completionGuard = _CompletionGuard();
     _observer?.onSyncStarted();
     final swSync = Stopwatch()..start();
 
@@ -195,6 +213,7 @@ final class SyncEngine {
                 rejectedInvalid,
                 activeSources.length,
                 completer,
+                completionGuard,
               );
             }
             return;
@@ -246,7 +265,12 @@ final class SyncEngine {
               if (_config.earlyExit || samples.length == activeSources.length) {
                 swSync.stop();
                 unawaited(
-                  _completeSync(result, swSync.elapsedMilliseconds, completer),
+                  _completeSync(
+                    result,
+                    swSync.elapsedMilliseconds,
+                    completer,
+                    completionGuard,
+                  ),
                 );
               }
             }
@@ -260,6 +284,7 @@ final class SyncEngine {
             rejectedInvalid,
             activeSources.length,
             completer,
+            completionGuard,
             elapsedMs: swSync.elapsedMilliseconds,
           );
         }
@@ -348,11 +373,34 @@ final class SyncEngine {
     ConsensusResult result,
     int latencyMs,
     Completer<TrustAnchor> completer,
+    _CompletionGuard guard,
   ) async {
-    if (completer.isCompleted) return;
+    // Synchronous re-entry guard: if the completer is already done OR
+    // a sibling _completeSync invocation in *this same cycle* has
+    // already started its _createAnchor await, bail before doing any
+    // observable work. Both checks must happen together with the
+    // [guard] assignment, before the first await, so the second
+    // caller observes the in-flight flag set by the first.
+    //
+    // [guard] is per-cycle (allocated in [sync] and captured by the
+    // sample-stream listener), so this guard cannot be reset by an
+    // overlapping `sync()` invocation on the same engine instance.
+    if (completer.isCompleted || guard.inFlight) return;
+    guard.inFlight = true;
 
     try {
       final anchor = await _createAnchor(result);
+      // Defensive re-check after the await: no public path currently
+      // completes [completer] while [_createAnchor] is in-flight (the
+      // no-quorum branch of [_finalizeSync] is unreachable once
+      // early-exit has fired, and the outer timeout wraps
+      // [completer.future] rather than the completer itself), but a
+      // future code change that introduces such a path would
+      // otherwise cause `success` observer events to be emitted for
+      // a cycle that ultimately failed. Bail before any observable
+      // work if the completer has been resolved (or errored)
+      // out-of-band.
+      if (completer.isCompleted) return;
       _observer?.onConsensusReached(result);
 
       _observer?.onMetricsReported(
@@ -417,7 +465,8 @@ final class SyncEngine {
     List<TimeSample> samples,
     int rejectedInvalid,
     int totalSources,
-    Completer<TrustAnchor> completer, {
+    Completer<TrustAnchor> completer,
+    _CompletionGuard guard, {
     int? elapsedMs,
   }) {
     if (completer.isCompleted) return;
@@ -426,7 +475,7 @@ final class SyncEngine {
     // Try one final resolve with all samples before failing.
     final finalResult = _engine.resolve(samples);
     if (finalResult != null && samples.length >= _config.minimumQuorum) {
-      unawaited(_completeSync(finalResult, elapsedMs ?? 0, completer));
+      unawaited(_completeSync(finalResult, elapsedMs ?? 0, completer, guard));
     } else {
       // Improved quorum-failure messaging with accurate counts
       final eligibleCount = samples.length;
@@ -533,4 +582,20 @@ final class SyncEngine {
       if (source is HttpsSource) source.dispose();
     }
   }
+}
+
+/// Per-cycle synchronous re-entry guard for [SyncEngine._completeSync].
+///
+/// Allocated fresh at the top of each [SyncEngine.sync] call and
+/// captured by the sample-stream listener closure, so the guard's
+/// lifetime is exactly one sync cycle. Both `_completeSync` call
+/// sites in the listener (the early-exit path and the
+/// finalize-via-`_finalizeSync` path) receive the same instance, so
+/// the second invocation observes [inFlight] set by the first and
+/// bails before any observable work — exactly like an engine-instance
+/// `bool` flag would, but without the cross-cycle reset hazard:
+/// overlapping `sync()` invocations on the same engine instance each
+/// own a distinct guard and cannot reset each other's state.
+class _CompletionGuard {
+  bool inFlight = false;
 }

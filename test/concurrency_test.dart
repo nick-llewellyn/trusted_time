@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/exceptions.dart';
 import 'package:trusted_time/src/sync_engine.dart';
@@ -12,6 +14,62 @@ import 'package:trusted_time/src/monotonic_clock.dart';
 class MockMonotonicClock implements MonotonicClock {
   @override
   Future<int> uptimeMs() async => 100000;
+}
+
+/// Monotonic clock that deliberately holds the first [uptimeMs] call
+/// pending until either a second call arrives or one event-loop turn
+/// elapses. Used by the `_completeSync` re-entry guard tests (skj.2)
+/// to force two `_completeSync` invocations to overlap on the same
+/// microtask burst — without this gate, the default microtask
+/// scheduling lets the first call's `_createAnchor` resolve and
+/// complete the [Completer] before the second call even reaches its
+/// guard check, so the race never actually fires in-process even
+/// though it is reachable on a real device.
+///
+/// Behaviour: the first [uptimeMs] call races
+/// [_secondCallStarted.future] against `Future.delayed(Duration.zero)`
+/// via [Future.any]. Whichever resolves first releases the gate. The
+/// second [uptimeMs] call resolves [_secondCallStarted] synchronously
+/// and itself returns immediately.
+///
+/// Why one event-loop turn is the right fallback window: the race
+/// fires when both `_completeSync` invocations are scheduled by the
+/// same SyncEngine listener tick. The first invocation hits its
+/// `await _clock.uptimeMs()` and yields; the second invocation —
+/// scheduled as an `unawaited` microtask in the same listener tick —
+/// reaches its own `await _clock.uptimeMs()` within a small handful
+/// of microtasks. `Future.delayed(Duration.zero)` is timer-driven
+/// and resolves only after the current event-loop iteration drains
+/// its microtask queue, so the second call (if it is going to come)
+/// always wins the race against the timer fallback.
+///
+/// Equivalently: when the production re-entry guards are working,
+/// only one `_completeSync` reaches `_createAnchor`, so
+/// [_secondCallStarted] is never completed and the timer wins after
+/// one event-loop turn — the test completes in microseconds, not
+/// hundreds of milliseconds. When the guards are disabled the
+/// second call wins, the gate releases synchronously, and the
+/// duplicate-emission assertion still fires.
+class GatedMonotonicClock implements MonotonicClock {
+  final Completer<void> _secondCallStarted = Completer<void>();
+  int callCount = 0;
+
+  @override
+  Future<int> uptimeMs() async {
+    callCount++;
+    if (callCount == 1) {
+      await Future.any([
+        _secondCallStarted.future,
+        Future<void>.delayed(Duration.zero),
+      ]);
+      return 100000;
+    } else {
+      if (!_secondCallStarted.isCompleted) {
+        _secondCallStarted.complete();
+      }
+      return 100000;
+    }
+  }
 }
 
 class RaceConditionSource implements TimeSource {
@@ -218,6 +276,9 @@ class WarmingTestSource implements TimeSource, Warmable {
 /// assert that warm-phase failures are surfaced.
 class RecordingObserver implements SyncObserver {
   final List<({String sourceId, Object error})> sourceFailures = [];
+  final List<ConsensusResult> consensusReached = [];
+  final List<SyncMetrics> metricsReported = [];
+  int syncStartedCount = 0;
 
   @override
   void onSourceFailed(String sourceId, Object error) {
@@ -225,15 +286,23 @@ class RecordingObserver implements SyncObserver {
   }
 
   @override
-  void onSyncStarted() {}
+  void onSyncStarted() {
+    syncStartedCount++;
+  }
+
   @override
   void onSampleReceived(TimeSample sample) {}
   @override
-  void onConsensusReached(ConsensusResult result) {}
+  void onConsensusReached(ConsensusResult result) {
+    consensusReached.add(result);
+  }
+
   @override
   void onSyncFailed(Object error) {}
   @override
-  void onMetricsReported(SyncMetrics metrics) {}
+  void onMetricsReported(SyncMetrics metrics) {
+    metricsReported.add(metrics);
+  }
 }
 
 void main() {
@@ -1040,5 +1109,138 @@ void main() {
           .toList();
       expect(stuckFailures, hasLength(8));
     });
+  });
+
+  group('SyncEngine _completeSync re-entry guard (skj.2)', () {
+    late MockMonotonicClock clock;
+
+    setUp(() {
+      clock = MockMonotonicClock();
+    });
+
+    test(
+      'fires onConsensusReached/onMetricsReported exactly once per cycle '
+      'when the last sample triggers both early-exit and finalize paths',
+      () async {
+        final observer = RecordingObserver();
+        // Three sources returning identical intervals so the engine
+        // can reach stableCount == requiredStability (2, no variance)
+        // on the third sample. MarzulloEngine.resolve returns null
+        // for the first sample (under minimumQuorum), so the second
+        // sample is the *first* non-null resolve and produces
+        // stableCount == 1; the third sample produces a matching
+        // resolve and brings stableCount to 2. Both _completeSync
+        // call sites then fire from the *same* listener invocation
+        // — sample 3's:
+        //
+        //  * The stability check trips `stableCount >=
+        //    requiredStability`, so the early-exit branch fires
+        //    `unawaited(_completeSync(...))` (call A).
+        //  * Immediately after, in the same listener tick,
+        //    `pendingQueries` is decremented from 1 to 0, which
+        //    triggers `_finalizeSync` -> `_completeSync` (call B).
+        //
+        // Both calls are scheduled before either yields, so without
+        // a synchronous re-entry guard both pass `completer.isCompleted
+        // == false`, both await `_createAnchor`, and both emit
+        // observer events.
+        //
+        // GatedMonotonicClock holds call A's _createAnchor pending
+        // until call B's _createAnchor also begins, forcing both
+        // _completeSync continuations to resume in the same
+        // microtask burst. Without this gate, default microtask
+        // scheduling lets call A complete the Completer before call
+        // B's guard even runs, so the race never fires in-process
+        // even though it is reachable on a real device — the
+        // empirical witness from integration/bleeding-edge stress
+        // runs (Pixel Tablet, 2026-05-08) confirms the race fires
+        // when wall-clock timing of source responses brings the two
+        // call sites into overlap.
+        final gatedClock = GatedMonotonicClock();
+        final s1 = RaceConditionSource('s1', Duration.zero, 1000000, 'g1');
+        final s2 = RaceConditionSource('s2', Duration.zero, 1000000, 'g2');
+        final s3 = RaceConditionSource('s3', Duration.zero, 1000000, 'g3');
+
+        final engine = SyncEngine(
+          config: const TrustedTimeConfig(
+            minimumQuorum: 2,
+            minGroupCount: 2,
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+          ).copyWith(additionalSources: [s1, s2, s3]),
+          clock: gatedClock,
+          observer: observer,
+        );
+
+        await engine.sync();
+
+        expect(
+          observer.consensusReached,
+          hasLength(1),
+          reason:
+              'onConsensusReached should fire exactly once per sync cycle; '
+              'duplicate emission indicates the _completeSync re-entry '
+              'race has reappeared',
+        );
+        expect(
+          observer.metricsReported,
+          hasLength(1),
+          reason:
+              'onMetricsReported should fire exactly once per sync cycle; '
+              'duplicate emission indicates the _completeSync re-entry '
+              'race has reappeared',
+        );
+        expect(
+          observer.syncStartedCount,
+          1,
+          reason:
+              'sanity: a single sync() call must produce exactly one '
+              'onSyncStarted event',
+        );
+      },
+    );
+
+    test(
+      'fires onConsensusReached/onMetricsReported exactly once per cycle '
+      'across repeated sync invocations (re-entry guard resets cleanly)',
+      () async {
+        final observer = RecordingObserver();
+        // Three identical sources so each cycle actually exercises
+        // the early-exit + finalize race (see the previous test for
+        // why two sources is insufficient). This is what makes the
+        // "guard resets cleanly" assertion meaningful — without the
+        // race firing every cycle, this test would only verify that
+        // sync completes successfully three times.
+        final s1 = RaceConditionSource('s1', Duration.zero, 1000000, 'g1');
+        final s2 = RaceConditionSource('s2', Duration.zero, 1000000, 'g2');
+        final s3 = RaceConditionSource('s3', Duration.zero, 1000000, 'g3');
+
+        final engine = SyncEngine(
+          config: const TrustedTimeConfig(
+            minimumQuorum: 2,
+            minGroupCount: 2,
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+          ).copyWith(additionalSources: [s1, s2, s3]),
+          clock: clock,
+          observer: observer,
+        );
+
+        // Three serial sync cycles must each emit exactly one
+        // consensus + metrics event. Catches a regression where the
+        // re-entry flag stays true after the first cycle and the
+        // second cycle silently elides its own (legitimate)
+        // _completeSync.
+        for (var i = 0; i < 3; i++) {
+          await engine.sync();
+        }
+
+        expect(observer.consensusReached, hasLength(3));
+        expect(observer.metricsReported, hasLength(3));
+        expect(observer.syncStartedCount, 3);
+      },
+    );
   });
 }
