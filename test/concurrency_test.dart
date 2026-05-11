@@ -17,22 +17,41 @@ class MockMonotonicClock implements MonotonicClock {
 }
 
 /// Monotonic clock that deliberately holds the first [uptimeMs] call
-/// pending until a second call arrives. Used by the `_completeSync`
-/// re-entry guard tests (skj.2) to force two `_completeSync`
-/// invocations to overlap on the same microtask burst — without this
-/// gate, the default microtask scheduling lets the first call's
-/// `_createAnchor` resolve and complete the [Completer] before the
-/// second call even reaches its guard check, so the race never
-/// actually fires in-process even though it is reachable on a real
-/// device.
+/// pending until a second call arrives, with a bounded fallback so
+/// the test cannot deadlock. Used by the `_completeSync` re-entry
+/// guard tests (skj.2) to force two `_completeSync` invocations to
+/// overlap on the same microtask burst — without this gate, the
+/// default microtask scheduling lets the first call's `_createAnchor`
+/// resolve and complete the [Completer] before the second call even
+/// reaches its guard check, so the race never actually fires
+/// in-process even though it is reachable on a real device.
 ///
-/// Behaviour: the first call awaits an internal completer keyed off
-/// the second call's arrival; the second call resolves that completer
-/// synchronously and itself returns immediately. Both calls then
-/// resume in the same microtask burst with their `await
-/// _clock.uptimeMs()` continuations queued together, exactly the
-/// shape that produces the duplicate-emission race in the wild.
+/// Behaviour:
+///
+///  * The first [uptimeMs] call awaits an internal completer keyed
+///    off the second call's arrival, but with a [gateTimeout]
+///    fallback. When the production re-entry guards are working as
+///    intended, only one `_completeSync` invocation reaches
+///    `_createAnchor` and therefore only a single [uptimeMs] call
+///    arrives; the timeout fallback releases the gate so the test
+///    completes promptly without relying on SyncEngine's outer
+///    request-budget timeout.
+///  * The second [uptimeMs] call resolves the gate synchronously and
+///    itself returns immediately. Both calls then resume in the same
+///    microtask burst with their `await _clock.uptimeMs()`
+///    continuations queued together — exactly the shape that produces
+///    the duplicate-emission race in the wild.
+///
+/// The fallback timeout does not weaken the regression witness: when
+/// both production guards are disabled the second `uptimeMs` call
+/// arrives within microseconds of the first (well before
+/// [gateTimeout] elapses), the gate releases via [Completer.complete]
+/// rather than the timeout, and the duplicate-emission assertion
+/// still fires.
 class GatedMonotonicClock implements MonotonicClock {
+  GatedMonotonicClock({this.gateTimeout = const Duration(milliseconds: 200)});
+
+  final Duration gateTimeout;
   final Completer<void> _secondCallStarted = Completer<void>();
   int callCount = 0;
 
@@ -40,7 +59,7 @@ class GatedMonotonicClock implements MonotonicClock {
   Future<int> uptimeMs() async {
     callCount++;
     if (callCount == 1) {
-      await _secondCallStarted.future;
+      await _secondCallStarted.future.timeout(gateTimeout, onTimeout: () {});
       return 100000;
     } else {
       if (!_secondCallStarted.isCompleted) {
