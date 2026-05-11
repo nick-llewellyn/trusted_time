@@ -302,5 +302,37 @@ void main() {
       // Should be null because both samples exceed maxAllowedUncertaintyMs
       expect(result, isNull);
     });
+
+    /// Regression for trusted_time-2vl.
+    ///
+    /// The endpoint sort comparator must satisfy Dart's `Comparator`
+    /// contract: `compare(a, b) == 0` when `a` and `b` are equal under
+    /// the ordering. Two endpoints sharing both `timeMs` and `type` are
+    /// equal under the marzullo ordering (interchanging them does not
+    /// change the sweep result), so the comparator must return 0.
+    ///
+    /// Resolves consensus from three sources whose endpoints share
+    /// timestamps with peers of the same type. Behaviour is unchanged
+    /// from before the contract repair (consensus midpoint and
+    /// uncertainty are identical); the assertion is that the engine
+    /// returns a coherent ConsensusResult rather than relying on
+    /// TimSort's tolerance for broken comparators.
+    test('endpoint sort returns 0 for two same-type same-time endpoints '
+        '(Comparator contract)', () {
+      // Three sources with identical intervals — every endpoint
+      // collides with two peers of the same type at the same time.
+      final result = engine.resolve([
+        createSample(id: 'a', utc: baseTime, uncertaintyMs: 100),
+        createSample(id: 'b', utc: baseTime, uncertaintyMs: 100),
+        createSample(id: 'c', utc: baseTime, uncertaintyMs: 100),
+      ]);
+
+      expect(result, isNotNull);
+      expect(result!.utc.millisecondsSinceEpoch, baseMs);
+      expect(result.uncertaintyMs, 100);
+      expect(result.participantCount, 3);
+      // Sample-identity preserved across the sort.
+      expect(result.participants, hasLength(3));
+    });
   });
 }
