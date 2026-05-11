@@ -63,7 +63,12 @@ void main() {
     test('accepts a well-formed https URL with default timeout', () {
       // Constructor must not throw and must not require a custom
       // timeout — the default (3 s) is preserved for direct callers.
-      expect(() => HttpsSource('https://example.com'), returnsNormally);
+      // Register a tear-down to dispose the default `http.Client`
+      // allocated by the factory so the test does not leak sockets
+      // across the suite run.
+      final source = HttpsSource('https://example.com');
+      addTearDown(source.dispose);
+      expect(source, isA<HttpsSource>());
     });
   });
 
