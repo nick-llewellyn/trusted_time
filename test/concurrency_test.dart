@@ -17,41 +17,40 @@ class MockMonotonicClock implements MonotonicClock {
 }
 
 /// Monotonic clock that deliberately holds the first [uptimeMs] call
-/// pending until a second call arrives, with a bounded fallback so
-/// the test cannot deadlock. Used by the `_completeSync` re-entry
-/// guard tests (skj.2) to force two `_completeSync` invocations to
-/// overlap on the same microtask burst — without this gate, the
-/// default microtask scheduling lets the first call's `_createAnchor`
-/// resolve and complete the [Completer] before the second call even
-/// reaches its guard check, so the race never actually fires
-/// in-process even though it is reachable on a real device.
+/// pending until either a second call arrives or one event-loop turn
+/// elapses. Used by the `_completeSync` re-entry guard tests (skj.2)
+/// to force two `_completeSync` invocations to overlap on the same
+/// microtask burst — without this gate, the default microtask
+/// scheduling lets the first call's `_createAnchor` resolve and
+/// complete the [Completer] before the second call even reaches its
+/// guard check, so the race never actually fires in-process even
+/// though it is reachable on a real device.
 ///
-/// Behaviour:
+/// Behaviour: the first [uptimeMs] call races
+/// [_secondCallStarted.future] against `Future.delayed(Duration.zero)`
+/// via [Future.any]. Whichever resolves first releases the gate. The
+/// second [uptimeMs] call resolves [_secondCallStarted] synchronously
+/// and itself returns immediately.
 ///
-///  * The first [uptimeMs] call awaits an internal completer keyed
-///    off the second call's arrival, but with a [gateTimeout]
-///    fallback. When the production re-entry guards are working as
-///    intended, only one `_completeSync` invocation reaches
-///    `_createAnchor` and therefore only a single [uptimeMs] call
-///    arrives; the timeout fallback releases the gate so the test
-///    completes promptly without relying on SyncEngine's outer
-///    request-budget timeout.
-///  * The second [uptimeMs] call resolves the gate synchronously and
-///    itself returns immediately. Both calls then resume in the same
-///    microtask burst with their `await _clock.uptimeMs()`
-///    continuations queued together — exactly the shape that produces
-///    the duplicate-emission race in the wild.
+/// Why one event-loop turn is the right fallback window: the race
+/// fires when both `_completeSync` invocations are scheduled by the
+/// same SyncEngine listener tick. The first invocation hits its
+/// `await _clock.uptimeMs()` and yields; the second invocation —
+/// scheduled as an `unawaited` microtask in the same listener tick —
+/// reaches its own `await _clock.uptimeMs()` within a small handful
+/// of microtasks. `Future.delayed(Duration.zero)` is timer-driven
+/// and resolves only after the current event-loop iteration drains
+/// its microtask queue, so the second call (if it is going to come)
+/// always wins the race against the timer fallback.
 ///
-/// The fallback timeout does not weaken the regression witness: when
-/// both production guards are disabled the second `uptimeMs` call
-/// arrives within microseconds of the first (well before
-/// [gateTimeout] elapses), the gate releases via [Completer.complete]
-/// rather than the timeout, and the duplicate-emission assertion
-/// still fires.
+/// Equivalently: when the production re-entry guards are working,
+/// only one `_completeSync` reaches `_createAnchor`, so
+/// [_secondCallStarted] is never completed and the timer wins after
+/// one event-loop turn — the test completes in microseconds, not
+/// hundreds of milliseconds. When the guards are disabled the
+/// second call wins, the gate releases synchronously, and the
+/// duplicate-emission assertion still fires.
 class GatedMonotonicClock implements MonotonicClock {
-  GatedMonotonicClock({this.gateTimeout = const Duration(milliseconds: 200)});
-
-  final Duration gateTimeout;
   final Completer<void> _secondCallStarted = Completer<void>();
   int callCount = 0;
 
@@ -59,7 +58,10 @@ class GatedMonotonicClock implements MonotonicClock {
   Future<int> uptimeMs() async {
     callCount++;
     if (callCount == 1) {
-      await _secondCallStarted.future.timeout(gateTimeout, onTimeout: () {});
+      await Future.any([
+        _secondCallStarted.future,
+        Future<void>.delayed(Duration.zero),
+      ]);
       return 100000;
     } else {
       if (!_secondCallStarted.isCompleted) {
