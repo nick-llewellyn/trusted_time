@@ -101,14 +101,14 @@ final class NtsSource implements TimeSource, Warmable {
         timeoutMs: _timeoutMs,
         dnsConcurrencyCap: _dnsConcurrencyCap,
       );
-    } on nts.NtsError_Timeout catch (e) {
+    } on nts.NtsErrorTimeout catch (e) {
       // Dns(Saturation) means the bounded DNS resolver pool was at
       // capacity for this call. The host itself is healthy; SyncEngine
       // should retry on the next cycle without applying exponential
       // cooldown. Other timeout phases (Connect, Tls, KeRecordIo, Ntp,
       // DnsTimeout) propagate as-is and follow the standard cooldown
       // path.
-      if (e.field0 == nts.TimeoutPhase.dnsSaturation) {
+      if (e.phase == nts.TimeoutPhase.dnsSaturation) {
         throw TransientSourceError(e);
       }
       rethrow;

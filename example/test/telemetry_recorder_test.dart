@@ -91,14 +91,14 @@ void main() {
     });
 
     test(
-      'raw NtsError_Timeout surfaces the per-phase tag without transient prefix',
+      'raw NtsErrorTimeout surfaces the per-phase tag without transient prefix',
       () {
         final recorder = TelemetryRecorder();
         addTearDown(recorder.dispose);
 
         recorder.onSourceFailed(
           'nts-cloudflare',
-          NtsError_Timeout(TimeoutPhase.dnsTimeout),
+          NtsError.timeout(phase: TimeoutPhase.dnsTimeout),
         );
 
         final detail = recorder.events.last.detail;
@@ -108,7 +108,7 @@ void main() {
     );
 
     test(
-      'TransientSourceError wrapping NtsError_Timeout surfaces both '
+      'TransientSourceError wrapping NtsErrorTimeout surfaces both '
       'the transient tag and the per-phase tag',
       () {
         final recorder = TelemetryRecorder();
@@ -117,7 +117,7 @@ void main() {
         recorder.onSourceFailed(
           'nts-cloudflare',
           TransientSourceError(
-            NtsError_Timeout(TimeoutPhase.dnsSaturation),
+            NtsError.timeout(phase: TimeoutPhase.dnsSaturation),
           ),
         );
 
