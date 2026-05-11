@@ -91,6 +91,33 @@ final class TrustedTimeImpl {
   Timer? _desktopBgTimer;
   StreamSubscription<IntegrityEvent>? _integritySub;
   Completer<void>? _syncInProgress;
+
+  /// Synchronous re-entry guard for [_performSync], paired with
+  /// [_syncInProgress]. The Completer-based check is the canonical
+  /// gate that lets concurrent callers converge on the same
+  /// in-flight future, but it relies on the assignment of
+  /// `_syncInProgress = completer` happening synchronously before
+  /// the first `await`. This bool is set together with that
+  /// assignment (and reset together with it in the finally block),
+  /// inspected first, so any future refactor that accidentally
+  /// widens the window between guard-check and Completer-set —
+  /// or introduces an `await` before the Completer assignment — is
+  /// still protected against same-microtask re-entry from
+  /// observers, integrity events, or method-channel callbacks.
+  ///
+  /// Both fields are written together and read together; the
+  /// guarded path in [_performSync] throws [StateError] if it ever
+  /// observes the bool true with the Completer null, on the
+  /// principle that an invariant break is better surfaced loudly
+  /// than masked by a synthetic resolved future.
+  ///
+  /// Mirrors the `_CompletionGuard` pattern used inside
+  /// [SyncEngine._completeSync] (PR #22 / `trusted_time-skj.2`):
+  /// a synchronous flag that is checked and set together before
+  /// the first await is the only structurally-correct way to
+  /// catch re-entry that the Completer-based guard might miss
+  /// after a future refactor.
+  bool _syncEntryGuard = false;
   int? _offlineLastUtcMs;
   int? _offlineLastWallMs;
   // Idempotency guard for [dispose]. Composed inner resources have
@@ -307,7 +334,34 @@ final class TrustedTimeImpl {
   }
 
   Future<void> _performSync() async {
-    if (_syncInProgress != null) return _syncInProgress!.future;
+    // Two-tier in-flight guard. The synchronous bool [_syncEntryGuard]
+    // is checked first and set together with [_syncInProgress] before
+    // any line that could yield to the event loop, so same-microtask
+    // re-entry from observers, integrity events, or method-channel
+    // callbacks cannot pass the gate. The Completer-based guard
+    // exists in addition so concurrent callers receive the same
+    // in-flight future and complete together when the cycle resolves.
+    //
+    // Both are reset together in the finally block, so the bool and
+    // Completer are always observably in sync. If they ever diverge
+    // (bool true, Completer null), that is a structural lifecycle
+    // bug — fail loud with a [StateError] rather than silently
+    // returning a resolved future, which would tell the caller a
+    // sync succeeded when in fact the engine state machine is
+    // corrupted. See the [_syncEntryGuard] field dartdoc for the
+    // broader rationale.
+    if (_syncEntryGuard || _syncInProgress != null) {
+      final inFlight = _syncInProgress;
+      if (inFlight != null) return inFlight.future;
+      throw StateError(
+        '_performSync invariant broken: _syncEntryGuard is true but '
+        '_syncInProgress is null. Both fields are set and reset '
+        'together in this method; observing one without the other '
+        'indicates the engine state machine has been corrupted by '
+        'an out-of-band mutation or a partial-cleanup bug.',
+      );
+    }
+    _syncEntryGuard = true;
     final completer = Completer<void>();
     _syncInProgress = completer;
     _retryTimer?.cancel();
@@ -343,7 +397,11 @@ final class TrustedTimeImpl {
       _trusted = false;
       _scheduleRetry();
     } finally {
+      // Reset together so the bool and Completer stay observably in
+      // sync. A future caller that arrives after this point sees
+      // both cleared and starts a fresh cycle.
       _syncInProgress = null;
+      _syncEntryGuard = false;
       completer.complete();
     }
   }

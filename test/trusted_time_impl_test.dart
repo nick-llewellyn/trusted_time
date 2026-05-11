@@ -172,6 +172,77 @@ void main() {
     );
 
     test(
+      'concurrent forceResync calls converge on a single in-flight '
+      'cycle and emit exactly one onSyncStarted (trusted_time-exw)',
+      () async {
+        // Acceptance criterion from `bd-trusted_time-exw`: synchronously
+        // dispatch multiple sync requests in a tight loop and assert
+        // exactly one `onSyncStarted` is emitted. Validates the
+        // two-tier in-flight guard in `_performSync`: the synchronous
+        // [_syncEntryGuard] bool catches same-microtask re-entry
+        // before any await, and the [_syncInProgress] Completer makes
+        // the converging callers all complete on the same future.
+        //
+        // Without either guard tier the three `forceResync` calls
+        // would each reach `_syncEngine.sync()` independently and
+        // produce three observable `onSyncStarted` events.
+        await TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+          ),
+        );
+        addTearDown(TrustedTimeImpl.instance.dispose);
+
+        final probe = _SyncStartedProbe();
+        TrustedTime.registerObserver(probe);
+        addTearDown(() => TrustedTime.unregisterObserver(probe));
+
+        // Three back-to-back synchronous dispatches in a single list
+        // literal. All three `forceResync()` calls execute their
+        // synchronous prologues sequentially in the *same microtask*
+        // — async functions in Dart run synchronously until their
+        // first `await`, and calling one without awaiting does not
+        // yield between back-to-back invocations. Trace:
+        //
+        //  * Call A enters `forceResync` → enters `_performSync`,
+        //    synchronously sets [_syncEntryGuard]+[_syncInProgress],
+        //    cancels timers, then hits `await _syncEngine.sync()`
+        //    and yields.
+        //  * Control returns to the list-literal evaluation. Call B
+        //    enters `forceResync` → enters `_performSync` *in the
+        //    same microtask*. The two-tier guard sees
+        //    `_syncEntryGuard == true` and returns A's in-flight
+        //    future. B's `await _performSync()` then awaits A's
+        //    future.
+        //  * Call C does the same, also returning A's future.
+        //
+        // All three Futures resolve when A's cycle completes. Without
+        // either guard tier, calls 2 and 3 would each reach
+        // `_syncEngine.sync()` independently and produce three
+        // observable `onSyncStarted` events — that is the regression
+        // signature this assertion catches.
+        final futures = <Future<void>>[
+          TrustedTime.forceResync(),
+          TrustedTime.forceResync(),
+          TrustedTime.forceResync(),
+        ];
+        await Future.wait(futures);
+
+        expect(
+          probe.startCount,
+          equals(1),
+          reason:
+              'Three concurrent forceResync calls must converge on '
+              'a single in-flight cycle; multiple onSyncStarted '
+              'events indicate the in-flight guard has regressed.',
+        );
+      },
+    );
+
+    test(
       'returns the same TrustedTimeConfig instance passed to initialize',
       () async {
         // Empty source lists keep the test fully offline: the engine
