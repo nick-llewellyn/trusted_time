@@ -229,8 +229,20 @@ final class MarzulloEngine {
       }
     }
 
+    // Marzullo midpoint and half-width. `~/` truncates toward zero, so
+    // when the consensus window has odd width the published interval
+    // `[midMs - uncertaintyMs, midMs + uncertaintyMs]` would miss the
+    // truncation residual on one side of the true window
+    // `[bestStart, bestEnd]`. Worst case for `bestStart=0, bestEnd=3`:
+    // truncating gives `midMs=1, uncertaintyMs=1`, publishing `[0, 2]`
+    // while the true window is `[0, 3]` — 1 ms uncovered at the top.
+    //
+    // Ceiling-divide the half-width so the published interval always
+    // covers the true window. Worst-case overstatement is 1 ms; the
+    // 1 ms minimum floor below remains the tight lower bound.
     final midMs = (bestStart + bestEnd) ~/ 2;
-    final uncertaintyMs = (bestEnd - bestStart) ~/ 2;
+    final width = bestEnd - bestStart;
+    final uncertaintyMs = (width + 1) ~/ 2;
 
     // The consensus authentication level is determined by the "weakest link."
     // If even one source in the quorum is unauthenticated, the entire

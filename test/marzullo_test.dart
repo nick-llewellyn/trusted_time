@@ -303,6 +303,102 @@ void main() {
       expect(result, isNull);
     });
 
+    /// Regressions for trusted_time-02x.
+    ///
+    /// The Marzullo half-width was previously computed via truncating
+    /// integer division: `uncertaintyMs = (bestEnd - bestStart) ~/ 2`.
+    /// When the consensus window `[bestStart, bestEnd]` has odd width
+    /// the published interval `[midMs - uncertaintyMs, midMs + uncertaintyMs]`
+    /// missed the truncation residual on one side of the engine's
+    /// own `result.interval`. The fix ceiling-divides the width:
+    /// `uncertaintyMs = ((bestEnd - bestStart) + 1) ~/ 2`, so the
+    /// published symmetric `±U` interval always covers the engine's
+    /// reported `interval` regardless of width parity.
+    ///
+    /// These tests construct `TimeSample`s with explicit `TimeInterval`
+    /// endpoints (bypassing the symmetric `±uncertaintyMs` helper) so
+    /// that the engine's consensus window has an odd width — a case
+    /// the helper cannot otherwise produce.
+    group('Anchor uncertainty covers engine consensus interval', () {
+      TimeSample directSample({
+        required String id,
+        required int startMs,
+        required int endMs,
+        String? groupId,
+      }) {
+        return TimeSample(
+          sourceId: id,
+          groupId: groupId ?? id,
+          interval: TimeInterval(startMs: startMs, endMs: endMs),
+        );
+      }
+
+      test('odd-width window: published [mid-U, mid+U] covers the engine '
+          'consensus interval (regression)', () {
+        // A: [baseMs+100, baseMs+105]
+        // B: [baseMs+102, baseMs+107]
+        // Engine produces consensus window [baseMs+102, baseMs+107] —
+        // width 5 (odd). midMs = baseMs+104.
+        //
+        // Pre-fix: uncertaintyMs = 5 ~/ 2 = 2. Published
+        // [baseMs+102, baseMs+106] — missing baseMs+107 at the top.
+        // Post-fix: uncertaintyMs = (5 + 1) ~/ 2 = 3. Published
+        // [baseMs+101, baseMs+107] — covers the engine's window.
+        final result = engine.resolve([
+          directSample(id: 'a', startMs: baseMs + 100, endMs: baseMs + 105),
+          directSample(id: 'b', startMs: baseMs + 102, endMs: baseMs + 107),
+        ]);
+
+        expect(result, isNotNull);
+        expect(result!.interval, isNotNull);
+        final mid = result.utc.millisecondsSinceEpoch;
+        final publishedLower = mid - result.uncertaintyMs;
+        final publishedUpper = mid + result.uncertaintyMs;
+
+        expect(publishedLower, lessThanOrEqualTo(result.interval!.startMs));
+        expect(publishedUpper, greaterThanOrEqualTo(result.interval!.endMs));
+        // Pin the post-fix value so a regression on either direction
+        // (truncating again, or over-widening) is caught.
+        expect(result.uncertaintyMs, 3);
+      });
+
+      test('even-width window: behaviour unchanged across the fix', () {
+        // A: [baseMs+100, baseMs+106]
+        // B: [baseMs+102, baseMs+108]
+        // Engine produces consensus window [baseMs+102, baseMs+108] —
+        // width 6 (even). Both pre-fix and post-fix:
+        // uncertaintyMs = 6 ~/ 2 = 3. midMs = baseMs+105.
+        // Published [baseMs+102, baseMs+108] matches exactly.
+        final result = engine.resolve([
+          directSample(id: 'a', startMs: baseMs + 100, endMs: baseMs + 106),
+          directSample(id: 'b', startMs: baseMs + 102, endMs: baseMs + 108),
+        ]);
+
+        expect(result, isNotNull);
+        expect(result!.utc.millisecondsSinceEpoch, baseMs + 105);
+        expect(result.uncertaintyMs, 3);
+        expect(result.interval?.startMs, baseMs + 102);
+        expect(result.interval?.endMs, baseMs + 108);
+      });
+
+      test('odd-width with overlapping uppers preserves the 1 ms floor', () {
+        // A: [baseMs+100, baseMs+102]
+        // B: [baseMs+101, baseMs+102]
+        // Engine produces consensus window [baseMs+101, baseMs+102] —
+        // width 1 (odd, minimum non-zero).
+        // Pre-fix: uncertaintyMs = 1 ~/ 2 = 0, then max(1, 0) = 1.
+        // Post-fix: uncertaintyMs = (1 + 1) ~/ 2 = 1.
+        // Same value — floor preserved as the tight lower bound.
+        final result = engine.resolve([
+          directSample(id: 'a', startMs: baseMs + 100, endMs: baseMs + 102),
+          directSample(id: 'b', startMs: baseMs + 101, endMs: baseMs + 102),
+        ]);
+
+        expect(result, isNotNull);
+        expect(result!.uncertaintyMs, 1);
+      });
+    });
+
     /// Regression for trusted_time-2vl.
     ///
     /// The endpoint sort comparator must satisfy Dart's `Comparator`
