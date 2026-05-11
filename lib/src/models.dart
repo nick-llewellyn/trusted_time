@@ -71,6 +71,7 @@ final class TrustedTimeConfig {
     this.earlyExit = true,
     this.oscillatorDriftFactor = 0.00005,
     this.backgroundSyncInterval,
+    this.transientStreakThreshold = 5,
   });
 
   /// Creates a Web-compatible configuration that only uses HTTPS sources.
@@ -169,6 +170,40 @@ final class TrustedTimeConfig {
   /// If null, background synchronization is disabled.
   final Duration? backgroundSyncInterval;
 
+  /// Number of consecutive [TransientSourceError] failures from a
+  /// single source before the engine escalates that source onto the
+  /// same exponential-cooldown ladder regular failures use.
+  ///
+  /// [TransientSourceError] exists so the engine can retry an
+  /// otherwise-healthy source on the next cycle without applying
+  /// cooldown — the canonical case is `package:nts`'s
+  /// `NtsError.timeout(TimeoutPhase.dnsSaturation)`, where the
+  /// bounded DNS resolver pool was momentarily full and the source
+  /// itself is fine. A genuinely transient condition resolves within
+  /// a cycle or two; a "transient" condition that persists across
+  /// many cycles is indistinguishable from a sustained outage as far
+  /// as quorum participation goes, and should be treated like one.
+  ///
+  /// When this many consecutive transient failures accumulate from
+  /// the same source, the engine increments that source's failure
+  /// score and applies the standard capped-exponential
+  /// `2^min(score, 6)`-minute cooldown (i.e. doubling from 2
+  /// minutes at score 1 up to 64 minutes at score 6, then flat
+  /// thereafter), identical to what a non-transient failure would
+  /// produce. The streak counter resets on a successful query, on a
+  /// regular (non-transient) failure, and on each escalation.
+  ///
+  /// Default: `5`. With the default [refreshInterval] of 30 minutes
+  /// this corresponds to ~2.5 hours of sustained transients before
+  /// escalation, long enough that a real DNS-pool burst clears
+  /// naturally and short enough that a stuck host eventually
+  /// surfaces as unhealthy.
+  ///
+  /// Set to `0` (or any non-positive value) to disable escalation
+  /// entirely and preserve the pre-streak-guard behaviour where
+  /// transient failures retry indefinitely.
+  final int transientStreakThreshold;
+
   /// Returns a new [TrustedTimeConfig] with the supplied fields replaced.
   ///
   /// Any field omitted (or passed as `null`) keeps its current value.
@@ -191,6 +226,7 @@ final class TrustedTimeConfig {
     bool? earlyExit,
     double? oscillatorDriftFactor,
     Duration? backgroundSyncInterval,
+    int? transientStreakThreshold,
   }) {
     return TrustedTimeConfig(
       ntpServers: ntpServers ?? this.ntpServers,
@@ -212,6 +248,8 @@ final class TrustedTimeConfig {
           oscillatorDriftFactor ?? this.oscillatorDriftFactor,
       backgroundSyncInterval:
           backgroundSyncInterval ?? this.backgroundSyncInterval,
+      transientStreakThreshold:
+          transientStreakThreshold ?? this.transientStreakThreshold,
     );
   }
 
@@ -234,7 +272,8 @@ final class TrustedTimeConfig {
         other.persistState == persistState &&
         other.earlyExit == earlyExit &&
         other.oscillatorDriftFactor == oscillatorDriftFactor &&
-        other.backgroundSyncInterval == backgroundSyncInterval;
+        other.backgroundSyncInterval == backgroundSyncInterval &&
+        other.transientStreakThreshold == transientStreakThreshold;
   }
 
   @override
@@ -255,6 +294,7 @@ final class TrustedTimeConfig {
     earlyExit,
     oscillatorDriftFactor,
     backgroundSyncInterval,
+    transientStreakThreshold,
   ]);
 
   @override
@@ -282,6 +322,7 @@ final class TrustedTimeConfig {
         '  earlyExit: $earlyExit,\n'
         '  oscillatorDriftFactor: $oscillatorDriftFactor,\n'
         '  backgroundSyncInterval: $backgroundSyncInterval,\n'
+        '  transientStreakThreshold: $transientStreakThreshold,\n'
         ')';
   }
 }
