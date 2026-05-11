@@ -186,8 +186,10 @@ final class TrustedTimeConfig {
   ///
   /// When this many consecutive transient failures accumulate from
   /// the same source, the engine increments that source's failure
-  /// score and applies the standard exponential `2^score`-minute
-  /// cooldown, identical to what a non-transient failure would
+  /// score and applies the standard capped-exponential
+  /// `2^min(score, 6)`-minute cooldown (i.e. doubling from 2
+  /// minutes at score 1 up to 64 minutes at score 6, then flat
+  /// thereafter), identical to what a non-transient failure would
   /// produce. The streak counter resets on a successful query, on a
   /// regular (non-transient) failure, and on each escalation.
   ///
