@@ -387,6 +387,17 @@ final class SyncEngine {
 
     try {
       final anchor = await _createAnchor(result);
+      // Defensive re-check after the await: no public path currently
+      // completes [completer] while [_createAnchor] is in-flight (the
+      // no-quorum branch of [_finalizeSync] is unreachable once
+      // early-exit has fired, and the outer timeout wraps
+      // [completer.future] rather than the completer itself), but a
+      // future code change that introduces such a path would
+      // otherwise cause `success` observer events to be emitted for
+      // a cycle that ultimately failed. Bail before any observable
+      // work if the completer has been resolved (or errored)
+      // out-of-band.
+      if (completer.isCompleted) return;
       _observer?.onConsensusReached(result);
 
       _observer?.onMetricsReported(
