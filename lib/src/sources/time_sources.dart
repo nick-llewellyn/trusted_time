@@ -8,12 +8,58 @@ export 'nts_source_stub.dart' if (dart.library.io) 'nts_source.dart';
 
 /// Fetches UTC time from an HTTPS endpoint's `Date` response header.
 final class HttpsSource implements TimeSource {
-  /// Documented.
-  HttpsSource(this._url, {http.Client? client})
-    : _client = client ?? http.Client();
+  /// Creates an [HttpsSource] for the given HTTPS [url].
+  ///
+  /// Validates [url], [requestTimeout], and (when not provided) defers
+  /// allocating the default [http.Client] until after validation
+  /// passes. Throws [ArgumentError] if:
+  ///   * [requestTimeout] is non-positive,
+  ///   * [url] cannot be parsed as a URI,
+  ///   * the URI scheme is not `https`, or
+  ///   * the URI has no host.
+  ///
+  /// On a validation failure a user-supplied [client] is left
+  /// untouched (the factory returns before any field assignment, so
+  /// the caller still owns and is responsible for the client). When
+  /// [client] is null no default [http.Client] is allocated until
+  /// every check has passed, so a misconfiguration cannot leak a
+  /// freshly-allocated socket pool.
+  factory HttpsSource(
+    String url, {
+    http.Client? client,
+    Duration requestTimeout = const Duration(seconds: 3),
+  }) {
+    if (requestTimeout <= Duration.zero) {
+      throw ArgumentError.value(
+        requestTimeout,
+        'requestTimeout',
+        'must be strictly positive',
+      );
+    }
+    final Uri uri;
+    try {
+      uri = Uri.parse(url);
+    } on FormatException catch (e) {
+      throw ArgumentError.value(url, 'url', 'is not a parseable URI: $e');
+    }
+    if (uri.scheme != 'https') {
+      throw ArgumentError.value(
+        url,
+        'url',
+        'must use the https scheme (got "${uri.scheme}")',
+      );
+    }
+    if (!uri.hasAuthority || uri.host.isEmpty) {
+      throw ArgumentError.value(url, 'url', 'must contain a non-empty host');
+    }
+    return HttpsSource._(url, client ?? http.Client(), requestTimeout);
+  }
+
+  HttpsSource._(this._url, this._client, this._requestTimeout);
 
   final String _url;
   final http.Client _client;
+  final Duration _requestTimeout;
 
   @override
   String get id => '${TimeSource.prefixHttps}$_url';
@@ -32,11 +78,11 @@ final class HttpsSource implements TimeSource {
     final uri = Uri.parse(_url);
     final sw = Stopwatch()..start();
 
-    var response = await _client.head(uri).timeout(const Duration(seconds: 3));
+    var response = await _client.head(uri).timeout(_requestTimeout);
     if (response.statusCode == 405 || response.headers['date'] == null) {
       sw.reset();
       sw.start();
-      response = await _client.get(uri).timeout(const Duration(seconds: 3));
+      response = await _client.get(uri).timeout(_requestTimeout);
     }
     sw.stop();
 
