@@ -218,6 +218,9 @@ class WarmingTestSource implements TimeSource, Warmable {
 /// assert that warm-phase failures are surfaced.
 class RecordingObserver implements SyncObserver {
   final List<({String sourceId, Object error})> sourceFailures = [];
+  final List<ConsensusResult> consensusReached = [];
+  final List<SyncMetrics> metricsReported = [];
+  int syncStartedCount = 0;
 
   @override
   void onSourceFailed(String sourceId, Object error) {
@@ -225,15 +228,23 @@ class RecordingObserver implements SyncObserver {
   }
 
   @override
-  void onSyncStarted() {}
+  void onSyncStarted() {
+    syncStartedCount++;
+  }
+
   @override
   void onSampleReceived(TimeSample sample) {}
   @override
-  void onConsensusReached(ConsensusResult result) {}
+  void onConsensusReached(ConsensusResult result) {
+    consensusReached.add(result);
+  }
+
   @override
   void onSyncFailed(Object error) {}
   @override
-  void onMetricsReported(SyncMetrics metrics) {}
+  void onMetricsReported(SyncMetrics metrics) {
+    metricsReported.add(metrics);
+  }
 }
 
 void main() {
@@ -1040,5 +1051,105 @@ void main() {
           .toList();
       expect(stuckFailures, hasLength(8));
     });
+  });
+
+  group('SyncEngine _completeSync re-entry guard (skj.2)', () {
+    late MockMonotonicClock clock;
+
+    setUp(() {
+      clock = MockMonotonicClock();
+    });
+
+    test(
+      'fires onConsensusReached/onMetricsReported exactly once per cycle '
+      'when the last sample triggers both early-exit and finalize paths',
+      () async {
+        final observer = RecordingObserver();
+        // Two sources returning identical intervals so the engine
+        // reaches stableCount == requiredStability (2, no variance) on
+        // the second sample. That second sample is also the last
+        // pending query, so the listener fires _completeSync via the
+        // early-exit branch AND _finalizeSync (which itself calls
+        // _completeSync) via the pendingQueries == 0 branch in the
+        // same listener invocation. Without the synchronous re-entry
+        // guard this produced two onConsensusReached + two
+        // onMetricsReported events per cycle.
+        final s1 = RaceConditionSource('s1', Duration.zero, 1000000, 'g1');
+        final s2 = RaceConditionSource('s2', Duration.zero, 1000000, 'g2');
+
+        final engine = SyncEngine(
+          config: const TrustedTimeConfig(
+            minimumQuorum: 2,
+            minGroupCount: 2,
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+          ).copyWith(additionalSources: [s1, s2]),
+          clock: clock,
+          observer: observer,
+        );
+
+        await engine.sync();
+
+        expect(
+          observer.consensusReached,
+          hasLength(1),
+          reason:
+              'onConsensusReached should fire exactly once per sync cycle; '
+              'duplicate emission indicates the _completeSync re-entry '
+              'race has reappeared',
+        );
+        expect(
+          observer.metricsReported,
+          hasLength(1),
+          reason:
+              'onMetricsReported should fire exactly once per sync cycle; '
+              'duplicate emission indicates the _completeSync re-entry '
+              'race has reappeared',
+        );
+        expect(
+          observer.syncStartedCount,
+          1,
+          reason:
+              'sanity: a single sync() call must produce exactly one '
+              'onSyncStarted event',
+        );
+      },
+    );
+
+    test(
+      'fires onConsensusReached/onMetricsReported exactly once per cycle '
+      'across repeated sync invocations (re-entry guard resets cleanly)',
+      () async {
+        final observer = RecordingObserver();
+        final s1 = RaceConditionSource('s1', Duration.zero, 1000000, 'g1');
+        final s2 = RaceConditionSource('s2', Duration.zero, 1000000, 'g2');
+
+        final engine = SyncEngine(
+          config: const TrustedTimeConfig(
+            minimumQuorum: 2,
+            minGroupCount: 2,
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+          ).copyWith(additionalSources: [s1, s2]),
+          clock: clock,
+          observer: observer,
+        );
+
+        // Three serial sync cycles must each emit exactly one
+        // consensus + metrics event. Catches a regression where the
+        // re-entry flag stays true after the first cycle and the
+        // second cycle silently elides its own (legitimate)
+        // _completeSync.
+        for (var i = 0; i < 3; i++) {
+          await engine.sync();
+        }
+
+        expect(observer.consensusReached, hasLength(3));
+        expect(observer.metricsReported, hasLength(3));
+        expect(observer.syncStartedCount, 3);
+      },
+    );
   });
 }

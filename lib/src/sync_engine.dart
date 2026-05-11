@@ -85,6 +85,29 @@ final class SyncEngine {
   /// [TrustedTimeConfig.transientStreakThreshold].
   final _sourceTransientStreak = <String, int>{};
 
+  /// Synchronous re-entry guard for [_completeSync]. Set to `true`
+  /// before [_completeSync] awaits [_createAnchor] and reset to
+  /// `false` at the top of each [sync] invocation.
+  ///
+  /// The completer-completion check on its own is insufficient because
+  /// [_completeSync] awaits [_createAnchor] before calling
+  /// `completer.complete(...)`, so two concurrent invocations from a
+  /// single `sync()` cycle (the early-exit path and the
+  /// last-sample/finalize path can both fire on the same listener
+  /// event) both pass the `completer.isCompleted` guard, both await,
+  /// and both fire `onConsensusReached` + `onMetricsReported` before
+  /// either resolves the completer. This synchronous flag is
+  /// inspected and set together before that first await so the
+  /// second caller bails immediately.
+  ///
+  /// The flag is engine-instance scoped, which assumes [sync] is not
+  /// invoked concurrently. Concurrent `sync()` invocations remain a
+  /// separate concern (tracked as `trusted_time-exw`); once that
+  /// guard is tight, this engine-scoped flag is unconditionally
+  /// correct. Until then it eliminates the intra-`sync()` race that
+  /// is the dominant source of duplicate consensus/metrics events.
+  bool _completionInFlight = false;
+
   int _syncAttempts = 0;
 
   /// Eagerly invokes [Warmable.warm] on every source that supports it,
@@ -123,6 +146,10 @@ final class SyncEngine {
   /// performs adaptive outlier filtering, and requires stability across
   /// multiple samples before finalizing an anchor.
   Future<TrustAnchor> sync() async {
+    // Reset the synchronous re-entry guard so a fresh `sync()` is not
+    // gated by a stale flag from the previous cycle. See the field's
+    // dartdoc for the concurrent-`sync()` caveat.
+    _completionInFlight = false;
     _observer?.onSyncStarted();
     final swSync = Stopwatch()..start();
 
@@ -349,7 +376,14 @@ final class SyncEngine {
     int latencyMs,
     Completer<TrustAnchor> completer,
   ) async {
-    if (completer.isCompleted) return;
+    // Synchronous re-entry guard: if the completer is already done OR
+    // a sibling _completeSync invocation has already started its
+    // _createAnchor await, bail before doing any observable work.
+    // Both checks must happen together with the [_completionInFlight]
+    // assignment, before the first await, so the second caller
+    // observes the in-flight flag set by the first.
+    if (completer.isCompleted || _completionInFlight) return;
+    _completionInFlight = true;
 
     try {
       final anchor = await _createAnchor(result);
