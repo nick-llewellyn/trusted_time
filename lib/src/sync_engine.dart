@@ -498,7 +498,7 @@ final class SyncEngine {
   /// expired, followed by a transient streak that escalated here — is
   /// treated as exhibiting cumulative unhealthiness and progresses
   /// further along the cooldown ladder rather than silently restarting
-  /// from one minute every time.
+  /// at the bottom rung (`2^1 = 2` minutes) every time.
   void _armCooldown(String sourceId) {
     _sourceTransientStreak.remove(sourceId);
     final score = (_sourceHealth[sourceId] ?? 0) + 1;
