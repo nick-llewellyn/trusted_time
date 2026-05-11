@@ -200,13 +200,30 @@ void main() {
         TrustedTime.registerObserver(probe);
         addTearDown(() => TrustedTime.unregisterObserver(probe));
 
-        // Three back-to-back synchronous dispatches without awaiting
-        // between them. The first call enters `_performSync`,
-        // synchronously sets [_syncEntryGuard]+[_syncInProgress], and
-        // yields at `await _syncEngine.sync()`. Calls 2 and 3 then
-        // run in subsequent microtasks (each `forceResync` is an
-        // async function, so the caller yields after each call) and
-        // hit the guard.
+        // Three back-to-back synchronous dispatches in a single list
+        // literal. All three `forceResync()` calls execute their
+        // synchronous prologues sequentially in the *same microtask*
+        // — async functions in Dart run synchronously until their
+        // first `await`, and calling one without awaiting does not
+        // yield between back-to-back invocations. Trace:
+        //
+        //  * Call A enters `forceResync` → enters `_performSync`,
+        //    synchronously sets [_syncEntryGuard]+[_syncInProgress],
+        //    cancels timers, then hits `await _syncEngine.sync()`
+        //    and yields.
+        //  * Control returns to the list-literal evaluation. Call B
+        //    enters `forceResync` → enters `_performSync` *in the
+        //    same microtask*. The two-tier guard sees
+        //    `_syncEntryGuard == true` and returns A's in-flight
+        //    future. B's `await _performSync()` then awaits A's
+        //    future.
+        //  * Call C does the same, also returning A's future.
+        //
+        // All three Futures resolve when A's cycle completes. Without
+        // either guard tier, calls 2 and 3 would each reach
+        // `_syncEngine.sync()` independently and produce three
+        // observable `onSyncStarted` events — that is the regression
+        // signature this assertion catches.
         final futures = <Future<void>>[
           TrustedTime.forceResync(),
           TrustedTime.forceResync(),
