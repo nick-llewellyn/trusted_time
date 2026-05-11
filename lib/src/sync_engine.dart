@@ -129,11 +129,17 @@ final class SyncEngine {
     // cycle. This is the deliberate alternative to an engine-instance
     // flag with a top-of-`sync()` reset: a per-cycle holder is robust
     // against overlapping `sync()` invocations (which would otherwise
-    // race on the engine-scoped reset). Concurrent `sync()` calls
-    // remain blocked at the [_syncInProgress] gate (`trusted_time-exw`),
-    // but even if they slipped past, each cycle's `_completeSync`
-    // pair operates on its own guard and cannot reset the other's
-    // in-flight state.
+    // race on the engine-scoped reset).
+    //
+    // [SyncEngine] itself does not gate against concurrent `sync()`
+    // entries — that responsibility lives in the public-API wrapper
+    // (`TrustedTimeImpl._performSync` in `lib/src/trusted_time_impl.dart`,
+    // which uses a `_syncInProgress` Completer to coalesce concurrent
+    // callers into a single in-flight cycle). That guard is currently
+    // imperfect under tight retry/timer scheduling (tracked as
+    // `trusted_time-exw`), but even if two `sync()` invocations slip
+    // past it, each cycle's `_completeSync` pair operates on its own
+    // [_CompletionGuard] and cannot reset the other's in-flight state.
     final completionGuard = _CompletionGuard();
     _observer?.onSyncStarted();
     final swSync = Stopwatch()..start();
