@@ -993,5 +993,52 @@ void main() {
           .toList();
       expect(flappingFailures, hasLength(3));
     });
+
+    test('transientStreakThreshold = 0 disables escalation; sustained '
+        'transient failures retry indefinitely (legacy behaviour)', () async {
+      final observer = RecordingObserver();
+      final stuck = RepeatingTransientSource(id: 'stuck', groupId: 'g-stuck');
+      final healthy1 = RaceConditionSource(
+        'h1',
+        Duration.zero,
+        1000000,
+        'g-h1',
+      );
+      final healthy2 = RaceConditionSource(
+        'h2',
+        Duration.zero,
+        1000000,
+        'g-h2',
+      );
+
+      final engine = SyncEngine(
+        config: config.copyWith(
+          additionalSources: [stuck, healthy1, healthy2],
+          transientStreakThreshold: 0,
+        ),
+        clock: clock,
+        observer: observer,
+      );
+
+      // Run more cycles than any non-zero threshold would tolerate.
+      // With escalation disabled, every cycle must call stuck.getTime
+      // and the source must never enter cooldown.
+      for (var i = 0; i < 8; i++) {
+        await engine.sync();
+      }
+
+      expect(
+        stuck.callCount,
+        8,
+        reason:
+            'transientStreakThreshold = 0 should disable escalation; '
+            'stuck.getTime should have been called on every cycle',
+      );
+
+      final stuckFailures = observer.sourceFailures
+          .where((f) => f.sourceId == 'stuck')
+          .toList();
+      expect(stuckFailures, hasLength(8));
+    });
   });
 }

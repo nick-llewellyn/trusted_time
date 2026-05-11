@@ -467,16 +467,30 @@ final class SyncEngine {
       // standard `_blacklistUntil` path.
       _observer?.onSourceFailed(source.id, e);
       final threshold = _config.transientStreakThreshold;
-      final streak = (_sourceTransientStreak[source.id] ?? 0) + 1;
-      _sourceTransientStreak[source.id] = streak;
-      if (threshold > 0 && streak >= threshold) {
-        final score = (_sourceHealth[source.id] ?? 0) + 1;
-        _sourceHealth[source.id] = score;
-        final cooldownMin = pow(2, min(score, 6)).toInt();
-        _blacklistUntil[source.id] = DateTime.now().add(
-          Duration(minutes: cooldownMin),
-        );
-        _sourceTransientStreak.remove(source.id);
+      // threshold <= 0 disables escalation entirely; skip the streak
+      // bookkeeping so the map cannot accumulate unbounded entries
+      // for a source that the caller has explicitly opted out of
+      // ever escalating.
+      if (threshold > 0) {
+        final streak = (_sourceTransientStreak[source.id] ?? 0) + 1;
+        _sourceTransientStreak[source.id] = streak;
+        if (streak >= threshold) {
+          // Increment the existing _sourceHealth score rather than
+          // resetting it, mirroring the regular catch arm below. A
+          // source that already accrued unrecovered regular-failure
+          // score before this transient streak began is now
+          // exhibiting two distinct unhealthiness signals; preserve
+          // the cumulative cooldown progression so it does not
+          // silently restart the ladder from one minute on every
+          // escalation.
+          final score = (_sourceHealth[source.id] ?? 0) + 1;
+          _sourceHealth[source.id] = score;
+          final cooldownMin = pow(2, min(score, 6)).toInt();
+          _blacklistUntil[source.id] = DateTime.now().add(
+            Duration(minutes: cooldownMin),
+          );
+          _sourceTransientStreak.remove(source.id);
+        }
       }
       return null;
     } catch (e) {
