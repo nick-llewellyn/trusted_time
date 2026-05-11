@@ -199,13 +199,23 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
     notifyListeners();
   }
 
-  /// Removes all recorded events and resets the elapsed-time origin.
+  /// Removes all recorded events from the visible buffer and resets
+  /// the running event count, but **preserves the elapsed-time
+  /// origin** so events from any in-flight sync cycle remain ordered
+  /// consistently with events recorded after the reset.
+  ///
+  /// Resetting [_start] mid-cycle would cause callbacks for the
+  /// in-flight cycle (sample / sourceFailed / consensus / metrics)
+  /// to record `elapsedMs` values starting near zero even though
+  /// they are chronologically in the middle of a cycle that began
+  /// well before the reset. The on-screen terminal would surface
+  /// the rewound ordering, and the BenchmarkLogger would persist it
+  /// to disk. Clearing the visible window does not change when those
+  /// events actually happened, so the recorder's elapsed-time origin
+  /// is fixed at construction.
   void reset() {
     _events.clear();
     _totalRecorded = 0;
-    _start
-      ..reset()
-      ..start();
     notifyListeners();
   }
 
