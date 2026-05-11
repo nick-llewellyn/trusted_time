@@ -1129,12 +1129,21 @@ void main() {
         // for the first sample (under minimumQuorum), so the second
         // sample is the *first* non-null resolve and produces
         // stableCount == 1; the third sample produces a matching
-        // resolve and brings stableCount to 2. The two _completeSync
-        // call sites then fire from different listener invocations:
-        // sample 2's listener fires _finalizeSync -> _completeSync
-        // (call A) once pendingQueries hits zero, and sample 3's
-        // listener fires the early-exit _completeSync (call B) on
-        // its own invocation.
+        // resolve and brings stableCount to 2. Both _completeSync
+        // call sites then fire from the *same* listener invocation
+        // — sample 3's:
+        //
+        //  * The stability check trips `stableCount >=
+        //    requiredStability`, so the early-exit branch fires
+        //    `unawaited(_completeSync(...))` (call A).
+        //  * Immediately after, in the same listener tick,
+        //    `pendingQueries` is decremented from 1 to 0, which
+        //    triggers `_finalizeSync` -> `_completeSync` (call B).
+        //
+        // Both calls are scheduled before either yields, so without
+        // a synchronous re-entry guard both pass `completer.isCompleted
+        // == false`, both await `_createAnchor`, and both emit
+        // observer events.
         //
         // GatedMonotonicClock holds call A's _createAnchor pending
         // until call B's _createAnchor also begins, forcing both
