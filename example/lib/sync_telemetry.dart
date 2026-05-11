@@ -237,12 +237,12 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
     // Surface the per-phase tag from package:nts so timeout failures
     // (DNS / connect / TLS / KE / NTP) are immediately distinguishable
     // in the terminal log without requiring the operator to decode the
-    // freezed sealed-class toString. The `field0` accessor is the
-    // FRB-generated public surface for the phase payload.
-    if (cause is NtsError_Timeout) {
+    // sealed-class toString. The `phase` accessor is the public name
+    // for the named-parameter payload on NtsErrorTimeout.
+    if (cause is NtsErrorTimeout) {
       _add(
         TelemetryKind.sourceFailed,
-        '$sourceId$tag: timeout during ${cause.field0.name}',
+        '$sourceId$tag: timeout during ${cause.phase.name}',
       );
       return;
     }
