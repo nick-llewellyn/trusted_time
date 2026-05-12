@@ -104,4 +104,72 @@ void main() {
       );
     });
   });
+
+  group('TimeSample.trustBackend', () {
+    // The field is the per-handshake observability counterpart to
+    // TrustedTimeConfig.ntsTrustMode: nullable, surfaced unchanged
+    // from package:nts's NtsTimeSample for NTS samples and absent
+    // (null) for non-NTS sources that have no equivalent concept.
+    // These tests lock in the backward-compatible default and the
+    // pass-through contract that telemetry consumers
+    // (SyncObserver.onSampleReceived, the example app's terminal
+    // log) depend on.
+
+    const interval = TimeInterval(startMs: 1000, endMs: 1100);
+
+    test('defaults to null when constructor parameter is omitted', () {
+      // Backward compatibility: every call site that constructs a
+      // TimeSample without naming trustBackend (NTP source, HTTPS
+      // source, every test fake) keeps producing samples whose
+      // trustBackend field is null. Future readers must not change
+      // this default to a non-null sentinel — it would falsely
+      // imply NTS-style trust-backend semantics for sources that
+      // have no such concept.
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'ntp:time.example',
+        groupId: 'g',
+      );
+      expect(sample.trustBackend, isNull);
+    });
+
+    test('round-trips a non-null TrustBackend through the constructor', () {
+      // Stub-source equivalent of the bd's pass-through criterion:
+      // a TimeSample produced with a specific TrustBackend value
+      // exposes that exact value unchanged. Engine forwarding to
+      // SyncObserver.onSampleReceived is a single
+      // `_observer?.onSampleReceived(sample)` call with no
+      // reconstruction (verifiable by inspection in
+      // lib/src/sync_engine.dart), so this constructor-level
+      // round-trip is sufficient to cover the documented "flows
+      // through unchanged" contract.
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'nts:time.example',
+        groupId: 'g',
+        trustBackend: TrustBackend.platform,
+      );
+      expect(sample.trustBackend, TrustBackend.platform);
+    });
+
+    test(
+      'toString omits backend marker when null and includes it when set',
+      () {
+        const nullBackend = TimeSample(
+          interval: interval,
+          sourceId: 'ntp:time.example',
+          groupId: 'g',
+        );
+        expect(nullBackend.toString(), isNot(contains('backend:')));
+
+        const platformBackend = TimeSample(
+          interval: interval,
+          sourceId: 'nts:time.example',
+          groupId: 'g',
+          trustBackend: TrustBackend.platform,
+        );
+        expect(platformBackend.toString(), contains('backend: platform'));
+      },
+    );
+  });
 }
