@@ -98,6 +98,38 @@ class RaceConditionSource implements TimeSource {
   }
 }
 
+/// Test source with an explicitly-controlled [TimeInterval] so the
+/// stability-guard tests can construct samples whose midpoint deviates
+/// from the consensus midpoint by more than the variance threshold,
+/// or whose width drives mid-stream divergence in the resolved
+/// interval as more samples accumulate.
+class WideIntervalSource implements TimeSource {
+  WideIntervalSource(
+    this.id,
+    this.delay,
+    this.startMs,
+    this.endMs, [
+    this.groupId = 'test-group',
+  ]);
+  @override
+  final String id;
+  final Duration delay;
+  final int startMs;
+  final int endMs;
+  @override
+  final String groupId;
+
+  @override
+  Future<TimeSample> getTime() async {
+    await Future.delayed(delay);
+    return TimeSample(
+      interval: TimeInterval(startMs: startMs, endMs: endMs),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
+}
+
 /// Test source that throws [TransientSourceError] on every [getTime]
 /// call. Records its call count so tests can assert whether the engine
 /// has escalated it to the regular cooldown path (after which it stops
@@ -303,6 +335,33 @@ class RecordingObserver implements SyncObserver {
   void onMetricsReported(SyncMetrics metrics) {
     metricsReported.add(metrics);
   }
+}
+
+/// Records every sample handed to the engine's stream listener so
+/// stability-guard tests can assert how many samples the engine
+/// consumed before early-exit fired. The engine's listener returns
+/// before calling [onSampleReceived] once the completer is completed
+/// (see `if (completer.isCompleted) return;` at the top of the
+/// listener), so a recorded sample count of N implies early-exit
+/// fired no earlier than sample N.
+class SampleCountingObserver implements SyncObserver {
+  final List<TimeSample> samplesReceived = [];
+
+  @override
+  void onSampleReceived(TimeSample sample) {
+    samplesReceived.add(sample);
+  }
+
+  @override
+  void onSourceFailed(String sourceId, Object error) {}
+  @override
+  void onSyncStarted() {}
+  @override
+  void onConsensusReached(ConsensusResult result) {}
+  @override
+  void onSyncFailed(Object error) {}
+  @override
+  void onMetricsReported(SyncMetrics metrics) {}
 }
 
 void main() {
@@ -1242,5 +1301,223 @@ void main() {
         expect(observer.syncStartedCount, 3);
       },
     );
+  });
+
+  group('SyncEngine Consensus Stability Guard', () {
+    // The engine requires `stableCount >= requiredStability` consecutive
+    // matching `MarzulloEngine.resolve` results before firing early-exit.
+    // `requiredStability` is 2 by default and escalates to 3 when any
+    // sample's midpoint deviates from the consensus midpoint by more
+    // than 500 ms (the variance check at sync_engine.dart:248-253).
+    // The N=2 path is implicitly covered by the existing tests in this
+    // file (see comments at lines ~398, ~455, ~1186 referencing
+    // `stableCount == requiredStability` with no variance). The two
+    // tests below close the remaining acceptance gap on
+    // trusted_time-ads:
+    //  * variance > 500 ms forces requiredStability=3, so early-exit
+    //    must wait for one extra matching resolve;
+    //  * a divergent intermediate `MarzulloEngine.resolve` resets
+    //    `stableCount` to 1, so a "match, match, diverge, match"
+    //    sequence does not collapse to a premature exit.
+    //
+    // Both tests count `onSampleReceived` events to infer where
+    // early-exit fired: the engine's stream listener guards every
+    // sample with `if (completer.isCompleted) return;` before invoking
+    // the observer, so a late-arriving sample whose delay exceeds the
+    // window between early-exit firing and the completer resolving is
+    // silently dropped and never recorded.
+
+    test('volatile pool (variance > 500 ms) requires N=3 matching '
+        'intervals before early-exit', () async {
+      // s1 is a 20-ms-wide narrow interval centred on 1 001 000, so
+      // its midpoint sits 1 000 ms above the eventual narrow consensus
+      // midpoint of 1 000 000 — well above the 500 ms variance
+      // threshold. s1 does not overlap s2..s5, so `MarzulloEngine`
+      // never includes it in the deepest-overlap window, but it
+      // remains in `samples` for the variance check
+      // (`samples.any(...)`) and so escalates `requiredStability` to
+      // 3 from the moment a non-null resolve is produced.
+      //
+      // Resolve sequence given the per-sample arrival order:
+      //   samples=[s1]            → null (only 1 valid sample)
+      //   samples=[s1,s2]         → null (depth 1 < requiredQuorum 2)
+      //   samples=[s1,s2,s3]      → [999990,1000010] (depth 2)
+      //                              stableCount 1
+      //   samples=[s1,s2,s3,s4]   → same                stableCount 2
+      //   samples=[s1,s2,s3,s4,s5]→ same                stableCount 3
+      //                              → early-exit fires
+      // Sample 6's 200 ms delay is far longer than the few microtasks
+      // the engine needs to complete the completer after sample 5,
+      // so it is dropped before reaching the observer.
+      //
+      // Counterfactual: if the variance check had not escalated
+      // `requiredStability` from 2 to 3, early-exit would have fired
+      // at sample 4 (`stableCount` reaching 2) and the recorded count
+      // would be 4, not 5.
+      final observer = SampleCountingObserver();
+      final sources = [
+        WideIntervalSource(
+          's1',
+          const Duration(milliseconds: 5),
+          1000990,
+          1001010,
+          'g1',
+        ),
+        WideIntervalSource(
+          's2',
+          const Duration(milliseconds: 10),
+          999990,
+          1000010,
+          'g2',
+        ),
+        WideIntervalSource(
+          's3',
+          const Duration(milliseconds: 15),
+          999990,
+          1000010,
+          'g3',
+        ),
+        WideIntervalSource(
+          's4',
+          const Duration(milliseconds: 20),
+          999990,
+          1000010,
+          'g4',
+        ),
+        WideIntervalSource(
+          's5',
+          const Duration(milliseconds: 25),
+          999990,
+          1000010,
+          'g5',
+        ),
+        WideIntervalSource(
+          's6',
+          const Duration(milliseconds: 200),
+          999990,
+          1000010,
+          'g6',
+        ),
+      ];
+
+      final engine = SyncEngine(
+        config: const TrustedTimeConfig(
+          minimumQuorum: 2,
+          minGroupCount: 2,
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+        ).copyWith(additionalSources: sources),
+        clock: MockMonotonicClock(),
+        observer: observer,
+      );
+
+      await engine.sync();
+
+      expect(
+        observer.samplesReceived,
+        hasLength(5),
+        reason:
+            'with variance > 500 ms the engine must observe N=3 '
+            'consecutive matching intervals before early-exit; the N=2 '
+            'path would have exited after sample 4 (recorded count 4)',
+      );
+    });
+
+    test('mid-stream divergence in MarzulloEngine.resolve resets the '
+        'stability counter', () async {
+      // All arriving samples share midpoint 1 000 000 and the
+      // resolved consensus midpoints stay within ±250 ms of that, so
+      // the variance check never fires and `requiredStability` stays
+      // at 2 throughout. Sample widths shrink monotonically, which
+      // shifts the deepest-overlap window each step:
+      //   d1+d2          → [999500, 1001000] (depth 2, mid 1000250)
+      //   d1+d2+d3       → [999990, 1000500] (depth 3, mid 1000245)
+      //                    diverges from previous → stableCount=1
+      //   d1+d2+d3+d4    → [999990, 1000010] (depth 4, mid 1000000)
+      //                    diverges again      → stableCount=1
+      //   d1+d2+d3+d4+d5 → same                → stableCount=2
+      //                                         → early-exit fires
+      // Sample 6's 200 ms delay drops it before it reaches the
+      // observer.
+      //
+      // Counterfactual: if the reset branch were missing — e.g. if
+      // `stableCount` were incremented unconditionally — the counter
+      // would have reached 2 at sample 3 and early-exit would have
+      // fired three samples earlier on a consensus the engine has
+      // never observed twice in a row, with the recorded count 3
+      // instead of 5.
+      final observer = SampleCountingObserver();
+      final sources = [
+        WideIntervalSource(
+          'd1',
+          const Duration(milliseconds: 5),
+          999000,
+          1001000,
+          'g1',
+        ),
+        WideIntervalSource(
+          'd2',
+          const Duration(milliseconds: 10),
+          999500,
+          1000500,
+          'g2',
+        ),
+        WideIntervalSource(
+          'd3',
+          const Duration(milliseconds: 15),
+          999990,
+          1000010,
+          'g3',
+        ),
+        WideIntervalSource(
+          'd4',
+          const Duration(milliseconds: 20),
+          999990,
+          1000010,
+          'g4',
+        ),
+        WideIntervalSource(
+          'd5',
+          const Duration(milliseconds: 25),
+          999990,
+          1000010,
+          'g5',
+        ),
+        WideIntervalSource(
+          'd6',
+          const Duration(milliseconds: 200),
+          999990,
+          1000010,
+          'g6',
+        ),
+      ];
+
+      final engine = SyncEngine(
+        config: const TrustedTimeConfig(
+          minimumQuorum: 2,
+          minGroupCount: 2,
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+        ).copyWith(additionalSources: sources),
+        clock: MockMonotonicClock(),
+        observer: observer,
+      );
+
+      await engine.sync();
+
+      expect(
+        observer.samplesReceived,
+        hasLength(5),
+        reason:
+            'each successive resolve produces a different interval so '
+            'stableCount keeps resetting to 1; only sample 5 finally '
+            'matches sample 4\'s interval and brings stableCount to '
+            '2, firing early-exit. Without the reset, stableCount '
+            'would have reached 2 at sample 3 and the recorded count '
+            'would be 3',
+      );
+    });
   });
 }
