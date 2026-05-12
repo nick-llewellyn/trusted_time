@@ -1,0 +1,79 @@
+# Codecov configuration. Schema: https://docs.codecov.com/docs/codecov-yaml
+#
+# This config exists primarily to make the report shape intentional
+# rather than relying on Codecov's (opinionated and evolving)
+# defaults. The repository's CI (`.github/workflows/ci.yml`) already
+# uploads `coverage/lcov.info` from the ubuntu-latest job via OIDC
+# trusted publishing on every `push: main` and `pull_request: main`
+# event; the upload chain is independent of this file.
+#
+# Status checks below are intentionally *informational* — they
+# render the project / patch coverage in the PR sidebar and the
+# Codecov UI without ever blocking a merge. Promoting either to a
+# required check is a separate decision made via the repository's
+# branch-protection / ruleset settings, not by editing this file.
+# That decision is tracked in the originating bd's "Once linked,
+# consider whether to make codecov/patch a required status check
+# via the protect-main ruleset" follow-up note.
+
+coverage:
+  precision: 2
+  round: down
+  # Visual heat-map range for the Codecov UI: anything below 70 %
+  # renders red, anything above 95 % renders green. Calibrated to
+  # the package's current shape (mature library + thinner example
+  # app); revisit once a steady-state baseline is observable on the
+  # post-merge dashboard.
+  range: "70...95"
+  status:
+    project:
+      default:
+        target: auto         # Compare against the base commit.
+        threshold: 1%        # Tolerate 1 pp drop without flagging.
+        informational: true  # Never block a merge; advisory only.
+    patch:
+      default:
+        target: auto         # Per-PR diff-coverage view.
+        threshold: 1%
+        informational: true
+
+# Paths excluded from coverage tracking. Listed individually rather
+# than via a broad glob so the rationale for each exclusion is
+# attributable when the list is reviewed.
+ignore:
+  # Example app: a separate Flutter project under example/ used for
+  # demos and benchmarking. Not part of the published library
+  # surface and not exercised by `flutter test --coverage` from the
+  # repo root anyway, but listed here so a future change to the CI
+  # invocation does not silently start counting it against the
+  # library's coverage.
+  - "example/"
+
+  # Test files themselves should never contribute to their own
+  # coverage. Codecov includes them by default if they appear in
+  # the LCOV report; this exclusion keeps the percentage focused on
+  # production code under lib/.
+  - "test/"
+
+  # Web-only platform-conditional stubs. The ubuntu-latest job that
+  # produces the uploaded LCOV report compiles and runs the
+  # dart:io-backed implementation paths (ntp_source_io.dart,
+  # nts_source.dart) — the *_stub.dart files are only selected by
+  # the conditional-import resolver on the web platform, so they
+  # would surface as 0 % covered in the report and skew the
+  # library-wide percentage downward in a way that does not reflect
+  # actual test gaps. The web platform has no separate CI job in
+  # this workflow yet; if one is added later these exclusions
+  # should be removed for the web-job upload.
+  - "lib/src/sources/ntp_source_stub.dart"
+  - "lib/src/sources/nts_source_stub.dart"
+
+# PR comment shape. `default` produces the standard Codecov table
+# with project + patch coverage and the per-file diff. Quiet on
+# uploads with no coverage data so failed-upload PRs do not
+# accumulate empty placeholder comments.
+comment:
+  layout: "reach,diff,flags,tree"
+  behavior: default
+  require_changes: false
+  hide_project_coverage: false
