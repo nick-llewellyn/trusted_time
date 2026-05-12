@@ -447,9 +447,13 @@ final class SyncMetrics {
 
   /// The number of unique sources active at the densest overlap point
   /// during Marzullo's sweep. This is the figure used by the quorum
-  /// check and confidence grading; always satisfies
-  /// `quorumDepth >= participantCount`. See
-  /// `ConsensusResult.quorumDepth`.
+  /// check and confidence grading.
+  ///
+  /// For values produced by the engine, always satisfies
+  /// `quorumDepth >= participantCount`. (This is an engine invariant,
+  /// not a structural one — the type permits any non-negative integer
+  /// pairing, since [SyncMetrics] is publicly constructible for tests
+  /// and mocks.) See `ConsensusResult.quorumDepth`.
   final int quorumDepth;
 
   /// The number of administrative groups represented in the quorum.

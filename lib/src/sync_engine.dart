@@ -412,7 +412,16 @@ final class SyncEngine {
           groupCount: result.groupCount,
           confidence: result.confidence,
           confidenceBreakdown: {
+            // 'depth' preserves the historical participantCount-based
+            // ratio so existing dashboards keyed off this entry do not
+            // break. 'quorumDepth' is the additive companion exposing
+            // the sweep-depth ratio that matches the engine's actual
+            // quorum-floor and confidence-grading behaviour. The two
+            // diverge under the same conditions documented on
+            // ConsensusResult.participantCount; consumers that want
+            // quorum-floor reasoning should key off 'quorumDepth'.
             'depth': result.participantCount / _sources.length,
+            'quorumDepth': result.quorumDepth / _sources.length,
             'diversity': result.groupCount / 2.0,
             'stability': 1.0,
           },
