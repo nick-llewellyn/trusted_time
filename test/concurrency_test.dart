@@ -1308,11 +1308,14 @@ void main() {
     // matching `MarzulloEngine.resolve` results before firing early-exit.
     // `requiredStability` is 2 by default and escalates to 3 when any
     // sample's midpoint deviates from the consensus midpoint by more
-    // than 500 ms (the variance check at sync_engine.dart:248-253).
-    // The N=2 path is implicitly covered by the existing tests in this
-    // file (see comments at lines ~398, ~455, ~1186 referencing
-    // `stableCount == requiredStability` with no variance). The two
-    // tests below close the remaining acceptance gap on
+    // than 500 ms (see the `varianceDetected` block in `SyncEngine.sync`
+    // in `lib/src/sync_engine.dart`). The N=2 path is implicitly
+    // covered by several existing tests in this file -- e.g.
+    // `outlier filtering is deterministic across simultaneous arrivals`
+    // in the `Adaptive Outlier Filtering` group, and the two tests in
+    // the `_completeSync re-entry guard (skj.2)` group, which reach
+    // `stableCount == requiredStability` (= 2, no variance) by design.
+    // The two tests below close the remaining acceptance gap on
     // trusted_time-ads:
     //  * variance > 500 ms forces requiredStability=3, so early-exit
     //    must wait for one extra matching resolve;
@@ -1326,6 +1329,14 @@ void main() {
     // the observer, so a late-arriving sample whose delay exceeds the
     // window between early-exit firing and the completer resolving is
     // silently dropped and never recorded.
+    //
+    // Per-source delays are spaced at 20 ms so the relative arrival
+    // order is robust against the ~1-10 ms timer-resolution and
+    // scheduling jitter that shows up under CI load. The "late"
+    // last source is held back by 400 ms, which is comfortably more
+    // than the few microtasks the engine needs between firing
+    // early-exit and the completer resolving but still keeps each
+    // test under half a second of wall time.
 
     test('volatile pool (variance > 500 ms) requires N=3 matching '
         'intervals before early-exit', () async {
@@ -1346,7 +1357,7 @@ void main() {
       //   samples=[s1,s2,s3,s4]   → same                stableCount 2
       //   samples=[s1,s2,s3,s4,s5]→ same                stableCount 3
       //                              → early-exit fires
-      // Sample 6's 200 ms delay is far longer than the few microtasks
+      // Sample 6's 400 ms delay is far longer than the few microtasks
       // the engine needs to complete the completer after sample 5,
       // so it is dropped before reaching the observer.
       //
@@ -1358,42 +1369,42 @@ void main() {
       final sources = [
         WideIntervalSource(
           's1',
-          const Duration(milliseconds: 5),
+          const Duration(milliseconds: 20),
           1000990,
           1001010,
           'g1',
         ),
         WideIntervalSource(
           's2',
-          const Duration(milliseconds: 10),
+          const Duration(milliseconds: 40),
           999990,
           1000010,
           'g2',
         ),
         WideIntervalSource(
           's3',
-          const Duration(milliseconds: 15),
+          const Duration(milliseconds: 60),
           999990,
           1000010,
           'g3',
         ),
         WideIntervalSource(
           's4',
-          const Duration(milliseconds: 20),
+          const Duration(milliseconds: 80),
           999990,
           1000010,
           'g4',
         ),
         WideIntervalSource(
           's5',
-          const Duration(milliseconds: 25),
+          const Duration(milliseconds: 100),
           999990,
           1000010,
           'g5',
         ),
         WideIntervalSource(
           's6',
-          const Duration(milliseconds: 200),
+          const Duration(milliseconds: 400),
           999990,
           1000010,
           'g6',
@@ -1438,7 +1449,7 @@ void main() {
       //                    diverges again      → stableCount=1
       //   d1+d2+d3+d4+d5 → same                → stableCount=2
       //                                         → early-exit fires
-      // Sample 6's 200 ms delay drops it before it reaches the
+      // Sample 6's 400 ms delay drops it before it reaches the
       // observer.
       //
       // Counterfactual: if the reset branch were missing — e.g. if
@@ -1451,42 +1462,42 @@ void main() {
       final sources = [
         WideIntervalSource(
           'd1',
-          const Duration(milliseconds: 5),
+          const Duration(milliseconds: 20),
           999000,
           1001000,
           'g1',
         ),
         WideIntervalSource(
           'd2',
-          const Duration(milliseconds: 10),
+          const Duration(milliseconds: 40),
           999500,
           1000500,
           'g2',
         ),
         WideIntervalSource(
           'd3',
-          const Duration(milliseconds: 15),
+          const Duration(milliseconds: 60),
           999990,
           1000010,
           'g3',
         ),
         WideIntervalSource(
           'd4',
-          const Duration(milliseconds: 20),
+          const Duration(milliseconds: 80),
           999990,
           1000010,
           'g4',
         ),
         WideIntervalSource(
           'd5',
-          const Duration(milliseconds: 25),
+          const Duration(milliseconds: 100),
           999990,
           1000010,
           'g5',
         ),
         WideIntervalSource(
           'd6',
-          const Duration(milliseconds: 200),
+          const Duration(milliseconds: 400),
           999990,
           1000010,
           'g6',
