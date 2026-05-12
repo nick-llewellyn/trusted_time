@@ -14,6 +14,7 @@ final class ConsensusResult {
     required this.utc,
     required this.uncertaintyMs,
     required this.participantCount,
+    required this.quorumDepth,
     required this.groupCount,
     required this.participants,
     this.authLevel = NtsAuthLevel.none,
@@ -27,8 +28,50 @@ final class ConsensusResult {
   /// The precision of the consensus, representing half the width of the overlap.
   final int uncertaintyMs;
 
-  /// Number of unique time authorities that contributed to this consensus.
+  /// Number of unique time authorities whose interval contains the
+  /// consensus midpoint reported as [utc].
+  ///
+  /// For engine-produced results, [utc] is computed by integer-truncated
+  /// division of the consensus window endpoints
+  /// (`(interval!.startMs + interval!.endMs) ~/ 2`; `interval` is
+  /// always non-null on engine-produced results but the type permits
+  /// `null` for tests and mocks). On odd-width windows the truncated
+  /// midpoint sits one millisecond closer to `interval!.startMs` than
+  /// the real centre would. Membership is checked against the truncated
+  /// integer midpoint exposed as [utc], not the real centre.
+  ///
+  /// This is a stricter measure than [quorumDepth]: a sample's interval
+  /// can overlap the consensus window (`[interval!.startMs,
+  /// interval!.endMs]` for engine-produced results) and so contribute
+  /// to [groupCount] without containing the midpoint, in which case it
+  /// is excluded from this count. The two values diverge when the
+  /// consensus window is wide and the sample distribution is asymmetric
+  /// — for example, when one source's response latency is consistently
+  /// bimodal and its late samples shift the window boundaries past
+  /// where the other sources' midpoints sit.
+  ///
+  /// Use [quorumDepth] for quorum-floor reasoning and confidence-grading
+  /// reasoning; use this field for "which authorities agreed at the
+  /// midpoint" reasoning.
   final int participantCount;
+
+  /// Number of unique sources active at the densest overlap point during
+  /// Marzullo's sweep. This is the figure used by the engine's quorum
+  /// check (`>= requiredQuorum`) and confidence grading.
+  ///
+  /// For values produced by [MarzulloEngine.resolve], always satisfies
+  /// `quorumDepth >= participantCount`. This is an engine invariant,
+  /// not a structural one — the type does not constrain the pairing,
+  /// since [ConsensusResult] is publicly constructible for tests and
+  /// mocks (and the underlying `int` field permits negative values too,
+  /// even though engine-produced results are always non-negative).
+  ///
+  /// The two values diverge when the consensus window is wide and the
+  /// sample distribution is asymmetric (see [participantCount] for
+  /// details). Exposed so telemetry consumers can reason about quorum
+  /// depth directly rather than inferring it from [participantCount],
+  /// which is a stricter midpoint-containment measure.
+  final int quorumDepth;
 
   /// Number of distinct administrative groups (e.g. ASNs) in the consensus.
   final int groupCount;
@@ -271,6 +314,7 @@ final class MarzulloEngine {
       utc: DateTime.fromMillisecondsSinceEpoch(midMs, isUtc: true),
       uncertaintyMs: max(1, uncertaintyMs),
       participantCount: participantCount,
+      quorumDepth: bestUniqueOverlap,
       groupCount: groupCount,
       authLevel: effectiveAuth,
       confidence: confidence,

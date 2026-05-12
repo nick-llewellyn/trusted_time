@@ -49,6 +49,9 @@ void main() {
 
       expect(result, isNotNull);
       expect(result!.participantCount, 2);
+      // Symmetric case: both samples contain the midpoint, so the
+      // strict midpoint-containment count equals the sweep depth.
+      expect(result.quorumDepth, equals(result.participantCount));
       final diffMs = (result.utc.millisecondsSinceEpoch - baseMs).abs();
       expect(diffMs, lessThan(50));
     });
@@ -522,6 +525,94 @@ void main() {
         expect(result, isNotNull);
         expect(result!.participantCount, 4);
       });
+    });
+
+    // Diagnostic harness for trusted_time-skj.3: confirms at unit level
+    // that ConsensusResult.participantCount can be lower than
+    // quorumDepth when the consensus window is wide and the sample
+    // distribution is asymmetric. The bd's empirical signature: a
+    // late-arriving sample widens the consensus window past where
+    // some early-arriver midpoints sit, so those samples count toward
+    // the sweep depth (and groupCount) without being counted as
+    // midpoint-containing participants.
+    group('trusted_time-skj.3 diagnostic: '
+        'quorumDepth (sweep) vs participantCount (midpoint)', () {
+      test('witness: asymmetric sample distribution makes quorumDepth '
+          'exceed participantCount (skj.3)', () {
+        // Construction (verified by hand-traced sweep):
+        //   A = [-50, 50] (mid 0,   half 50, sample 'a')
+        //   B = [-60,  0] (mid -30, half 30, sample 'b')
+        //   C = [ -5, 31] (mid 13,  half 18, sample 'c')
+        //
+        // Sweep produces bestStart=-5, bestEnd=31 because all three
+        // samples are active at t=-5 (densest point). bestUniqueOverlap
+        // = 3 there. After end-of-window detection at t=31, the
+        // post-sweep window-rebuild step in MarzulloEngine.resolve
+        // (the loop that re-populates `bestSamples` with every sample
+        // overlapping [bestStart, bestEnd]) re-includes all three
+        // because each interval overlaps [-5, 31]. midpoint=(-5+31)
+        // ~/ 2 = 13. Sample B's interval [-60, 0] does NOT contain
+        // midpoint 13, so participantCount drops to 2 even though
+        // quorumDepth stays at 3.
+        final result = engine.resolve([
+          createSample(id: 'a', utc: baseTime, uncertaintyMs: 50),
+          createSample(
+            id: 'b',
+            utc: baseTime.subtract(const Duration(milliseconds: 30)),
+            uncertaintyMs: 30,
+          ),
+          createSample(
+            id: 'c',
+            utc: baseTime.add(const Duration(milliseconds: 13)),
+            uncertaintyMs: 18,
+          ),
+        ]);
+
+        expect(result, isNotNull);
+        expect(
+          result!.quorumDepth,
+          3,
+          reason:
+              'All three samples are active at the densest sweep '
+              'point (t=-5), so bestUniqueOverlap = 3.',
+        );
+        expect(
+          result.participantCount,
+          2,
+          reason:
+              'Sample b\'s interval [-60, 0] does not contain the '
+              'consensus midpoint 13, so it is excluded from the '
+              'midpoint-containment count.',
+        );
+        expect(result.groupCount, 3);
+        expect(
+          result.quorumDepth,
+          greaterThan(result.participantCount),
+          reason:
+              'This is the skj.3 divergence the field is meant to '
+              'expose; if the assertion ever fails, either the '
+              'remediation has been undone or the algorithm has been '
+              'changed in a way that collapses the two metrics.',
+        );
+      });
+
+      test(
+        'invariant: quorumDepth >= participantCount across symmetric pool',
+        () {
+          // Sanity rail: in a symmetric pool where every sample contains
+          // the midpoint, the two counts coincide. The >= relation must
+          // still hold and the engine must not over-count quorumDepth.
+          final result = engine.resolve([
+            createSample(id: 'a', utc: baseTime, uncertaintyMs: 100),
+            createSample(id: 'b', utc: baseTime, uncertaintyMs: 100),
+            createSample(id: 'c', utc: baseTime, uncertaintyMs: 100),
+          ]);
+
+          expect(result, isNotNull);
+          expect(result!.quorumDepth, equals(result.participantCount));
+          expect(result.quorumDepth, 3);
+        },
+      );
     });
   });
 }
