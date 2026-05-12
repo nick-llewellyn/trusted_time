@@ -1,3 +1,5 @@
+import 'package:nts/nts.dart' as nts;
+
 import '../domain/time_sample.dart';
 import '../domain/time_source.dart';
 
@@ -9,6 +11,7 @@ final class NtsSource implements TimeSource {
     int port = 4460,
     int dnsConcurrencyCap = 0,
     Duration maxLatency = const Duration(seconds: 5),
+    nts.TrustMode trustMode = nts.TrustMode.platformWithFallback,
   });
 
   final String _host;

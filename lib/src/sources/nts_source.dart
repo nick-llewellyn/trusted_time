@@ -64,19 +64,30 @@ final class NtsSource implements TimeSource, Warmable {
   /// the [TransientSourceError] cooldown-bypass path. The default of 5 s
   /// preserves the package's pre-coordination behaviour for direct
   /// callers.
+  ///
+  /// [trustMode] selects the trust-anchor policy applied to the
+  /// per-source [nts.NtsClient]. Defaults to
+  /// [nts.TrustMode.platformWithFallback], matching every release
+  /// prior to the `package:nts` v3.0.0 migration. See
+  /// [TrustedTimeConfig.ntsTrustMode] for the full semantics
+  /// (build-time vs per-chain decision; Android `HybridVerifier`
+  /// scope; enterprise / MDM use case for `platformOnly`).
   NtsSource(
     this._host, {
     int port = 4460,
     int dnsConcurrencyCap = nts.kDefaultDnsConcurrencyCap,
     Duration maxLatency = const Duration(seconds: 5),
+    nts.TrustMode trustMode = nts.TrustMode.platformWithFallback,
   }) : _spec = nts.NtsServerSpec(host: _host, port: port),
        _dnsConcurrencyCap = dnsConcurrencyCap,
-       _timeoutMs = maxLatency.inMilliseconds;
+       _timeoutMs = maxLatency.inMilliseconds,
+       _trustMode = trustMode;
 
   final String _host;
   final nts.NtsServerSpec _spec;
   final int _dnsConcurrencyCap;
   final int _timeoutMs;
+  final nts.TrustMode _trustMode;
 
   /// Per-source [nts.NtsClient]. Lazily constructed on first [warm]
   /// or first [getTime] call so the [NtsSource] constructor never
@@ -130,7 +141,7 @@ final class NtsSource implements TimeSource, Warmable {
     //   - Query failure: `nts.NtsError` (or `TransientSourceError`
     //     for the dnsSaturation phase) thrown from `client.query`
     //     below and handled by the existing on-clauses.
-    final client = _client ??= nts.NtsClient();
+    final client = _client ??= nts.NtsClient(trustMode: _trustMode);
 
     final nts.NtsTimeSample result;
     try {
@@ -188,7 +199,7 @@ final class NtsSource implements TimeSource, Warmable {
       // outer catch swallows that case so the warm path stays
       // lossy as documented; [getTime] re-attempts construction so
       // the structural failure surfaces with a real query attempt.
-      final client = _client ??= nts.NtsClient();
+      final client = _client ??= nts.NtsClient(trustMode: _trustMode);
       await client.warmCookies(
         spec: _spec,
         dnsConcurrencyCap: _dnsConcurrencyCap,
