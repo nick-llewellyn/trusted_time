@@ -280,7 +280,7 @@ abstract final class TrustedTime {
   ///   `NtsClient` (used by `package:nts`'s top-level convenience
   ///   functions) most recently resolved to. `null` until a
   ///   handshake has run against the singleton. Per-source
-  ///   [NtsSource] handshakes use caller-minted clients (see
+  ///   `NtsSource` handshakes use caller-minted clients (see
   ///   `trusted_time-51z`) and do not update this field; their
   ///   per-handshake backend identity is on
   ///   [TimeSample.trustBackend] instead.
