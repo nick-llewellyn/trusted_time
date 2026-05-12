@@ -28,7 +28,7 @@ import 'nts_auth_level.dart';
 /// Each successful query receives one fresh cookie in-band, keeping
 /// the pool self-sustaining. If warming fails or is skipped,
 /// [getTime] still calls [warm] as a JIT fallback; when that fails
-/// too, [NtsClient.query] performs its own cold-start handshake
+/// too, [nts.NtsClient.query] performs its own cold-start handshake
 /// transparently.
 ///
 /// **Per-source [nts.NtsClient]:** Each [NtsSource] owns its own
@@ -117,9 +117,19 @@ final class NtsSource implements TimeSource, Warmable {
 
     // Mint the client here as a fallback if [_performWarming]
     // swallowed a construction failure (e.g. RustLib not yet
-    // initialised at warm time). If construction still fails here,
-    // the resulting NtsError propagates as a real source failure
-    // (matching the loud-getTime / lossy-warm contract).
+    // initialised at warm time, in which case `nts.NtsClient()`
+    // throws `StateError`). Two distinct failure modes propagate
+    // unwrapped from this method, matching the loud-getTime /
+    // lossy-warm contract:
+    //
+    //   - Construction failure: `StateError` from `nts.NtsClient()`
+    //     below, before the query try/catch is entered. Indicates a
+    //     structural problem (RustLib not initialised) rather than a
+    //     transient network issue, so it is intentionally not
+    //     translated into an `nts.NtsError` subtype.
+    //   - Query failure: `nts.NtsError` (or `TransientSourceError`
+    //     for the dnsSaturation phase) thrown from `client.query`
+    //     below and handled by the existing on-clauses.
     final client = _client ??= nts.NtsClient();
 
     final nts.NtsTimeSample result;
