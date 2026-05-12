@@ -19,16 +19,27 @@ import 'nts_auth_level.dart';
 /// - AES-SIV-CMAC-256 authenticated encryption
 /// - Secure NTPv4 extension field handling
 ///
-/// **Cookie jar lifecycle:** [warm] runs [ntsWarmCookies] to perform the
-/// NTS-KE handshake (TCP + TLS + KE, ~3 RTTs) and prime the cookie jar.
-/// [SyncEngine] awaits this in its warming phase before starting the
-/// per-query timeout, so the handshake cost falls outside the
-/// `maxLatency` budget. The warm result is memoized; subsequent calls
-/// share the same completed [Future]. Each successful query receives one
-/// fresh cookie in-band, keeping the pool self-sustaining. If warming
-/// fails or is skipped, [getTime] still calls [warm] as a JIT fallback;
-/// when that fails too, [ntsQuery] performs its own cold-start handshake
+/// **Cookie jar lifecycle:** [warm] runs `NtsClient.warmCookies` to
+/// perform the NTS-KE handshake (TCP + TLS + KE, ~3 RTTs) and prime
+/// the cookie jar. [SyncEngine] awaits this in its warming phase
+/// before starting the per-query timeout, so the handshake cost
+/// falls outside the `maxLatency` budget. The warm result is
+/// memoized; subsequent calls share the same completed [Future].
+/// Each successful query receives one fresh cookie in-band, keeping
+/// the pool self-sustaining. If warming fails or is skipped,
+/// [getTime] still calls [warm] as a JIT fallback; when that fails
+/// too, [nts.NtsClient.query] performs its own cold-start handshake
 /// transparently.
+///
+/// **Per-source [nts.NtsClient]:** Each [NtsSource] owns its own
+/// [nts.NtsClient] instance, lazily constructed on first [warm] (or
+/// first [getTime] if warm fails to mint it). Two sources never
+/// share session table, cookie pool, AEAD keys, or KE session
+/// state; one host's cookie-jar refill stall (e.g. the bimodal
+/// pattern documented in `trusted_time-skj.4`) cannot starve
+/// another. This also gives test fakes / stubs that wrap their own
+/// [nts.NtsClient] full session-state isolation from any concurrent
+/// real source running in the same isolate.
 ///
 /// **Platform support:** Android, iOS, macOS, Windows, Linux.
 /// Not available on Web (NTS requires TLS 1.3 with exporters).
@@ -67,6 +78,16 @@ final class NtsSource implements TimeSource, Warmable {
   final int _dnsConcurrencyCap;
   final int _timeoutMs;
 
+  /// Per-source [nts.NtsClient]. Lazily constructed on first [warm]
+  /// or first [getTime] call so the [NtsSource] constructor never
+  /// touches the FFI surface (matching the lifetime of [_warmTask]
+  /// below). Owned exclusively by this source — the session table,
+  /// cookie pool, AEAD keys, and KE session live here, isolated from
+  /// every other [NtsSource] instance and from `package:nts`'s
+  /// process-wide singleton client used by the top-level
+  /// `nts.ntsQuery` / `nts.ntsWarmCookies` convenience functions.
+  nts.NtsClient? _client;
+
   /// Memoized NTS-KE warm task. `null` until [warm] is first invoked,
   /// so constructing an [NtsSource] never touches the FFI surface.
   Future<void>? _warmTask;
@@ -94,9 +115,26 @@ final class NtsSource implements TimeSource, Warmable {
     // in its dedicated warming phase, so this is a no-op in that path.
     await warm();
 
+    // Mint the client here as a fallback if [_performWarming]
+    // swallowed a construction failure (e.g. RustLib not yet
+    // initialised at warm time, in which case `nts.NtsClient()`
+    // throws `StateError`). Two distinct failure modes propagate
+    // unwrapped from this method, matching the loud-getTime /
+    // lossy-warm contract:
+    //
+    //   - Construction failure: `StateError` from `nts.NtsClient()`
+    //     below, before the query try/catch is entered. Indicates a
+    //     structural problem (RustLib not initialised) rather than a
+    //     transient network issue, so it is intentionally not
+    //     translated into an `nts.NtsError` subtype.
+    //   - Query failure: `nts.NtsError` (or `TransientSourceError`
+    //     for the dnsSaturation phase) thrown from `client.query`
+    //     below and handled by the existing on-clauses.
+    final client = _client ??= nts.NtsClient();
+
     final nts.NtsTimeSample result;
     try {
-      result = await nts.ntsQuery(
+      result = await client.query(
         spec: _spec,
         timeoutMs: _timeoutMs,
         dnsConcurrencyCap: _dnsConcurrencyCap,
@@ -144,7 +182,14 @@ final class NtsSource implements TimeSource, Warmable {
 
   Future<void> _performWarming() async {
     try {
-      await nts.ntsWarmCookies(
+      // Lazy-mint the per-source client. `NtsClient()` is a
+      // synchronous factory backed by an FRB dispatch; it throws
+      // `StateError` if `RustLib.init()` has not completed. The
+      // outer catch swallows that case so the warm path stays
+      // lossy as documented; [getTime] re-attempts construction so
+      // the structural failure surfaces with a real query attempt.
+      final client = _client ??= nts.NtsClient();
+      await client.warmCookies(
         spec: _spec,
         dnsConcurrencyCap: _dnsConcurrencyCap,
       );
