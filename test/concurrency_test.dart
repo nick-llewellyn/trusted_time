@@ -339,11 +339,29 @@ class RecordingObserver implements SyncObserver {
 
 /// Records every sample handed to the engine's stream listener so
 /// stability-guard tests can assert how many samples the engine
-/// consumed before early-exit fired. The engine's listener returns
-/// before calling [onSampleReceived] once the completer is completed
-/// (see `if (completer.isCompleted) return;` at the top of the
-/// listener), so a recorded sample count of N implies early-exit
-/// fired no earlier than sample N.
+/// consumed before early-exit fired.
+///
+/// Two engine paths drop samples after the completer resolves:
+///   * the per-source fan-out loop in `SyncEngine.sync` guards every
+///     `sampleController.add(sample)` with
+///     `if (!streamClosed && !sampleController.isClosed)`, and the
+///     `finally` block sets `streamClosed = true` and closes the
+///     controller as soon as the completer resolves -- so a source
+///     whose `getTime()` future resolves after completion has its
+///     sample silently discarded before it ever reaches the listener;
+///   * if a sample is already queued on the stream when the completer
+///     completes, the listener's `if (completer.isCompleted) return;`
+///     guard at the top short-circuits before invoking the observer.
+///
+/// The combined effect is that a sample is recorded by this observer
+/// only if it reaches the listener before the completer resolves. The
+/// "no recorded sample after early-exit" guarantee therefore relies
+/// on the test pool's source delays leaving a comfortable wall-clock
+/// margin between the last "expected" arrival and the first "should
+/// be dropped" arrival -- the stability-guard tests below pin that
+/// margin at 300 ms (last expected at 100 ms, first dropped at 400
+/// ms), which is large compared to the few microtasks the engine
+/// needs between firing early-exit and the completer resolving.
 class SampleCountingObserver implements SyncObserver {
   final List<TimeSample> samplesReceived = [];
 
@@ -1324,19 +1342,19 @@ void main() {
     //    sequence does not collapse to a premature exit.
     //
     // Both tests count `onSampleReceived` events to infer where
-    // early-exit fired: the engine's stream listener guards every
-    // sample with `if (completer.isCompleted) return;` before invoking
-    // the observer, so a late-arriving sample whose delay exceeds the
-    // window between early-exit firing and the completer resolving is
-    // silently dropped and never recorded.
+    // early-exit fired -- see `SampleCountingObserver` for the full
+    // mechanics of which samples reach the listener and which are
+    // dropped at the per-source fan-out / stream-closure layer.
     //
     // Per-source delays are spaced at 20 ms so the relative arrival
     // order is robust against the ~1-10 ms timer-resolution and
     // scheduling jitter that shows up under CI load. The "late"
-    // last source is held back by 400 ms, which is comfortably more
-    // than the few microtasks the engine needs between firing
-    // early-exit and the completer resolving but still keeps each
-    // test under half a second of wall time.
+    // last source is held back by 400 ms, leaving ~300 ms of margin
+    // between the last expected arrival (100 ms) and the first sample
+    // that must be dropped (400 ms) -- comfortably more than the few
+    // microtasks the engine needs between firing early-exit and
+    // closing the sample controller, while still keeping each test
+    // under half a second of wall time.
 
     test('volatile pool (variance > 500 ms) requires N=3 matching '
         'intervals before early-exit', () async {
