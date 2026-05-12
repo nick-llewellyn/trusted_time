@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:nts/nts.dart' as nts;
 import 'domain/time_source.dart';
 import 'exceptions.dart';
 import 'sources/nts_auth_level.dart';
@@ -60,6 +61,7 @@ final class TrustedTimeConfig {
     this.ntsServers = const ['time.cloudflare.com'],
     this.ntsPort = 4460,
     this.ntsDnsConcurrencyCap,
+    this.ntsTrustMode = nts.TrustMode.platformWithFallback,
     this.additionalSources = const [],
     this.minQuorumRatio = 0.6,
     this.minimumQuorum = 2,
@@ -127,6 +129,38 @@ final class TrustedTimeConfig {
   /// process-global, so every admitted worker counts toward every
   /// caller's threshold).
   final int? ntsDnsConcurrencyCap;
+
+  /// Trust-anchor policy applied to every per-source [nts.NtsClient]
+  /// constructed by the engine.
+  ///
+  /// Defaults to [nts.TrustMode.platformWithFallback], which preserves
+  /// the behaviour of every release prior to the `package:nts` v3.0.0
+  /// migration: each NTS-KE handshake first attempts the platform
+  /// trust store, then silently falls back to the bundled
+  /// `webpki-roots` static bundle if `build_with_native_verifier`
+  /// fails at TLS-config construction.
+  ///
+  /// Set to [nts.TrustMode.platformOnly] when a pinned corporate CA
+  /// or an MDM-installed root is the load-bearing trust anchor and a
+  /// silent downgrade to the public-CA bundle would defeat the
+  /// deployment's TLS-inspection posture. With this mode,
+  /// `build_with_native_verifier` failure surfaces as an
+  /// `NtsError.trustBackendUnavailable` (consumed by the engine as a
+  /// per-source failure) instead of producing a successful sample
+  /// against the static bundle.
+  ///
+  /// **Scope:** This governs the **build-time** hard-fallback decision
+  /// only. On Android, the platform-side `HybridVerifier` makes a
+  /// separate **per-chain** decision after the platform verifier
+  /// returns: chains the platform verifier rejects with a curated
+  /// fallback-eligible failure shape (e.g. missing-OCSP-AIA chains
+  /// such as Let's Encrypt R12) can still be accepted via the
+  /// `webpki-roots` static bundle and surface as
+  /// `TrustBackend.platformWithHybridFallback`. That path is not
+  /// affected by this field. `platformOnly` therefore means "no
+  /// silent build-time downgrade", not "the public-CA bundle is
+  /// unreachable at runtime".
+  final nts.TrustMode ntsTrustMode;
 
   /// Custom [TimeSource] implementations provided by the application developer.
   final List<TimeSource> additionalSources;
@@ -215,6 +249,7 @@ final class TrustedTimeConfig {
     List<String>? ntsServers,
     int? ntsPort,
     int? ntsDnsConcurrencyCap,
+    nts.TrustMode? ntsTrustMode,
     List<TimeSource>? additionalSources,
     double? minQuorumRatio,
     int? minimumQuorum,
@@ -234,6 +269,7 @@ final class TrustedTimeConfig {
       ntsServers: ntsServers ?? this.ntsServers,
       ntsPort: ntsPort ?? this.ntsPort,
       ntsDnsConcurrencyCap: ntsDnsConcurrencyCap ?? this.ntsDnsConcurrencyCap,
+      ntsTrustMode: ntsTrustMode ?? this.ntsTrustMode,
       additionalSources: additionalSources ?? this.additionalSources,
       minQuorumRatio: minQuorumRatio ?? this.minQuorumRatio,
       minimumQuorum: minimumQuorum ?? this.minimumQuorum,
@@ -262,6 +298,7 @@ final class TrustedTimeConfig {
         listEquals(other.ntsServers, ntsServers) &&
         other.ntsPort == ntsPort &&
         other.ntsDnsConcurrencyCap == ntsDnsConcurrencyCap &&
+        other.ntsTrustMode == ntsTrustMode &&
         listEquals(other.additionalSources, additionalSources) &&
         other.minQuorumRatio == minQuorumRatio &&
         other.minimumQuorum == minimumQuorum &&
@@ -283,6 +320,7 @@ final class TrustedTimeConfig {
     Object.hashAll(ntsServers),
     ntsPort,
     ntsDnsConcurrencyCap,
+    ntsTrustMode,
     Object.hashAll(additionalSources),
     minQuorumRatio,
     minimumQuorum,
@@ -311,6 +349,7 @@ final class TrustedTimeConfig {
         '  ntsServers: $ntsServers,\n'
         '  ntsPort: $ntsPort,\n'
         '  ntsDnsConcurrencyCap: $ntsDnsConcurrencyCap,\n'
+        '  ntsTrustMode: $ntsTrustMode,\n'
         '  additionalSources: $additionalSources,\n'
         '  minQuorumRatio: $minQuorumRatio,\n'
         '  minimumQuorum: $minimumQuorum,\n'
