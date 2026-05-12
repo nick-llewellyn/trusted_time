@@ -80,7 +80,20 @@ void main() {
       const a = TrustedTimeConfig();
       const b = TrustedTimeConfig(ntsTrustMode: TrustMode.platformOnly);
       expect(a == b, isFalse);
-      expect(a.hashCode == b.hashCode, isFalse);
+    });
+
+    test('equal configs produce equal hashCodes (positive contract)', () {
+      // Verifies the field is folded into hashCode by checking the
+      // forward direction of the Object.== / hashCode contract:
+      // equal objects MUST share a hashCode. The reverse (unequal
+      // -> unequal hashCode) is intentionally not asserted because
+      // hash collisions are permitted by the contract; asserting
+      // inequality would test a non-guarantee and could spuriously
+      // fail under a future hashAll re-tuning.
+      const a = TrustedTimeConfig(ntsTrustMode: TrustMode.platformOnly);
+      const b = TrustedTimeConfig(ntsTrustMode: TrustMode.platformOnly);
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
     });
 
     test('appears in toString output', () {
