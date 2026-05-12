@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nts/nts.dart' as nts;
 import 'package:trusted_time/trusted_time.dart';
 
 void main() {
@@ -171,5 +172,66 @@ void main() {
         expect(platformBackend.toString(), contains('backend: platform'));
       },
     );
+  });
+
+  group('TrustedTime.ntsTrustStatus pass-through', () {
+    // The bd's acceptance criterion says the regression test must
+    // confirm the wrapper returns whatever `nts.ntsTrustStatus()`
+    // returns at call time, without asserting specific field values
+    // (those depend on platform / runtime state). Here we exercise
+    // the negative half of the pass-through contract: with no
+    // `RustLib.init()` having run in the unit-test process, both
+    // `nts.ntsTrustStatus()` and `TrustedTime.ntsTrustStatus()`
+    // throw `StateError` for the same FRB-dispatcher reason. If the
+    // wrapper were swallowing, wrapping, or otherwise converting
+    // the error, this test would catch it.
+    //
+    // The positive (returns-snapshot) half cannot be exercised in
+    // CI without the Rust dylib loaded, same constraint that gated
+    // PR #27 / #28 / #29's behavioural tests.
+
+    test('wrapper propagates underlying StateError with matching '
+        'runtimeType and message', () {
+      // Capture the underlying call's failure first so we have a
+      // concrete reference to compare against. Per the ffi
+      // dispatcher's contract, this throws StateError when
+      // RustLib.init() has not run.
+      StateError? underlyingError;
+      try {
+        nts.ntsTrustStatus();
+      } on StateError catch (e) {
+        underlyingError = e;
+      }
+
+      // Then capture the wrapper's failure.
+      StateError? wrapperError;
+      try {
+        TrustedTime.ntsTrustStatus();
+      } on StateError catch (e) {
+        wrapperError = e;
+      }
+
+      // Both calls must have actually thrown — otherwise the test
+      // is vacuous (would also pass if neither call threw).
+      expect(
+        underlyingError,
+        isNotNull,
+        reason:
+            'Sanity check: nts.ntsTrustStatus() must throw '
+            'StateError without RustLib.init(). If a future '
+            'package:nts version makes this returnable in test '
+            'envs, this group becomes vacuous and should be '
+            'redesigned to compare snapshot identity instead.',
+      );
+      expect(wrapperError, isNotNull);
+
+      // Tighten the pass-through claim: the wrapper must produce
+      // the same concrete runtimeType and the same message text.
+      // A swallow-and-rethrow or convert-to-Exception would
+      // change the runtimeType; a re-throw via a new
+      // StateError(...) would change the message.
+      expect(wrapperError!.runtimeType, equals(underlyingError!.runtimeType));
+      expect(wrapperError.message, equals(underlyingError.message));
+    });
   });
 }

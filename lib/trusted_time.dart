@@ -28,6 +28,13 @@ library;
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart' as nts;
+// Unprefixed import for the type that appears in this library's
+// public API surface, so the dartdoc-rendered signature of
+// `TrustedTime.ntsTrustStatus` matches the unprefixed name
+// consumers see via the `export 'package:nts/nts.dart' show ...`
+// re-export below. Limited to the single re-exported type to keep
+// the rest of the file's `nts.` prefix discipline intact.
+import 'package:nts/nts.dart' show NtsTrustStatus;
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import 'src/exceptions.dart';
@@ -43,16 +50,20 @@ export 'src/exceptions.dart';
 export 'src/integrity_event.dart';
 export 'src/models.dart'
     show TrustedTimeConfig, TrustAnchor, ConfidenceLevel, SyncMetrics;
-// TrustMode and TrustBackend are part of `package:nts`'s public
-// surface and are exposed by this package's API:
+// TrustMode, TrustBackend, and NtsTrustStatus are part of
+// `package:nts`'s public surface and are exposed by this package's
+// API:
 //   - `TrustMode` is the value type of
 //     `TrustedTimeConfig.ntsTrustMode` (the build-time policy knob).
 //   - `TrustBackend` is the value type of `TimeSample.trustBackend`
 //     (the per-handshake observability value).
-// Re-exported together so consumers can reference both without
+//   - `NtsTrustStatus` is the return type of
+//     `TrustedTime.ntsTrustStatus` (the process-global diagnostic
+//     snapshot).
+// Re-exported together so consumers can reference all three without
 // needing to add `package:nts` to their own pubspec — it is already
 // a transitive dependency of this package.
-export 'package:nts/nts.dart' show TrustMode, TrustBackend;
+export 'package:nts/nts.dart' show TrustMode, TrustBackend, NtsTrustStatus;
 export 'src/trusted_time_estimate.dart';
 export 'src/trusted_time_mock.dart';
 export 'src/infra/sync_observer.dart';
@@ -255,6 +266,53 @@ abstract final class TrustedTime {
     if (_override != null) return const TrustedTimeConfig();
     return TrustedTimeImpl.instance.config;
   }
+
+  /// Returns a process-global snapshot of `package:nts`'s
+  /// trust-anchor diagnostic state.
+  ///
+  /// Pass-through wrapper around `nts.ntsTrustStatus()` with no
+  /// transformation: the underlying call is documented as three
+  /// atomic-Relaxed loads, cheap enough to call from a UI poll loop
+  /// or a pre-flight "can I even validate against the platform
+  /// store?" check. The returned [NtsTrustStatus] exposes:
+  ///
+  /// - `defaultClientBackend`: backend the *default singleton*
+  ///   `NtsClient` (used by `package:nts`'s top-level convenience
+  ///   functions) most recently resolved to. `null` until a
+  ///   handshake has run against the singleton. Per-source
+  ///   `NtsSource` handshakes use caller-minted clients (see
+  ///   `trusted_time-51z`) and do not update this field; their
+  ///   per-handshake backend identity is on
+  ///   [TimeSample.trustBackend] instead.
+  /// - `androidPlatformInitSucceeded`: `true` iff the Android JNI
+  ///   bootstrap reported success at least once. `false` on every
+  ///   non-Android platform (no JNI bootstrap exists). A `false`
+  ///   value on Android implies subsequent handshakes will run
+  ///   against the `webpki-roots` static bundle regardless of
+  ///   [TrustedTimeConfig.ntsTrustMode].
+  /// - `androidHybridFallbackCount`: cumulative count of TLS
+  ///   chains the Android hybrid verifier has accepted via the
+  ///   `webpki-roots` fallback path since process start. Always
+  ///   zero on non-Android platforms. Non-zero on Android indicates
+  ///   at least one chain arrived whose only platform-side failure
+  ///   was a curated fallback-eligible shape.
+  ///
+  /// Per-counter monotonicity holds across consecutive snapshots;
+  /// the snapshot is intended for human / dashboard consumption,
+  /// not for cross-thread synchronisation.
+  ///
+  /// Throws `StateError` if `package:nts`'s `RustLib.init()` has
+  /// not completed (matches `nts.ntsTrustStatus()`'s contract).
+  /// [TrustedTime.initialize] performs the FFI bootstrap when
+  /// [TrustedTimeConfig.ntsServers] is non-empty; calling this
+  /// method before [initialize], or after [initialize] when the
+  /// active config has empty `ntsServers`, may surface that error.
+  // The return type is the unprefixed `NtsTrustStatus` so the
+  // public dartdoc matches what consumers see after this library's
+  // re-export above; using `nts.NtsTrustStatus` here would leak
+  // this file's import alias into every generated signature page
+  // even though both names refer to the same class.
+  static NtsTrustStatus ntsTrustStatus() => nts.ntsTrustStatus();
 
   /// Advanced retrieval that enforces specific security and integrity constraints.
   ///
