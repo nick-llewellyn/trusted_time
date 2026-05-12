@@ -261,10 +261,15 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
 
   @override
   void onConsensusReached(ConsensusResult result) {
+    // `quorum` is the sweep-depth used by the engine's quorum check;
+    // `participants` is the stricter midpoint-containment count. They
+    // diverge when one source's bimodal arrival latency widens the
+    // window past where other sources' midpoints sit (skj.3).
     _add(
       TelemetryKind.consensus,
       'utc=${result.utc.toIso8601String()} '
       '±${result.uncertaintyMs}ms '
+      'quorum=${result.quorumDepth} '
       'participants=${result.participantCount} '
       'groups=${result.groupCount}',
     );

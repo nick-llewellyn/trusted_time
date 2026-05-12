@@ -408,6 +408,7 @@ final class SyncEngine {
           latencyMs: latencyMs,
           uncertaintyMs: result.uncertaintyMs,
           participantCount: result.participantCount,
+          quorumDepth: result.quorumDepth,
           groupCount: result.groupCount,
           confidence: result.confidence,
           confidenceBreakdown: {

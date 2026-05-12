@@ -427,6 +427,7 @@ final class SyncMetrics {
     required this.latencyMs,
     required this.uncertaintyMs,
     required this.participantCount,
+    required this.quorumDepth,
     required this.groupCount,
     required this.confidence,
     required this.confidenceBreakdown,
@@ -438,8 +439,18 @@ final class SyncMetrics {
   /// The precision achieved by the resolved consensus.
   final int uncertaintyMs;
 
-  /// The number of time authorities that participated in the consensus.
+  /// The number of unique time authorities whose interval contains the
+  /// consensus midpoint. Stricter than [quorumDepth] — see
+  /// `ConsensusResult.participantCount` for the divergence conditions.
+  /// Use [quorumDepth] for quorum-floor reasoning.
   final int participantCount;
+
+  /// The number of unique sources active at the densest overlap point
+  /// during Marzullo's sweep. This is the figure used by the quorum
+  /// check and confidence grading; always satisfies
+  /// `quorumDepth >= participantCount`. See
+  /// `ConsensusResult.quorumDepth`.
+  final int quorumDepth;
 
   /// The number of administrative groups represented in the quorum.
   final int groupCount;
