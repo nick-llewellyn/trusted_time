@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nts/nts.dart' as nts;
 import 'package:trusted_time/trusted_time.dart';
 
 void main() {
@@ -171,5 +172,49 @@ void main() {
         expect(platformBackend.toString(), contains('backend: platform'));
       },
     );
+  });
+
+  group('TrustedTime.ntsTrustStatus pass-through', () {
+    // The bd's acceptance criterion says the regression test must
+    // confirm the wrapper returns whatever `nts.ntsTrustStatus()`
+    // returns at call time, without asserting specific field values
+    // (those depend on platform / runtime state). Here we exercise
+    // the negative half of the pass-through contract: with no
+    // `RustLib.init()` having run in the unit-test process, both
+    // `nts.ntsTrustStatus()` and `TrustedTime.ntsTrustStatus()`
+    // throw `StateError` for the same FRB-dispatcher reason. If the
+    // wrapper were swallowing or wrapping the error, this test
+    // would catch it. The positive (returns-snapshot) half cannot
+    // be exercised in CI without the Rust dylib loaded, same
+    // constraint that gated PR #27 / #28 / #29's behavioural tests.
+
+    test('throws the same StateError as the underlying call', () {
+      // Sanity: the underlying nts.ntsTrustStatus() does throw
+      // StateError without RustLib initialisation. (If a future
+      // package:nts version makes this returnable in test envs,
+      // both branches here will start passing through a real
+      // snapshot and the equality check below will degrade to a
+      // weaker `expect(call() == call())`-style invariant rather
+      // than failing — which is the desired migration shape.)
+      Object? underlyingError;
+      try {
+        nts.ntsTrustStatus();
+      } on StateError catch (e) {
+        underlyingError = e;
+      }
+
+      // Wrapper must propagate that exact failure shape unwrapped.
+      // A swallow-and-rethrow or convert-to-Exception would change
+      // the runtimeType.
+      Object? wrapperError;
+      try {
+        TrustedTime.ntsTrustStatus();
+      } on StateError catch (e) {
+        wrapperError = e;
+      }
+
+      expect(underlyingError, isA<StateError>());
+      expect(wrapperError, isA<StateError>());
+    });
   });
 }

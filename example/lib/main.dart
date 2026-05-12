@@ -874,6 +874,15 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
   // poll succeeds; stays null if RustLib was never initialised
   // (NTS-disabled config path) or the FFI throws for any reason.
   NtsDnsPoolStats? _dnsStats;
+  // Companion live snapshot of `package:nts`'s process-global
+  // trust-anchor diagnostic state, polled on the same 1 s timer
+  // because the same UI-poll-loop endorsement applies (three
+  // atomic-relaxed loads under the hood). Surfaces the singleton
+  // backend identity, Android JNI bootstrap success bit, and
+  // hybrid-fallback counter; null on the same conditions as
+  // `_dnsStats` so the readout degrades gracefully on the
+  // NTS-disabled / RustLib-uninitialised path.
+  NtsTrustStatus? _trustStatus;
   Timer? _dnsStatsTicker;
 
   @override
@@ -881,12 +890,16 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
     super.initState();
     _dnsStatsTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
-      final snap = _safeReadDnsStats();
-      // Avoid a setState rebuild when the snapshot has not changed —
-      // every other source of work in this panel is event-driven, so
-      // an idle period should not cost a frame per second.
-      if (snap == _dnsStats) return;
-      setState(() => _dnsStats = snap);
+      final dnsSnap = _safeReadDnsStats();
+      final trustSnap = _safeReadTrustStatus();
+      // Avoid a setState rebuild when neither snapshot has changed —
+      // every other source of work in this panel is event-driven,
+      // so an idle period should not cost a frame per second.
+      if (dnsSnap == _dnsStats && trustSnap == _trustStatus) return;
+      setState(() {
+        _dnsStats = dnsSnap;
+        _trustStatus = trustSnap;
+      });
     });
   }
 
@@ -904,6 +917,18 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
   NtsDnsPoolStats? _safeReadDnsStats() {
     try {
       return ntsDnsPoolStats();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Companion of [_safeReadDnsStats] for the trust-status snapshot.
+  /// `TrustedTime.ntsTrustStatus()` is documented as throwing
+  /// `StateError` if `RustLib.init()` has not completed, so guard
+  /// the same way the DNS pool reader does.
+  NtsTrustStatus? _safeReadTrustStatus() {
+    try {
+      return TrustedTime.ntsTrustStatus();
     } catch (_) {
       return null;
     }
@@ -970,6 +995,8 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
             ),
             const SizedBox(height: 6),
             _DnsPoolStatsBar(stats: _dnsStats),
+            const SizedBox(height: 4),
+            _TrustStatusBar(status: _trustStatus),
             const SizedBox(height: 8),
             Container(
               height: 260,
@@ -1364,6 +1391,45 @@ class _DnsPoolStatsBar extends StatelessWidget {
             'hwm: ${s.highWaterMark}  '
             'recovered: ${s.recovered}  '
             'refused: ${s.refused}';
+    return Text(
+      detail,
+      style: TextStyle(
+        fontFamily: 'monospace',
+        fontSize: 11,
+        color: s == null ? Colors.grey : Colors.tealAccent.shade100,
+      ),
+    );
+  }
+}
+
+/// Single-line readout of `package:nts`'s process-global trust-anchor
+/// diagnostic snapshot: the singleton client's most-recent backend,
+/// the Android JNI bootstrap success bit, and the Android hybrid-
+/// fallback counter. Sibling of [_DnsPoolStatsBar]; same null-stats
+/// degradation contract (NTS disabled or RustLib uninitialised).
+///
+/// `defaultClientBackend` is rendered as `singleton: <name>` (or
+/// `singleton: idle` when null, meaning the singleton client has
+/// not handshaken yet — every per-source `NtsSource` mints its own
+/// `NtsClient` so the singleton stays idle in normal operation).
+/// On non-Android platforms the JNI / hybrid-fallback fields are
+/// rendered with their documented sentinel values (`false` / `0`)
+/// rather than hidden, so the readout has a stable shape on every
+/// host.
+class _TrustStatusBar extends StatelessWidget {
+  const _TrustStatusBar({required this.status});
+
+  final NtsTrustStatus? status;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = status;
+    final detail = s == null
+        ? 'Trust status: n/a (NTS disabled or RustLib not initialised)'
+        : 'Trust status — '
+            'singleton: ${s.defaultClientBackend?.name ?? 'idle'}  '
+            'androidInit: ${s.androidPlatformInitSucceeded}  '
+            'hybridFallbacks: ${s.androidHybridFallbackCount}';
     return Text(
       detail,
       style: TextStyle(
