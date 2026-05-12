@@ -189,6 +189,12 @@ final class NtsSource implements TimeSource, Warmable {
       sourceId: id,
       groupId: groupId,
       authLevel: NtsAuthLevel.verified,
+      // Surfaced unchanged from the underlying handshake so
+      // telemetry consumers can distinguish platform-store
+      // authentication from the static webpki-roots fallback (and,
+      // on Android, the per-chain hybrid-fallback path). See
+      // [TimeSample.trustBackend] for the semantics of each value.
+      trustBackend: result.trustBackend,
     );
   }
 

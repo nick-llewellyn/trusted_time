@@ -224,11 +224,20 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
 
   @override
   void onSampleReceived(TimeSample sample) {
+    // Per-NTS-handshake trust-anchor identifier. Always null for
+    // non-NTS samples (NTP, HTTPS), so the row stays unchanged for
+    // them; rendered for NTS samples so an operator can spot a
+    // silent webpki-roots fallback in deployments that expect
+    // platform-store enforcement (MDM-pinned CA, user-installed
+    // root). Appended last so the existing window/auth columns
+    // stay positionally stable for log parsers.
+    final backend = sample.trustBackend;
+    final backendField = backend == null ? '' : ' backend=${backend.name}';
     _add(
       TelemetryKind.sample,
       '${sample.sourceId} '
       'window=${sample.interval.endMs - sample.interval.startMs}ms '
-      'auth=${sample.authLevel.name}',
+      'auth=${sample.authLevel.name}$backendField',
     );
   }
 

@@ -43,13 +43,16 @@ export 'src/exceptions.dart';
 export 'src/integrity_event.dart';
 export 'src/models.dart'
     show TrustedTimeConfig, TrustAnchor, ConfidenceLevel, SyncMetrics;
-// TrustMode is part of `package:nts`'s public surface and is the
-// value type of `TrustedTimeConfig.ntsTrustMode`. Re-exported so
-// consumers can reference its variants
-// (`TrustMode.platformWithFallback`, `TrustMode.platformOnly`)
-// without needing to add `package:nts` to their own pubspec — it is
-// already a transitive dependency of this package.
-export 'package:nts/nts.dart' show TrustMode;
+// TrustMode and TrustBackend are part of `package:nts`'s public
+// surface and are exposed by this package's API:
+//   - `TrustMode` is the value type of
+//     `TrustedTimeConfig.ntsTrustMode` (the build-time policy knob).
+//   - `TrustBackend` is the value type of `TimeSample.trustBackend`
+//     (the per-handshake observability value).
+// Re-exported together so consumers can reference both without
+// needing to add `package:nts` to their own pubspec — it is already
+// a transitive dependency of this package.
+export 'package:nts/nts.dart' show TrustMode, TrustBackend;
 export 'src/trusted_time_estimate.dart';
 export 'src/trusted_time_mock.dart';
 export 'src/infra/sync_observer.dart';
