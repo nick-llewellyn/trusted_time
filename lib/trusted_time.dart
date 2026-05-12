@@ -28,6 +28,13 @@ library;
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart' as nts;
+// Unprefixed import for the type that appears in this library's
+// public API surface, so the dartdoc-rendered signature of
+// `TrustedTime.ntsTrustStatus` matches the unprefixed name
+// consumers see via the `export 'package:nts/nts.dart' show ...`
+// re-export below. Limited to the single re-exported type to keep
+// the rest of the file's `nts.` prefix discipline intact.
+import 'package:nts/nts.dart' show NtsTrustStatus;
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import 'src/exceptions.dart';
@@ -300,7 +307,12 @@ abstract final class TrustedTime {
   /// [TrustedTimeConfig.ntsServers] is non-empty; calling this
   /// method before [initialize], or after [initialize] when the
   /// active config has empty `ntsServers`, may surface that error.
-  static nts.NtsTrustStatus ntsTrustStatus() => nts.ntsTrustStatus();
+  // The return type is the unprefixed `NtsTrustStatus` so the
+  // public dartdoc matches what consumers see after this library's
+  // re-export above; using `nts.NtsTrustStatus` here would leak
+  // this file's import alias into every generated signature page
+  // even though both names refer to the same class.
+  static NtsTrustStatus ntsTrustStatus() => nts.ntsTrustStatus();
 
   /// Advanced retrieval that enforces specific security and integrity constraints.
   ///

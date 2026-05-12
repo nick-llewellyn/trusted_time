@@ -883,12 +883,17 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
   // `_dnsStats` so the readout degrades gracefully on the
   // NTS-disabled / RustLib-uninitialised path.
   NtsTrustStatus? _trustStatus;
-  Timer? _dnsStatsTicker;
+  // Single 1 s timer that polls every `package:nts` diagnostic
+  // surface this panel renders (currently DNS pool stats and the
+  // trust-anchor status snapshot). Field name is deliberately
+  // domain-neutral so future diagnostic snapshots can be folded
+  // into the same tick without a misleading dns-specific identifier.
+  Timer? _diagnosticsTicker;
 
   @override
   void initState() {
     super.initState();
-    _dnsStatsTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+    _diagnosticsTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       final dnsSnap = _safeReadDnsStats();
       final trustSnap = _safeReadTrustStatus();
@@ -905,7 +910,7 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
 
   @override
   void dispose() {
-    _dnsStatsTicker?.cancel();
+    _diagnosticsTicker?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
