@@ -500,8 +500,14 @@ void main() {
         // The narrow NTS interval becomes wide enough to overlap the
         // cluster's densest region, raising depth there to 5 and
         // satisfying requiredQuorum without changing minQuorumRatio.
-        final samples = heteroPoolWithNts()
-          ..[0] = heteroSample('nts:cf', 0, 150);
+        final samples = heteroPoolWithNts();
+        final ntsIndex = samples.indexWhere((s) => s.sourceId == 'nts:cf');
+        expect(
+          ntsIndex,
+          isNonNegative,
+          reason: 'heteroPoolWithNts must include the nts:cf sample',
+        );
+        samples[ntsIndex] = heteroSample('nts:cf', 0, 150);
         final result = engine.resolve(samples);
         expect(result, isNotNull);
         expect(result!.participantCount, 5);
