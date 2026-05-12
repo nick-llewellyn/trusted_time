@@ -412,14 +412,26 @@ final class SyncEngine {
           groupCount: result.groupCount,
           confidence: result.confidence,
           confidenceBreakdown: {
+            // Both 'depth' and 'quorumDepth' are coarse "fraction of
+            // the configured source pool that participated" ratios,
+            // not the engine's actual quorum-floor comparison. The
+            // engine's quorum check is `quorumDepth >= ceil(eligible *
+            // minQuorumRatio)`, where `eligible` is the per-cycle
+            // count of valid samples (which can be smaller than the
+            // configured pool when sources are cooled down or fail to
+            // produce a sample). Neither ratio surfaces `eligible`,
+            // so they cannot reproduce the engine's quorum-floor
+            // decision; consumers that need quorum-floor reasoning
+            // should key off the raw integer SyncMetrics.quorumDepth
+            // field instead.
+            //
             // 'depth' preserves the historical participantCount-based
-            // ratio so existing dashboards keyed off this entry do not
-            // break. 'quorumDepth' is the additive companion exposing
-            // the sweep-depth ratio that matches the engine's actual
-            // quorum-floor and confidence-grading behaviour. The two
-            // diverge under the same conditions documented on
-            // ConsensusResult.participantCount; consumers that want
-            // quorum-floor reasoning should key off 'quorumDepth'.
+            // ratio for backward compatibility with existing
+            // dashboards. 'quorumDepth' is the additive companion
+            // showing the same coarse ratio computed from the
+            // sweep-depth integer rather than the midpoint-containment
+            // integer; the two diverge under the same conditions
+            // documented on ConsensusResult.participantCount.
             'depth': result.participantCount / _sources.length,
             'quorumDepth': result.quorumDepth / _sources.length,
             'diversity': result.groupCount / 2.0,

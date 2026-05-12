@@ -547,11 +547,13 @@ void main() {
         // Sweep produces bestStart=-5, bestEnd=31 because all three
         // samples are active at t=-5 (densest point). bestUniqueOverlap
         // = 3 there. After end-of-window detection at t=31, the
-        // post-sweep window-rebuild step (marzullo_engine.dart:200-209)
-        // re-includes all three because each interval overlaps
-        // [-5, 31]. midpoint=(-5+31)/2 = 13. Sample B's interval
-        // [-60, 0] does NOT contain midpoint 13, so participantCount
-        // drops to 2 even though quorumDepth stays at 3.
+        // post-sweep window-rebuild step in MarzulloEngine.resolve
+        // (the loop that re-populates `bestSamples` with every sample
+        // overlapping [bestStart, bestEnd]) re-includes all three
+        // because each interval overlaps [-5, 31]. midpoint=(-5+31)
+        // ~/ 2 = 13. Sample B's interval [-60, 0] does NOT contain
+        // midpoint 13, so participantCount drops to 2 even though
+        // quorumDepth stays at 3.
         final result = engine.resolve([
           createSample(id: 'a', utc: baseTime, uncertaintyMs: 50),
           createSample(

@@ -450,10 +450,12 @@ final class SyncMetrics {
   /// check and confidence grading.
   ///
   /// For values produced by the engine, always satisfies
-  /// `quorumDepth >= participantCount`. (This is an engine invariant,
-  /// not a structural one — the type permits any non-negative integer
-  /// pairing, since [SyncMetrics] is publicly constructible for tests
-  /// and mocks.) See `ConsensusResult.quorumDepth`.
+  /// `quorumDepth >= participantCount`. This is an engine invariant,
+  /// not a structural one — the type does not constrain the pairing,
+  /// since [SyncMetrics] is publicly constructible for tests and mocks
+  /// (and the underlying `int` field permits negative values too, even
+  /// though engine-produced metrics are always non-negative). See
+  /// `ConsensusResult.quorumDepth`.
   final int quorumDepth;
 
   /// The number of administrative groups represented in the quorum.
