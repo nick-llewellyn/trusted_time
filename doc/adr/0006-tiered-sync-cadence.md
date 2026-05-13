@@ -162,11 +162,11 @@ a hint, not a verdict.
 
 ### Negative
 
-- Two cadence modes is more configuration surface to test. The
+- Two cadence modes add configuration surface to test. The
   `CadenceMode.tieredMobile` and `CadenceMode.singleTier30m` paths
-  must both be exercised;
-  follow-up test work is tracked separately under `wy3` and the
-  validate-API implementation ticket (filed at PR landing).
+  must both be exercised; follow-up test work is tracked separately
+  under `wy3` and the validate-API implementation ticket (filed at
+  PR landing).
 - `validateFreshness()` is a new public API and locks the fork into
   carrying it through 2.x. Surface is intentionally minimal
   (one `bool` return, no parameters) to keep the lock-in cost low.
