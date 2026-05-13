@@ -71,7 +71,7 @@ of the implementation on the current `integration/bleeding-edge` tree.
 The contribution-mode pivot (which reset `main` to mirror
 `upstream/main`) reverted any fork-side reductions of the upstream
 surface that had not yet been re-introduced as feat/* PRs. As of this
-PR, three Accepted ADRs are known to diverge from current code:
+PR, four Accepted ADRs are known to diverge from current code:
 
 - **ADR 0001** describes `TrustedTimeConfig.ntsServers` as "opt-in,
   empty by default". Current code defaults it to
