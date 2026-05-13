@@ -53,7 +53,7 @@ introduce a TLS-handshake cap until measurement justifies it.
 1. **Default value for `maxConcurrentDnsLookups` — 6.** Sits between
    the carrier-conservative (4) and WiFi-optimistic (8) options.
    Six covers the typical NTS pool size (3–5 per ADR 0007) plus
-   HTTPS headroom while staying inside the typical CGNAT serialise
+   HTTPS headroom while staying inside the typical CGNAT serialisation
    threshold. The choice will be revisited in a postscript once
    `trusted_time-wy3` produces measured carrier-vs-WiFi
    stress-run data; the current default is the value that holds up
