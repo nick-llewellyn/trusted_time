@@ -40,7 +40,7 @@ BurstResult aggregateBurst({
   // jitter_floor = max(0, p50_rtt - min_rtt) / 2; widens the per-source
   // uncertainty so a single fortunate sample cannot collapse the
   // interval below what the burst's RTT spread justifies.
-  final jitterFloor = ((medianRtt - minRtt).clamp(0, 1 << 31)) ~/ 2;
+  final jitterFloor = (medianRtt - minRtt).clamp(0, 1 << 31).toInt() ~/ 2;
   final uncertainty = minRtt ~/ 2 + jitterFloor;
 
   final spread = offsets.last - offsets.first;
@@ -61,8 +61,9 @@ BurstResult aggregateBurst({
 }
 
 /// Median of a non-empty, ascending-sorted list of integers.
-/// Even-length lists return the lower of the two middle elements
-/// (truncating-toward-zero average) to keep the return type integer.
+/// Even-length lists return the truncated arithmetic mean of the two
+/// middle elements (`(a + b) ~/ 2`) so the return type stays integer
+/// and the value is bounded by the actual sample distribution.
 int _median(List<int> sorted) {
   final n = sorted.length;
   if (n.isOdd) return sorted[n ~/ 2];

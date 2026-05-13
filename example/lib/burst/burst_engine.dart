@@ -79,7 +79,10 @@ class NtsBurstClient {
     Duration sequentialSpacing = const Duration(milliseconds: 500),
     int timeoutMs = nts.kDefaultTimeoutMs,
   }) async {
-    final effectiveCount = sampleCount.clamp(1, 8);
+    // .toInt() is defensive: Dart 3 narrows int.clamp(int, int) to
+    // int, but older analyzers and num-returning clamp overloads exist
+    // — explicit conversion keeps the int-ness obvious to readers.
+    final effectiveCount = sampleCount.clamp(1, 8).toInt();
     final issueDelays = _planIssueDelays(
       effectiveCount,
       mode,

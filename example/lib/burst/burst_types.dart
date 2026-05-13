@@ -88,7 +88,9 @@ class BurstResult {
 
   /// Per-issue-order index and surfaced error for each failed query.
   /// Empty list when the whole burst succeeded; `queries.length +
-  /// failures.length == requested sample count`.
+  /// failures.length` equals the burst's *issued* sample count, which
+  /// is the requested count after the `[1, 8]` clamp applied by
+  /// [NtsBurstClient.burst].
   final List<({int index, Object error})> failures;
 
   /// Minimum-RTT successful query, or `null` if every query failed.
