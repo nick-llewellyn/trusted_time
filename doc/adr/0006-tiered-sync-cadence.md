@@ -21,14 +21,18 @@ That value was inherited from the upstream desktop/server lineage and
 is wrong for mobile in three independent ways:
 
 1. **Drift modelling is over-conservative.** `oscillatorDriftFactor`
-   defaults to `0.00005` (50 ppm). Modern ARM SoCs (Pixel Tablet
-   generation, A14+ iPhones) drift at 5–15 ppm in pocket conditions.
-   The `nowEstimated()` decay formula
-   (`lib/src/trusted_time_impl.dart:217`,
-   `confidence = 1 - elapsedMinutes / 4320`) reaches 0.5 at 36h and
-   0.0 at 72h on the 50 ppm assumption. At a realistic 10 ppm the
-   same accuracy ceiling gives ~6× longer headroom before the
-   confidence floor matters.
+   defaults to `0.00005` (50 ppm) and feeds the `estimatedError` band
+   that `nowEstimated()` reports
+   (`lib/src/trusted_time_impl.dart:221`,
+   `errorMs = elapsedMs * oscillatorDriftFactor`). Modern ARM SoCs
+   (Pixel Tablet generation, A14+ iPhones) drift at 5–15 ppm in
+   pocket conditions, so the reported `estimatedError` band is
+   roughly 3–10× wider than the hardware actually warrants. The
+   separate `confidence` decay
+   (`trusted_time_impl.dart:217`,
+   `1 - elapsedMinutes / 4320`) is purely a function of elapsed wall
+   time and does not use `oscillatorDriftFactor`; it independently
+   reaches 0.5 at 36h and 0.0 at 72h regardless of the drift constant.
 2. **OS background scheduling defeats it anyway.** iOS
    `BGTaskScheduler` and Android `WorkManager` throttle frequent
    background tasks. A 30-min `refreshInterval` is aspirational; the
@@ -77,18 +81,20 @@ mobile-SoC behaviour.
    15 ppm would silently shrink the worst-case `estimatedError` band
    for desktop callers whose hardware actually drifts at 30–50 ppm.
    The conservative ceiling is correct as a default. A new
-   convenience constructor `TrustedTimeConfig.mobileDefaults()` (peer
-   of the existing `desktopDefaults()` factory at `models.dart:99`)
-   sets `oscillatorDriftFactor: 0.000015` (15 ppm) alongside the
-   tiered cadence. Callers select platform-tuned defaults explicitly;
-   the global default is never silently changed.
-3. **`confidenceScore` decay curve — leave the linear-zero-at-72h
-   ceiling as conservative bound; revisit only if measurement
-   contradicts.** The current formula bounds confidence by elapsed
-   wall time, not by the modelled drift envelope, so it stays
-   defensible regardless of the platform-tuned `oscillatorDriftFactor`
-   value. Re-tuning now would entangle two changes whose evidence
-   bases differ (cadence is a behavioural decision, decay shape is a
+   convenience factory `TrustedTimeConfig.mobileDefaults()` — peer of
+   the existing `TrustedTimeConfig.web()` factory (`models.dart:84`),
+   which is the only platform-targeted factory currently shipped — is
+   introduced as part of this decision's follow-up implementation
+   work and sets `oscillatorDriftFactor: 0.000015` (15 ppm) alongside
+   the tiered cadence. Callers select platform-tuned defaults
+   explicitly; the global default is never silently changed.
+3. **`confidence` decay curve — leave the linear-zero-at-72h ceiling
+   as conservative bound; revisit only if measurement
+   contradicts.** The current formula bounds confidence purely by
+   elapsed wall time and does not depend on `oscillatorDriftFactor`,
+   so its shape is independent of the platform-tuned drift constant.
+   Re-tuning now would entangle two changes whose evidence bases
+   differ (cadence is a behavioural decision, decay shape is a
    measurement-driven calibration). Decay re-tuning is deferred to a
    follow-up ADR after `trusted_time-wy3` data lands.
 4. **Validate-cycle source selection — single trusted NTS source per
@@ -105,12 +111,13 @@ mobile-SoC behaviour.
    default-flip path is `trusted_time` 2.x release of the fork (see
    ADR 0005 for the fork's release lineage). For 1.x, a new
    `TrustedTimeConfig.cadenceMode` enum
-   (`SingleTier30m` (legacy default) | `TieredMobile`) gates the
-   behaviour. `mobileDefaults()` selects `TieredMobile`. CHANGELOG
-   notes the planned default flip in the next major. This keeps
-   in-flight 1.x integrators on stable behaviour and gives the fork's
-   `axiom x` consumer a one-line opt-in via `cadenceMode:
-   CadenceMode.tieredMobile` in its existing config.
+   (`CadenceMode.singleTier30m` (legacy default) |
+   `CadenceMode.tieredMobile`) gates the behaviour. `mobileDefaults()`
+   selects `CadenceMode.tieredMobile`. CHANGELOG notes the planned
+   default flip in the next major. This keeps in-flight 1.x
+   integrators on stable behaviour and gives the fork's `axiom x`
+   consumer a one-line opt-in via
+   `cadenceMode: CadenceMode.tieredMobile` in its existing config.
 
 ### API addition
 
@@ -144,17 +151,18 @@ a hint, not a verdict.
   for "I just came back from background, is my anchor still good?" is
   a single cheap call.
 - `mobileDefaults()` factory makes the platform-tuned configuration
-  one constructor call away, mirroring the existing
-  `desktopDefaults()` shape so callers do not have to assemble the
-  knobs by hand.
-- 50 ppm desktop default is preserved. Single-tier 30-minute callers
+  one constructor call away, mirroring the shape of the existing
+  `TrustedTimeConfig.web()` factory so callers do not have to
+  assemble the knobs by hand.
+- 50 ppm global default is preserved. Single-tier 30-minute callers
   on existing 1.x continue to behave exactly as they did before
-  (`cadenceMode` defaults to `SingleTier30m`).
+  (`cadenceMode` defaults to `CadenceMode.singleTier30m`).
 
 ### Negative
 
 - Two cadence modes is more configuration surface to test. The
-  `TieredMobile` and `SingleTier30m` paths must both be exercised;
+  `CadenceMode.tieredMobile` and `CadenceMode.singleTier30m` paths
+  must both be exercised;
   follow-up test work is tracked separately under `wy3` and the
   validate-API implementation ticket (filed at PR landing).
 - `validateFreshness()` is a new public API and locks the fork into
