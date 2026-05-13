@@ -64,6 +64,7 @@ is the correct snapshot of what was decided at the time.
 | [0005](0005-no-rebase-onto-upstream-2.0.md) | Decision not to rebase onto upstream `trusted_time` 2.0.0 | Accepted | 2026-05-04 |
 | [0006](0006-tiered-sync-cadence.md) | Mobile-optimized sync cadence: tiered establish/validate refresh | Accepted | 2026-05-13 |
 | [0007](0007-hybrid-trust-model.md) | NTS-anchored hybrid trust model with admission-gated NTP and HTTPS tiers | Accepted | 2026-05-13 |
+| [0008](0008-unified-dns-tls-budget.md) | Unified DNS concurrency cap across NTS, NTP, and HTTPS sources | Accepted | 2026-05-13 |
 
 ## Implementation status caveat
 
@@ -73,7 +74,7 @@ of the implementation on the current `integration/bleeding-edge` tree.
 The contribution-mode pivot (which reset `main` to mirror
 `upstream/main`) reverted any fork-side reductions of the upstream
 surface that had not yet been re-introduced as feat/* PRs. As of this
-PR, three Accepted ADRs are known to diverge from current code:
+PR, four Accepted ADRs are known to diverge from current code:
 
 - **ADR 0001** describes `TrustedTimeConfig.ntsServers` as "opt-in,
   empty by default". Current code defaults it to
@@ -86,6 +87,14 @@ PR, three Accepted ADRs are known to diverge from current code:
   NTS-defined truth box, NTP-as-precision-contributor, and a
   `degradedTier` `IntegrityEvent` reason. Implementation is pending
   (filed as a follow-up at PR #35 landing).
+- **ADR 0008** decides on a SyncEngine-level
+  `maxConcurrentDnsLookups` semaphore governing all source kinds, a
+  one-version deprecation of `ntsDnsConcurrencyCap`, and
+  drop-on-saturation behaviour matching `maxLatency` semantics.
+  Current code's `ntsDnsConcurrencyCap`
+  (`lib/src/models.dart:131`) is still NTS-only and lives on the
+  `NtsSource` constructor (`lib/src/sync_engine.dart:66-67`).
+  Implementation is pending (filed as a follow-up at PR #36 landing).
 
 Notes on previously-listed divergences:
 
