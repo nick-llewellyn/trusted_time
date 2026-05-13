@@ -1,0 +1,108 @@
+# Architecture Decision Records
+
+This directory holds this fork's Architecture Decision Records. ADRs
+are append-only, immutable records of load-bearing architecture
+decisions and the reasoning behind them at the time the decision was
+made — they are not living docs and are not edited to track downstream
+events. Subsequent decisions that re-evaluate or supersede earlier ones
+land as new ADRs that link back to the originals.
+
+## Naming note
+
+The `pubspec.yaml` `name` field on this fork is `trusted_time` — same
+as upstream `Sahad2701/trusted_time`, because this fork is published
+as a drop-in alternate for the same package surface. Several ADRs
+(notably ADR 0005) refer to the fork by the narrative identifier
+`trusted_time_nts` to distinguish it from upstream when both are
+discussed in the same paragraph. The two names refer to the same
+artifact: this repository, this `pubspec.yaml`, this `lib/` tree.
+
+## Scope
+
+Fork-only. The upstream `Sahad2701/trusted_time` repository does not
+carry these ADRs and is not expected to. They document decisions
+specific to this fork's existence — Rust-backed NTS via `package:nts`,
+the strategic decision not to rebase onto upstream 2.0.0, and so on.
+
+## Re-introduction note
+
+These ADRs originated on the fork's pre-pivot `main` branch (now
+preserved at `archive/legacy-fork-main`). When the fork moved to
+contribution mode and `main` was reset to mirror `upstream/main`, the
+`doc/adr/` tree was dropped along with the rest of the fork's
+divergent history. This PR restores the four surviving ADRs to
+`integration/bleeding-edge` so that future fork-only architecture
+decisions (starting with ADR 0006 on tiered sync cadence) have a
+canonical home that is visible to the working codebase rather than
+stranded on archive or on isolated `docs/*` branches.
+
+The ADR contents are reproduced verbatim from their latest pre-pivot
+state, including:
+
+- ADR 0001's "Postscript: upstream 2.0.0 outcome (2026-05-04)" section
+  (originally captured on the now-deleted
+  `docs/adr-0001-upstream-2.0-outcome` branch);
+- ADR 0005's four post-merge tweaks (originally captured on the
+  retained `docs/adr-0005-no-rebase-upstream-2.0` branch).
+
+References to other ADRs and to `bd` issue IDs inside the ADR text are
+preserved as written. Some referenced `bd` issues have closed since
+the ADR was authored (for example `trusted_time-skj`, `-33l`, `-381`,
+`-ads` all closed in May 2026 once their work landed); the ADRs are
+not retroactively edited to reflect that — the closure is visible in
+`bd` itself, and the historical "open candidate" wording in the ADR
+is the correct snapshot of what was decided at the time.
+
+## Index
+
+| ADR | Title | Status | Date |
+|---|---|---|---|
+| [0001](0001-nts-integration-strategy.md) | NTS (Network Time Security) integration strategy | Accepted | 2026-04-28 (postscript 2026-05-04) |
+| [0002](0002-headless-background-sync.md) | Real headless background anchor refresh | Accepted | 2026-04-29 |
+| [0003](0003-removing-clear-text-ntp.md) | Remove clear-text NTP from the package | Accepted | 2026-05-01 |
+| 0004 | _(intentionally absent — number reserved during early ADR drafting and never assigned)_ | — | — |
+| [0005](0005-no-rebase-onto-upstream-2.0.md) | Decision not to rebase onto upstream `trusted_time` 2.0.0 | Accepted | 2026-05-04 |
+
+## Implementation status caveat
+
+ADR status reflects the **decision** ("Accepted" = the decision stands
+and is the position of record), not necessarily the operational state
+of the implementation on the current `integration/bleeding-edge` tree.
+The contribution-mode pivot (which reset `main` to mirror
+`upstream/main`) reverted any fork-side reductions of the upstream
+surface that had not yet been re-introduced as feat/* PRs. As of this
+PR, four Accepted ADRs are known to diverge from current code:
+
+- **ADR 0001** describes `TrustedTimeConfig.ntsServers` as "opt-in,
+  empty by default". Current code defaults it to
+  `['time.cloudflare.com']`. The `Decision` text is the original
+  position; the implementation has drifted.
+- **ADR 0002** decides on real headless background anchor refresh.
+  Implementation is still in-progress (`trusted_time-e0v`) — the
+  current native code performs only an HTTPS HEAD connectivity check.
+- **ADR 0003** decides to remove `NtpSource`,
+  `TrustedTimeConfig.ntpServers`, `TimeSourceKind.ntp`, and the
+  `package:ntp` dependency. Current code retains all four
+  (`pubspec.yaml` declares `ntp: ^2.0.0`; `lib/src/models.dart`
+  defines `ntpServers` defaulting to
+  `['pool.ntp.org', 'time.google.com']`).
+- **ADR 0005**'s "Divergence" table inherits ADR 0003's NTP-removal
+  claim for the fork column; that row is outdated for the same reason
+  as ADR 0003 above.
+
+Each divergence will be reconciled by either a follow-up implementing
+PR (closing the gap) or a timestamped postscript on the affected ADR
+(acknowledging the gap as the new operational reality). Both paths are
+preferable to in-place edits that would erase the original Accepted
+decision text.
+
+## Authoring conventions
+
+- Filename: `NNNN-kebab-case-slug.md`, sequential. Reserve a number by
+  opening the file with status `Proposed`; promote to `Accepted` once
+  decided.
+- Header: status, date, tracking `bd` issue (where available — ADR 0003 predates the convention and omits it), and `Depends`/`Supersedes`/`Related` cross-references where applicable.
+- Standard sections: Context, Decision, Consequences (Positive/Negative), and where useful Alternatives considered, Implementation notes, Versioning.
+- Once Accepted, content is immutable except for explicit timestamped
+  postscripts (see ADR 0001 for the pattern). Substantive
+  reconsideration lands as a new superseding ADR.
