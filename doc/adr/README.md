@@ -63,6 +63,7 @@ is the correct snapshot of what was decided at the time.
 | 0004 | _(intentionally absent — number reserved during early ADR drafting and never assigned)_ | — | — |
 | [0005](0005-no-rebase-onto-upstream-2.0.md) | Decision not to rebase onto upstream `trusted_time` 2.0.0 | Accepted | 2026-05-04 |
 | [0006](0006-tiered-sync-cadence.md) | Mobile-optimized sync cadence: tiered establish/validate refresh | Accepted | 2026-05-13 |
+| [0007](0007-hybrid-trust-model.md) | NTS-anchored hybrid trust model with admission-gated NTP and HTTPS tiers | Accepted | 2026-05-13 |
 
 ## Implementation status caveat
 
@@ -72,7 +73,7 @@ of the implementation on the current `integration/bleeding-edge` tree.
 The contribution-mode pivot (which reset `main` to mirror
 `upstream/main`) reverted any fork-side reductions of the upstream
 surface that had not yet been re-introduced as feat/* PRs. As of this
-PR, four Accepted ADRs are known to diverge from current code:
+PR, three Accepted ADRs are known to diverge from current code:
 
 - **ADR 0001** describes `TrustedTimeConfig.ntsServers` as "opt-in,
   empty by default". Current code defaults it to
@@ -81,15 +82,24 @@ PR, four Accepted ADRs are known to diverge from current code:
 - **ADR 0002** decides on real headless background anchor refresh.
   Implementation is still in-progress (`trusted_time-e0v`) — the
   current native code performs only an HTTPS HEAD connectivity check.
-- **ADR 0003** decides to remove `NtpSource`,
-  `TrustedTimeConfig.ntpServers`, `TimeSourceKind.ntp`, and the
-  `package:ntp` dependency. Current code retains all four
-  (`pubspec.yaml` declares `ntp: ^2.0.0`; `lib/src/models.dart`
-  defines `ntpServers` defaulting to
-  `['pool.ntp.org', 'time.google.com']`).
-- **ADR 0005**'s "Divergence" table inherits ADR 0003's NTP-removal
-  claim for the fork column; that row is outdated for the same reason
-  as ADR 0003 above.
+- **ADR 0007** decides on tier-aware Marzullo admission with an
+  NTS-defined truth box, NTP-as-precision-contributor, and a
+  `degradedTier` `IntegrityEvent` reason. Implementation is pending
+  (filed as a follow-up at PR #35 landing).
+
+Notes on previously-listed divergences:
+
+- **ADR 0003** ("Remove clear-text NTP from the package") is no
+  longer listed as a code divergence. ADR 0007 supersedes ADR 0003's
+  NTP-removal decision in the light of new 2026-05-09 stress-run
+  evidence about structural NTS-KE deployment gaps. NTP is reinstated
+  as a tiered, admission-gated precision contributor; the
+  `package:ntp` dependency and `ntpServers` config field are
+  intentionally retained per ADR 0007.
+- **ADR 0005**'s "Divergence" table row that inherited ADR 0003's
+  NTP-removal claim is no longer a divergence for the same reason
+  (the underlying decision has been superseded). The row's text is
+  left verbatim per the append-only policy.
 
 Each divergence will be reconciled by either a follow-up implementing
 PR (closing the gap) or a timestamped postscript on the affected ADR
