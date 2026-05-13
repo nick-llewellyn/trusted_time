@@ -23,16 +23,17 @@ is wrong for mobile in three independent ways:
 1. **Drift modelling is over-conservative.** `oscillatorDriftFactor`
    defaults to `0.00005` (50 ppm) and feeds the `estimatedError` band
    that `nowEstimated()` reports
-   (`lib/src/trusted_time_impl.dart:221`,
-   `errorMs = elapsedMs * oscillatorDriftFactor`). Modern ARM SoCs
-   (Pixel Tablet generation, A14+ iPhones) drift at 5–15 ppm in
-   pocket conditions, so the reported `estimatedError` band is
-   roughly 3–10× wider than the hardware actually warrants. The
-   separate `confidence` decay
-   (`trusted_time_impl.dart:217`,
-   `1 - elapsedMinutes / 4320`) is purely a function of elapsed wall
-   time and does not use `oscillatorDriftFactor`; it independently
-   reaches 0.5 at 36h and 0.0 at 72h regardless of the drift constant.
+   (`lib/src/trusted_time_impl.dart:221-223`,
+   `errorMs = (wallElapsed.inMilliseconds.abs() * oscillatorDriftFactor).round()`).
+   Modern ARM SoCs (Pixel Tablet generation, A14+ iPhones) drift at
+   5–15 ppm in pocket conditions, so the reported `estimatedError`
+   band is roughly 3–10× wider than the hardware actually warrants.
+   The separate `confidence` decay
+   (`lib/src/trusted_time_impl.dart:217-220`,
+   `(1.0 - wallElapsed.inMinutes.abs() / 4320.0).clamp(0.0, 1.0)`) is
+   purely a function of elapsed wall time and does not use
+   `oscillatorDriftFactor`; it independently reaches 0.5 at 36h and
+   0.0 at 72h regardless of the drift constant.
 2. **OS background scheduling defeats it anyway.** iOS
    `BGTaskScheduler` and Android `WorkManager` throttle frequent
    background tasks. A 30-min `refreshInterval` is aspirational; the
@@ -82,7 +83,8 @@ mobile-SoC behaviour.
    for desktop callers whose hardware actually drifts at 30–50 ppm.
    The conservative ceiling is correct as a default. A new
    convenience factory `TrustedTimeConfig.mobileDefaults()` — peer of
-   the existing `TrustedTimeConfig.web()` factory (`models.dart:84`),
+   the existing `TrustedTimeConfig.web()` factory
+   (`lib/src/models.dart:84`),
    which is the only platform-targeted factory currently shipped — is
    introduced as part of this decision's follow-up implementation
    work and sets `oscillatorDriftFactor: 0.000015` (15 ppm) alongside
