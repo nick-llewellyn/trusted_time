@@ -151,7 +151,10 @@ burst-sampling will further reduce.
 - Best-effort ASN-based `groupId` for NTP introduces a network
   dependency on a separate IP-to-ASN lookup. Implementation must
   cache aggressively (per-cycle is sufficient) and tolerate lookup
-  failure gracefully (fall back to the static prefix `groupId`).
+  failure gracefully (fall back to the existing host-based heuristic
+  at `lib/src/sources/ntp_source_io.dart:17-25` —
+  second-level domain with `pool.ntp.org` special-cased to
+  `ntp-pool`).
 
 ### Open follow-ups (filed at PR landing)
 
