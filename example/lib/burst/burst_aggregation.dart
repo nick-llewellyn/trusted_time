@@ -73,4 +73,9 @@ int _median(List<int> sorted) {
 /// Default wall-clock source: microseconds since the Unix epoch from
 /// `DateTime.now()`. Production [NtsBurstClient] uses this; tests
 /// inject a deterministic clock instead.
-int defaultNowUtcMicros() => DateTime.now().toUtc().microsecondsSinceEpoch;
+///
+/// `microsecondsSinceEpoch` is an absolute Unix-epoch count and is
+/// therefore unaffected by the [DateTime]'s timezone, so no `.toUtc()`
+/// conversion is necessary — adding one would allocate an extra
+/// [DateTime] per call without changing the returned value.
+int defaultNowUtcMicros() => DateTime.now().microsecondsSinceEpoch;

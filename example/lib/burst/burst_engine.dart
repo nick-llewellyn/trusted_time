@@ -79,6 +79,20 @@ class NtsBurstClient {
     Duration sequentialSpacing = const Duration(milliseconds: 500),
     int timeoutMs = nts.kDefaultTimeoutMs,
   }) async {
+    if (jitterWindow < Duration.zero) {
+      throw ArgumentError.value(
+        jitterWindow,
+        'jitterWindow',
+        'must be non-negative',
+      );
+    }
+    if (sequentialSpacing < Duration.zero) {
+      throw ArgumentError.value(
+        sequentialSpacing,
+        'sequentialSpacing',
+        'must be non-negative',
+      );
+    }
     // .toInt() is defensive: Dart 3 narrows int.clamp(int, int) to
     // int, but older analyzers and num-returning clamp overloads exist
     // — explicit conversion keeps the int-ness obvious to readers.

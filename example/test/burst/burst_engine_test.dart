@@ -145,12 +145,42 @@ void main() {
       );
       expect(tooFew.queries, hasLength(1));
     });
+
+    test('rejects negative jitterWindow / sequentialSpacing', () async {
+      final client = testClient(
+        nowFn: _fixedNow(_anchorMicros),
+        rtts: const [50000],
+        serverOffsetMicros: 0,
+      );
+
+      expect(
+        () => client.burst(
+          sampleCount: 1,
+          mode: BurstMode.jittered,
+          jitterWindow: const Duration(microseconds: -1),
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => client.burst(
+          sampleCount: 1,
+          mode: BurstMode.sequential,
+          sequentialSpacing: const Duration(milliseconds: -1),
+        ),
+        throwsArgumentError,
+      );
+    });
   });
 }
 
-// Arbitrary fixed UTC anchor for the deterministic clock; literal
-// without digit separators because example/ targets SDK >=3.4.0
-// where the digit-separators feature is not enabled by default.
+// Arbitrary fixed UTC anchor for the deterministic clock. Written
+// without digit separators because `example/pubspec.yaml`'s SDK
+// constraint is `>=3.4.0 <4.0.0`; numeric digit separators are a
+// Dart 3.6 language feature, so the analyzer rejects them whenever
+// the lower bound predates 3.6 (verified: an earlier draft of this
+// file used `1_700_000_000_000_000` and `flutter analyze` failed
+// with `experiment_not_enabled`). Bumping the lower bound to >=3.6.0
+// would let the separator form back in.
 const int _anchorMicros = 1700000000000000;
 
 int Function() _fixedNow(int micros) => () => micros;
