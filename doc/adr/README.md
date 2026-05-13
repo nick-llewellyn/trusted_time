@@ -62,6 +62,7 @@ is the correct snapshot of what was decided at the time.
 | [0003](0003-removing-clear-text-ntp.md) | Remove clear-text NTP from the package | Accepted | 2026-05-01 |
 | 0004 | _(intentionally absent — number reserved during early ADR drafting and never assigned)_ | — | — |
 | [0005](0005-no-rebase-onto-upstream-2.0.md) | Decision not to rebase onto upstream `trusted_time` 2.0.0 | Accepted | 2026-05-04 |
+| [0006](0006-tiered-sync-cadence.md) | Mobile-optimized sync cadence: tiered establish/validate refresh | Accepted | 2026-05-13 |
 
 ## Implementation status caveat
 
