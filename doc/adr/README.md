@@ -101,7 +101,7 @@ decision text.
 - Filename: `NNNN-kebab-case-slug.md`, sequential. Reserve a number by
   opening the file with status `Proposed`; promote to `Accepted` once
   decided.
-- Header: status, date, tracking `bd` issue, and `Depends`/`Supersedes`/`Related` cross-references where applicable.
+- Header: status, date, tracking `bd` issue (where available — ADR 0003 predates the convention and omits it), and `Depends`/`Supersedes`/`Related` cross-references where applicable.
 - Standard sections: Context, Decision, Consequences (Positive/Negative), and where useful Alternatives considered, Implementation notes, Versioning.
 - Once Accepted, content is immutable except for explicit timestamped
   postscripts (see ADR 0001 for the pattern). Substantive
