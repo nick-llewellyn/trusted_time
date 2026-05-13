@@ -98,12 +98,17 @@ burst-sampling will further reduce.
    `minGroupCount` constraint already applied to the NTS tier
    (`lib/src/models.dart:68`, default 2).** For HTTPS, the existing
    per-source `groupId` derivation (apex domain) is sufficient. For
-   NTP, the current static `groupId` (string prefix) is too weak
-   because NTP Pool entries all share `ntp:pool.ntp.org` while
-   resolving to distinct ASNs. The implementation must derive `NTP`
-   tier `groupId` from the resolved IP's ASN at sample time
-   (best-effort; falls back to `ntp-pool:<region-prefix>` when ASN
-   lookup is unavailable).
+   NTP, the current host-based heuristic
+   (`lib/src/sources/ntp_source_io.dart:17-25` — second-level domain,
+   with `pool.ntp.org` special-cased to the literal string
+   `ntp-pool`) is too coarse for the precision tier: every
+   `*.pool.ntp.org` entry collapses to a single `ntp-pool` group
+   regardless of the geographically dispersed ASNs the pool actually
+   resolves to, so `minGroupCount = 2` cannot be satisfied by NTP
+   Pool alone. The implementation must derive the NTP tier `groupId`
+   from the resolved IP's ASN at sample time (best-effort; falls
+   back to the existing host-based heuristic when ASN lookup is
+   unavailable).
 
 5. **Per-cycle vs per-anchor — per-Establish (i.e., the truth box is
    recomputed during the Establish cycle defined by ADR 0006 and
@@ -152,11 +157,11 @@ burst-sampling will further reduce.
 
 - Implementation ticket for the tier-aware Marzullo admission step,
   the `degradedTier` `IntegrityEvent` reason, and the ASN-based
-  `groupId` derivation for NTP samples.
-- Update ADR 0003's representation in the README "Implementation
-  status caveat": the NTP-removal divergence row is reframed as
-  "superseded by ADR 0007" rather than "current code retains NTP",
-  and ADR 0005's inherited divergence row is updated in lockstep.
+  `groupId` derivation for NTP samples. The README "Implementation
+  status caveat" is already updated as part of this PR (ADR 0003 and
+  ADR 0005's inherited divergence row reframed as superseded by ADR
+  0007); a further README update will be needed at implementation-PR
+  landing to remove ADR 0007 from the divergence list.
 
 ## Alternatives considered
 
