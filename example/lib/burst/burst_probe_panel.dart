@@ -1,3 +1,5 @@
+import 'dart:collection';
+
 import 'package:flutter/material.dart';
 import 'package:nts/nts.dart' as nts;
 
@@ -136,7 +138,16 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
 
   @override
   Widget build(BuildContext context) {
-    final hosts = widget.candidateHosts.toList(growable: false);
+    // De-dupe before handing the list to DropdownButtonFormField,
+    // which asserts uniqueness on item values at runtime. Using a
+    // LinkedHashSet preserves the candidate order so the operator
+    // sees the same first-host default they'd get from the input
+    // list's natural ordering. The dedupe also defends against
+    // non-repeatable Iterables that yield duplicates across
+    // iterations (e.g. a chained .followedBy(...) view that
+    // overlaps with its base).
+    final hosts =
+        LinkedHashSet<String>.of(widget.candidateHosts).toList(growable: false);
     final effectiveHost = _selectedHost ?? hosts.firstOrNull;
 
     return Column(

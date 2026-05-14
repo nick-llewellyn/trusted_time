@@ -108,23 +108,102 @@ void main() {
     );
 
     testWidgets(
-      'didUpdateWidget drops a selected host that disappears from candidates',
+      'didUpdateWidget drops the auto-default host when it disappears',
       (tester) async {
-        // Render with two hosts, no manual selection => effective host
-        // is hosts.first.
+        // Default branch: no manual dropdown interaction, so
+        // _selectedHost is null and effective host is hosts.first.
+        // Removing the auto-default host on a rebuild must not crash
+        // and must surface the new hosts.first.
         await tester.pumpWidget(
           _harness(hosts: const ['time.cloudflare.com', 'b.example.com']),
         );
         expect(find.text('time.cloudflare.com'), findsOneWidget);
 
-        // Rebuild with a candidate set that no longer contains the
-        // first host. The panel should not crash and the dropdown
-        // should now display the new first host.
         await tester.pumpWidget(_harness(hosts: const ['b.example.com']));
         await tester.pump();
 
         expect(find.text('b.example.com'), findsOneWidget);
         expect(find.text('time.cloudflare.com'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'didUpdateWidget drops an explicitly user-selected host that disappears',
+      (tester) async {
+        // Stronger variant: actually drive the dropdown to select
+        // the second host so _selectedHost is non-null. The previous
+        // test only covers the auto-default branch (_selectedHost
+        // null, effective host = hosts.first); without this variant,
+        // a regression that left _selectedHost pointing at a
+        // no-longer-offered value would slip through and surface as
+        // a runtime assert from DropdownButtonFormField rejecting an
+        // initialValue not present in items.
+        await tester.pumpWidget(
+          _harness(hosts: const ['a.example.com', 'b.example.com']),
+        );
+
+        // Open the host dropdown and pick the second host.
+        await tester.tap(find.text('a.example.com'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('b.example.com').last);
+        await tester.pumpAndSettle();
+
+        // Sanity: the dropdown shows the user's pick, not the
+        // auto-default.
+        expect(find.text('b.example.com'), findsOneWidget);
+
+        // Now rebuild with a candidate set that no longer offers
+        // 'b.example.com'. The panel must not throw and must fall
+        // back to the new hosts.first ('a.example.com').
+        await tester.pumpWidget(_harness(hosts: const ['a.example.com']));
+        await tester.pump();
+
+        expect(tester.takeException(), isNull);
+        expect(find.text('a.example.com'), findsOneWidget);
+        expect(find.text('b.example.com'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'duplicate hosts in candidateHosts are de-duped before reaching the dropdown',
+      (tester) async {
+        // DropdownButtonFormField asserts uniqueness on item values
+        // at runtime. A non-deduped Iterable with repeats (e.g. a
+        // Set lifted from concat'd configs) would crash the panel
+        // with a non-obvious "There should be exactly one item with
+        // [DropdownButton]'s value" assertion. Pin the dedupe.
+        await tester.pumpWidget(
+          _harness(
+            hosts: const [
+              'time.cloudflare.com',
+              'time.cloudflare.com',
+              'mmo1.nts.netnod.se',
+            ],
+          ),
+        );
+
+        // The pump itself would have thrown if the dedupe failed.
+        expect(tester.takeException(), isNull);
+
+        // Closed dropdown shows the auto-default once (twice would
+        // mean the dedupe didn't apply to the items list — which
+        // would have already crashed the pump above, but assert
+        // explicitly so a future regression that swallows the
+        // assert silently doesn't sneak past).
+        expect(find.text('time.cloudflare.com'), findsOneWidget);
+
+        // Open the dropdown to verify the menu has both unique
+        // entries and only one copy of the duplicate.
+        await tester.tap(find.text('time.cloudflare.com'));
+        await tester.pumpAndSettle();
+
+        // 'time.cloudflare.com' is rendered both as the field's
+        // displayed value and as a menu entry, so it appears twice
+        // in the open-menu state. 'mmo1.nts.netnod.se' only appears
+        // in the menu, so once. A failed dedupe would render the
+        // duplicate as a third 'time.cloudflare.com' menu item.
+        expect(find.text('time.cloudflare.com'), findsNWidgets(2));
+        expect(find.text('mmo1.nts.netnod.se'), findsOneWidget);
       },
     );
   });
