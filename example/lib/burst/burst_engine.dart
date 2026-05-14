@@ -25,7 +25,6 @@ class NtsBurstClient {
   /// the same burst — bursts after the first issued against this
   /// client never repeat the NTS-KE handshake.
   NtsBurstClient({
-    required this.host,
     required this.spec,
     nts.NtsClient? client,
     Random? random,
@@ -40,7 +39,6 @@ class NtsBurstClient {
   /// hand-rolled fixtures.
   @visibleForTesting
   NtsBurstClient.forTest({
-    required this.host,
     required this.spec,
     required Future<nts.NtsTimeSample> Function(int issueIndex) queryFn,
     required int Function() nowUtcMicros,
@@ -50,12 +48,16 @@ class NtsBurstClient {
         _queryFn = queryFn,
         _nowUtcMicros = nowUtcMicros;
 
-  /// Source hostname this client targets (e.g. `time.cloudflare.com`).
-  final String host;
-
   /// Server connection spec passed unchanged to `package:nts` on every
-  /// query.
+  /// query. The hostname surfaced on [BurstResult.host] is derived
+  /// from `spec.host` so the burst's reported target can never drift
+  /// from the spec's actual target — important for per-host
+  /// instrumentation and the wy3 etiquette envelope.
   final nts.NtsServerSpec spec;
+
+  /// Source hostname this client targets (e.g. `time.cloudflare.com`),
+  /// derived from [spec] so it has a single source of truth.
+  String get host => spec.host;
 
   final nts.NtsClient? _client;
   final Future<nts.NtsTimeSample> Function(int issueIndex)? _queryFn;
@@ -105,7 +107,7 @@ class NtsBurstClient {
     final effectiveCount = sampleCount.clamp(1, 8).toInt();
 
     final results = <BurstQueryResult>[];
-    final failures = <({int index, Object error})>[];
+    final failures = <BurstFailure>[];
 
     if (mode == BurstMode.sequential) {
       // Sequential mode must actually serialize: await each query
@@ -147,14 +149,18 @@ class NtsBurstClient {
     int idx,
     int timeoutMs,
     List<BurstQueryResult> results,
-    List<({int index, Object error})> failures,
+    List<BurstFailure> failures,
   ) async {
     final sendUtcMicros = _nowUtcMicros();
     try {
       final sample = await _runQuery(idx, timeoutMs);
       results.add(_buildQueryResult(sample, sendUtcMicros));
-    } catch (err) {
-      failures.add((index: idx, error: err));
+    } catch (err, st) {
+      // Capture the stack trace alongside the error so callers
+      // diagnosing burst failures (especially programmer errors that
+      // would otherwise be silently demoted to "query failures") can
+      // see where the failure actually originated.
+      failures.add((index: idx, error: err, stackTrace: st));
     }
   }
 

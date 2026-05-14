@@ -14,7 +14,7 @@ import 'package:trusted_time_example/burst/burst_engine.dart';
 /// All samples report `serverUtc = nowFn() + serverOffsetMicros` so
 /// the per-sample offset reduces to a function of [serverOffsetMicros]
 /// and the sample's RTT (`offset = serverOffset - rtt/2`).
-NtsBurstClient _testClient({
+NtsBurstClient testClient({
   required int Function() nowFn,
   required List<int> rtts,
   required int serverOffsetMicros,
@@ -24,7 +24,6 @@ NtsBurstClient _testClient({
   void Function()? onComplete,
 }) {
   return NtsBurstClient.forTest(
-    host: 'test.local',
     spec: const nts.NtsServerSpec(host: 'test.local', port: 4460),
     queryFn: (index) async {
       onIssue?.call();
@@ -56,28 +55,6 @@ NtsBurstClient _testClient({
     random: random,
   );
 }
-
-/// Public wrapper that forwards to the private [_testClient] factory
-/// so test files can construct the helper without referencing a
-/// leading-underscore symbol from another library.
-NtsBurstClient testClient({
-  required int Function() nowFn,
-  required List<int> rtts,
-  required int serverOffsetMicros,
-  Random? random,
-  Duration? queryDelay,
-  void Function()? onIssue,
-  void Function()? onComplete,
-}) =>
-    _testClient(
-      nowFn: nowFn,
-      rtts: rtts,
-      serverOffsetMicros: serverOffsetMicros,
-      random: random,
-      queryDelay: queryDelay,
-      onIssue: onIssue,
-      onComplete: onComplete,
-    );
 
 class _FakeQueryError implements Exception {
   _FakeQueryError(this.message);

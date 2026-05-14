@@ -11,9 +11,12 @@ import 'package:nts/nts.dart' as nts;
 ///   that all samples experience the same transient buffering.
 /// - [jittered] fires over a configurable window (default 200 ms).
 ///   Slightly worse wall-clock; mostly-independent jitter samples.
-/// - [sequential] fires at fixed intervals (default 500 ms). Best
-///   independence; worst latency. NTP `iburst` uses 2 s — too slow for
-///   the trusted_time mobile-cadence context.
+/// - [sequential] issues one query at a time and waits at least
+///   `sequentialSpacing` (default 500 ms) after each query completes
+///   before issuing the next, so wall-clock spacing is
+///   `sequentialSpacing + per_query_latency` rather than fixed.
+///   Best independence; worst latency. NTP `iburst` uses 2 s — too
+///   slow for the trusted_time mobile-cadence context.
 enum BurstMode { parallel, jittered, sequential }
 
 /// One query within a burst, paired with the wall-clock observations
@@ -86,12 +89,17 @@ class BurstResult {
   /// results in completion order).
   final List<BurstQueryResult> queries;
 
-  /// Per-issue-order index and surfaced error for each failed query.
-  /// Empty list when the whole burst succeeded; `queries.length +
-  /// failures.length` equals the burst's *issued* sample count, which
-  /// is the requested count after the `[1, 8]` clamp applied by
-  /// [NtsBurstClient.burst].
-  final List<({int index, Object error})> failures;
+  /// Per-issue-order index, surfaced error, and captured stack trace
+  /// for each failed query. Empty list when the whole burst
+  /// succeeded; `queries.length + failures.length` equals the burst's
+  /// *issued* sample count, which is the requested count after the
+  /// `[1, 8]` clamp applied by [NtsBurstClient.burst].
+  ///
+  /// `stackTrace` is whatever `dart:core`'s `try`/`catch` surfaces for
+  /// the failure — `StackTrace.empty` is possible for synchronous
+  /// non-`Error` throws but in practice every NTS-side failure
+  /// produces a real stack.
+  final List<BurstFailure> failures;
 
   /// Minimum-RTT successful query, or `null` if every query failed.
   /// When non-null this is the canonical sample for downstream
@@ -126,3 +134,11 @@ class BurstResult {
   /// Whether the burst yielded any usable estimate.
   bool get hasResult => minRttQuery != null;
 }
+
+/// Per-issue failure record carried in [BurstResult.failures].
+///
+/// Captures the issue-order [index], the surfaced [error], and the
+/// [stackTrace] from the `try`/`catch` so failures remain debuggable
+/// (especially for unexpected programmer errors that would otherwise
+/// be silently demoted to "query failures").
+typedef BurstFailure = ({int index, Object error, StackTrace stackTrace});

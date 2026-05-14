@@ -12,7 +12,7 @@ BurstResult aggregateBurst({
   required String host,
   required BurstMode mode,
   required List<BurstQueryResult> completed,
-  required List<({int index, Object error})> failures,
+  required List<BurstFailure> failures,
 }) {
   if (completed.isEmpty) {
     return BurstResult(

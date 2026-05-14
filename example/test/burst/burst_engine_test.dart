@@ -101,6 +101,11 @@ void main() {
       expect(result.queries, hasLength(3));
       expect(result.failures, hasLength(1));
       expect(result.failures.single.index, 1);
+      expect(result.failures.single.error, isA<Exception>());
+      // stackTrace must be captured alongside the error so callers
+      // can diagnose unexpected programmer errors that would otherwise
+      // be silently demoted to "query failures".
+      expect(result.failures.single.stackTrace, isNot(StackTrace.empty));
       expect(result.minRttMicros, 60000);
       expect(result.minRttQuery!.rttMicros, 60000);
     });
