@@ -26,8 +26,12 @@ NtsBurstClient testClient({
   return NtsBurstClient.forTest(
     spec: const nts.NtsServerSpec(host: 'test.local', port: 4460),
     queryFn: (index) async {
-      onIssue?.call();
       try {
+        // onIssue is inside the try so a misbehaving callback (e.g.
+        // a test that throws from its in-flight tracker) still hits
+        // the finally and runs onComplete, keeping in-flight
+        // accounting consistent with what callers observed.
+        onIssue?.call();
         if (queryDelay != null) await Future.delayed(queryDelay);
         final rtt = rtts[index];
         if (rtt < 0) {

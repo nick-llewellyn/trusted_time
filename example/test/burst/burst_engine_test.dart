@@ -107,8 +107,9 @@ void main() {
         async.elapse(const Duration(milliseconds: 49));
         expect(result, isNull);
 
-        // Advance past the first spacing tranche, then past the
-        // second; total 100ms of virtual time covers both Delays.
+        // Advance another 60ms (total 109ms of virtual time, 9ms
+        // past the two 50ms spacing tranches the burst needs) so
+        // both remaining delays fire and the burst can complete.
         async.elapse(const Duration(milliseconds: 60));
 
         expect(result, isNotNull);

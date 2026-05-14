@@ -6,8 +6,8 @@ import 'burst_types.dart';
 /// per-query [failures] (in arbitrary completion order) into a
 /// [BurstResult]. Failures are sorted by issue index before being
 /// stored so callers see them in the same order the queries were
-/// issued, matching [BurstResult.failures]'s "per-issue-order"
-/// contract.
+/// issued, matching the documented "per-issue-order" contract of
+/// [BurstResult.failures].
 ///
 /// Pure function on its inputs; extracted from [NtsBurstClient] so
 /// the min-RTT / median-RTT / jitter-floor reductions can be unit
@@ -18,8 +18,8 @@ BurstResult aggregateBurst({
   required List<BurstQueryResult> completed,
   required List<BurstFailure> failures,
 }) {
-  // Sort by issue index so the public list order matches
-  // BurstResult.failures's documented "per-issue-order" claim
+  // Sort by issue index so the public list order matches the
+  // documented "per-issue-order" contract of BurstResult.failures
   // regardless of which mode (parallel/jittered/sequential) issued
   // the queries. Copy first to keep this function pure on its inputs.
   final sortedFailures = [...failures]
