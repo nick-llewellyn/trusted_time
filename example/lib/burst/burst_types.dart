@@ -165,8 +165,9 @@ typedef BurstFailure = ({int index, Object error, StackTrace stackTrace});
 /// observed ground truth (per the wy3 ticket: "12-18 hosts,
 /// cold-start <3s, battery <1%/day"). See `trusted_time-wy3`.
 ///
-/// All fields are microseconds. All fields are zero on a whole-burst
-/// failure (no successful queries to derive timings from).
+/// All timing fields are microseconds; [dnsLookupCount] is a unitless
+/// count. Every field is zero on a whole-burst failure (no successful
+/// queries to derive timings from); see [BurstResult.budget].
 ///
 /// CPU time on the orchestrating isolate is intentionally not
 /// included here; that's tracked separately under

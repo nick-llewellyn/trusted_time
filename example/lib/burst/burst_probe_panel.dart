@@ -152,6 +152,25 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
   /// `widget.candidateHosts` is an unordered or non-repeatable
   /// Iterable that could re-yield a different first element on a
   /// second `firstOrNull` call.
+  /// Belt-and-braces wrapper around [BurstProbePanel.batteryProbe]
+  /// that coerces any throw to `null`. The default probe
+  /// ([defaultBatteryProbe]) already swallows `Exception`s, but
+  /// nothing in the [BatteryProbe] type signature forbids a custom
+  /// injected probe from throwing — and a throw from the
+  /// before-burst probe (which has to run *before* the burst's
+  /// try/catch/finally so the snapshot brackets the burst window)
+  /// would skip the `_running = false` cleanup and wedge the panel
+  /// into a permanently-disabled state. Coercing throws to `null`
+  /// here keeps the burst flow and `finally` cleanup running on any
+  /// probe failure mode (Exception, Error, or otherwise).
+  Future<int?> _safeBatteryProbe() async {
+    try {
+      return await widget.batteryProbe();
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<void> _runBurst(String host) async {
     if (_running) return;
     setState(() {
@@ -168,7 +187,7 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
     // The probe is allowed to fail (returns null) without aborting
     // the burst — a missing battery reading is strictly less useful
     // than a missing burst.
-    final batteryBefore = await widget.batteryProbe();
+    final batteryBefore = await _safeBatteryProbe();
     final client = _clientFor(host, widget.ntsKePort);
     try {
       final result = await client.burst(
@@ -177,7 +196,7 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
         jitterWindow: _jitterWindow,
         sequentialSpacing: _sequentialSpacing,
       );
-      final batteryAfter = await widget.batteryProbe();
+      final batteryAfter = await _safeBatteryProbe();
       if (!mounted) return;
       setState(() {
         _lastResult = result;
@@ -188,7 +207,7 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
       // Probe the after-battery even on failure so the operator can
       // see what was drained by the failed burst (handshake retries
       // on a flaky network can be expensive).
-      final batteryAfter = await widget.batteryProbe();
+      final batteryAfter = await _safeBatteryProbe();
       if (!mounted) return;
       setState(() {
         _lastError = err;
@@ -567,22 +586,26 @@ class _BurstResultBody extends StatelessWidget {
           'Mobile budget (wy3):',
           style: Theme.of(context).textTheme.bodySmall,
         ),
-        // Radio window and battery delta remain meaningful on a
-        // whole-burst failure (the radio was active across the
-        // attempted window, and the device drained battery while
-        // those handshakes were retrying), so they render
-        // unconditionally. The DNS / KE handshake rows are derived
-        // from successful-query phase timings only — on a whole-
-        // burst failure both totals are zero by construction and a
-        // raw "0.000 ms (0/0 queries hit a fresh lookup)" /
-        // "(cookie-cached burst)" readout would be actively
-        // misleading (no queries succeeded; nothing was cached).
-        // Special-case queries.isEmpty to surface a placeholder.
-        _statRow(
-          'Radio window',
-          '${_us(r.budget.radioWindowMicros)} ms',
-        ),
+        // Every engine-derived budget field (radio window, DNS,
+        // handshake) is computed from successful-query timings only;
+        // on a whole-burst failure the engine zero-fills the entire
+        // BurstBudget by construction. Rendering raw "0.000 ms" /
+        // "0/0 queries hit a fresh lookup" / "(cookie-cached burst)"
+        // readouts in that case would be actively misleading (it
+        // would look like "we measured 0" when in fact "we couldn't
+        // measure"). Special-case queries.isEmpty to surface a
+        // placeholder for all three.
+        //
+        // Battery delta stays outside the conditional because it's
+        // sampled by the panel itself (not derived from the engine's
+        // budget) and the snapshots bracket the burst window
+        // regardless of whether any queries succeeded — the device
+        // drained battery while the failing handshakes retried.
         if (r.queries.isEmpty) ...[
+          _statRow(
+            'Radio window',
+            '(no successful queries)',
+          ),
           _statRow(
             'DNS phase total',
             '(no successful queries)',
@@ -592,6 +615,10 @@ class _BurstResultBody extends StatelessWidget {
             '(no successful queries)',
           ),
         ] else ...[
+          _statRow(
+            'Radio window',
+            '${_us(r.budget.radioWindowMicros)} ms',
+          ),
           _statRow(
             'DNS phase total',
             '${_us(r.budget.dnsTotalMicros)} ms '
