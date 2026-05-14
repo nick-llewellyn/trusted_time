@@ -11,8 +11,8 @@ import 'burst_types.dart';
 /// [host] using the supplied query callback, captures wall-clock
 /// timings, and aggregates via min-RTT.
 ///
-/// This class is example/-only instrumentation per the
-/// `trusted_time-wy3` ticket scope; library-side burst APIs are
+/// This class lives under `example/` only (instrumentation per the
+/// `trusted_time-wy3` ticket scope); library-side burst APIs are
 /// deferred until the measured numbers from [burst] justify them.
 ///
 /// Tests inject a deterministic [_queryFn] so the algorithm can be
@@ -66,8 +66,13 @@ class NtsBurstClient {
   /// the aggregated [BurstResult].
   ///
   /// `sampleCount` is clamped to `[1, 8]` per the wy3 etiquette
-  /// envelope. `jitterWindow` and `sequentialSpacing` only apply to
-  /// their respective modes; the unused parameter is ignored.
+  /// envelope. `jitterWindow` only affects [BurstMode.jittered] and
+  /// `sequentialSpacing` only affects [BurstMode.sequential]; the
+  /// parameter that does not apply to the selected mode has no
+  /// runtime effect but is still validated against
+  /// `[Duration.zero, _maxBurstWindow]` for both, so a misconfigured
+  /// duration fails fast and stays caught even if a later caller
+  /// switches modes against the same client.
   ///
   /// Returns even when every query fails — inspect
   /// [BurstResult.hasResult] to distinguish a successful aggregation

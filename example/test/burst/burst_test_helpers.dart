@@ -57,8 +57,9 @@ NtsBurstClient _testClient({
   );
 }
 
-/// Re-exported so the test file can address the helper without an
-/// extra import path.
+/// Public wrapper that forwards to the private [_testClient] factory
+/// so test files can construct the helper without referencing a
+/// leading-underscore symbol from another library.
 NtsBurstClient testClient({
   required int Function() nowFn,
   required List<int> rtts,
