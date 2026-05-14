@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:nts/nts.dart' show NtsDnsPoolStats, ntsDnsPoolStats;
 import 'package:trusted_time/trusted_time.dart';
 import 'benchmark_logger.dart';
+import 'burst/burst_probe_panel.dart';
 import 'nts_sources.dart';
 import 'sync_telemetry.dart';
 
@@ -798,6 +799,23 @@ class _HomePageState extends State<HomePage> {
                   setState(() => _interCycleDelaySeconds = val);
                 },
                 onApply: _applySelectedServers,
+              ),
+            ),
+            _sectionHeader('Section 8 — Per-Host Burst Probe (wy3)'),
+            _card(
+              // Source the host dropdown and port from the live
+              // engine config rather than _selectedServers / 4460
+              // literals so the probe stays aligned with what the
+              // engine is actually syncing against (chip selection
+              // only takes effect after Apply, and
+              // worldwide-rotation reconfigures the engine
+              // independently of the chips). Wiring ntsKePort from
+              // TrustedTime.config.ntsPort means a deployment that
+              // overrides the default 4460 still gets a probe that
+              // hits the same port the engine itself uses.
+              child: BurstProbePanel(
+                candidateHosts: TrustedTime.config.ntsServers,
+                ntsKePort: TrustedTime.config.ntsPort,
               ),
             ),
           ],
