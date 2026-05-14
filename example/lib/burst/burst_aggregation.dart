@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'burst_types.dart';
 
 /// Aggregates a set of completed [BurstQueryResult]s and the parallel
@@ -39,8 +41,12 @@ BurstResult aggregateBurst({
 
   // jitter_floor = max(0, p50_rtt - min_rtt) / 2; widens the per-source
   // uncertainty so a single fortunate sample cannot collapse the
-  // interval below what the burst's RTT spread justifies.
-  final jitterFloor = (medianRtt - minRtt).clamp(0, 1 << 31).toInt() ~/ 2;
+  // interval below what the burst's RTT spread justifies. medianRtt
+  // and minRtt are both microsecond counts derived from RTTs of
+  // burst-bounded queries (≤ 8 successful samples, each well under
+  // the practical jitter envelope), so no upper-bound clamp is
+  // needed — math.max guards only the negative branch.
+  final jitterFloor = math.max(0, medianRtt - minRtt) ~/ 2;
   final uncertainty = minRtt ~/ 2 + jitterFloor;
 
   final spread = offsets.last - offsets.first;

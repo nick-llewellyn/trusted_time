@@ -79,50 +79,56 @@ class NtsBurstClient {
     Duration sequentialSpacing = const Duration(milliseconds: 500),
     int timeoutMs = nts.kDefaultTimeoutMs,
   }) async {
-    if (jitterWindow < Duration.zero) {
+    if (jitterWindow < Duration.zero || jitterWindow > _maxBurstWindow) {
       throw ArgumentError.value(
         jitterWindow,
         'jitterWindow',
-        'must be non-negative',
+        'must be in [0, $_maxBurstWindow]',
       );
     }
-    if (sequentialSpacing < Duration.zero) {
+    if (sequentialSpacing < Duration.zero ||
+        sequentialSpacing > _maxBurstWindow) {
       throw ArgumentError.value(
         sequentialSpacing,
         'sequentialSpacing',
-        'must be non-negative',
+        'must be in [0, $_maxBurstWindow]',
       );
     }
     // .toInt() is defensive: Dart 3 narrows int.clamp(int, int) to
     // int, but older analyzers and num-returning clamp overloads exist
     // — explicit conversion keeps the int-ness obvious to readers.
     final effectiveCount = sampleCount.clamp(1, 8).toInt();
-    final issueDelays = _planIssueDelays(
-      effectiveCount,
-      mode,
-      jitterWindow,
-      sequentialSpacing,
-    );
 
     final results = <BurstQueryResult>[];
     final failures = <({int index, Object error})>[];
 
-    final futures = <Future<void>>[];
-    for (var i = 0; i < effectiveCount; i++) {
-      final idx = i;
-      futures.add(
-        Future.delayed(issueDelays[idx], () async {
-          final sendUtcMicros = _nowUtcMicros();
-          try {
-            final sample = await _runQuery(idx, timeoutMs);
-            results.add(_buildQueryResult(sample, sendUtcMicros));
-          } catch (err) {
-            failures.add((index: idx, error: err));
-          }
-        }),
+    if (mode == BurstMode.sequential) {
+      // Sequential mode must actually serialize: await each query
+      // before issuing the next, so the next Future.delayed only
+      // arms after the current query has completed. Using
+      // pre-scheduled Future.delayed offsets (as in parallel /
+      // jittered) would let queries overlap whenever a single query
+      // exceeds sequentialSpacing, defeating the "worst latency,
+      // best independence" guarantee the mode promises.
+      for (var i = 0; i < effectiveCount; i++) {
+        if (i > 0) await Future.delayed(sequentialSpacing);
+        await _issueOne(i, timeoutMs, results, failures);
+      }
+    } else {
+      final issueDelays = _planParallelDelays(
+        effectiveCount,
+        mode,
+        jitterWindow,
       );
+      final futures = <Future<void>>[
+        for (var i = 0; i < effectiveCount; i++)
+          Future.delayed(
+            issueDelays[i],
+            () => _issueOne(i, timeoutMs, results, failures),
+          ),
+      ];
+      await Future.wait(futures);
     }
-    await Future.wait(futures);
 
     return aggregateBurst(
       host: host,
@@ -130,6 +136,21 @@ class NtsBurstClient {
       completed: results,
       failures: failures,
     );
+  }
+
+  Future<void> _issueOne(
+    int idx,
+    int timeoutMs,
+    List<BurstQueryResult> results,
+    List<({int index, Object error})> failures,
+  ) async {
+    final sendUtcMicros = _nowUtcMicros();
+    try {
+      final sample = await _runQuery(idx, timeoutMs);
+      results.add(_buildQueryResult(sample, sendUtcMicros));
+    } catch (err) {
+      failures.add((index: idx, error: err));
+    }
   }
 
   Future<nts.NtsTimeSample> _runQuery(int issueIndex, int timeoutMs) {
@@ -151,23 +172,36 @@ class NtsBurstClient {
     );
   }
 
-  List<Duration> _planIssueDelays(
+  List<Duration> _planParallelDelays(
     int count,
     BurstMode mode,
     Duration jitterWindow,
-    Duration sequentialSpacing,
   ) {
     switch (mode) {
       case BurstMode.parallel:
         return List.filled(count, Duration.zero);
       case BurstMode.jittered:
+        // windowUs is bounded by [0, _maxBurstWindow] (validated at
+        // burst() entry), and _maxBurstWindow.inMicroseconds is well
+        // under Random.nextInt's 2^32 ceiling, so windowUs + 1 stays
+        // in range without an additional guard here.
         final windowUs = jitterWindow.inMicroseconds;
         return [
           for (var i = 0; i < count; i++)
             Duration(microseconds: _random.nextInt(windowUs + 1)),
         ];
       case BurstMode.sequential:
-        return [for (var i = 0; i < count; i++) sequentialSpacing * i];
+        // Sequential mode is awaited inline by burst(); never planned.
+        throw StateError('sequential mode is not planned via delays');
     }
   }
 }
+
+/// Practical upper bound on jitterWindow / sequentialSpacing. Bursts
+/// are inherently short-window operations (see ADR 0006 / wy3
+/// design); a window over 60 s is almost certainly a misconfiguration
+/// and is rejected at the public-API boundary so the burst fails
+/// with a clear ArgumentError instead of, for example, throwing a
+/// RangeError from inside [Random.nextInt] for windows above the
+/// ~71-minute (2^32 micros) ceiling.
+const Duration _maxBurstWindow = Duration(seconds: 60);

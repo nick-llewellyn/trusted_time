@@ -19,29 +19,38 @@ NtsBurstClient _testClient({
   required List<int> rtts,
   required int serverOffsetMicros,
   Random? random,
+  Duration? queryDelay,
+  void Function()? onIssue,
+  void Function()? onComplete,
 }) {
   return NtsBurstClient.forTest(
     host: 'test.local',
     spec: const nts.NtsServerSpec(host: 'test.local', port: 4460),
     queryFn: (index) async {
-      final rtt = rtts[index];
-      if (rtt < 0) {
-        throw _FakeQueryError('synthetic failure for issue $index');
+      onIssue?.call();
+      try {
+        if (queryDelay != null) await Future.delayed(queryDelay);
+        final rtt = rtts[index];
+        if (rtt < 0) {
+          throw _FakeQueryError('synthetic failure for issue $index');
+        }
+        return nts.NtsTimeSample(
+          utcUnixMicros: nowFn() + serverOffsetMicros,
+          roundTripMicros: rtt,
+          serverStratum: 1,
+          aeadId: 15,
+          freshCookies: 8,
+          phaseTimings: const nts.PhaseTimings(
+            dnsMicros: 0,
+            connectMicros: 0,
+            tlsHandshakeMicros: 0,
+            keRecordIoMicros: 0,
+          ),
+          trustBackend: nts.TrustBackend.platform,
+        );
+      } finally {
+        onComplete?.call();
       }
-      return nts.NtsTimeSample(
-        utcUnixMicros: nowFn() + serverOffsetMicros,
-        roundTripMicros: rtt,
-        serverStratum: 1,
-        aeadId: 15,
-        freshCookies: 8,
-        phaseTimings: const nts.PhaseTimings(
-          dnsMicros: 0,
-          connectMicros: 0,
-          tlsHandshakeMicros: 0,
-          keRecordIoMicros: 0,
-        ),
-        trustBackend: nts.TrustBackend.platform,
-      );
     },
     nowUtcMicros: nowFn,
     random: random,
@@ -55,12 +64,18 @@ NtsBurstClient testClient({
   required List<int> rtts,
   required int serverOffsetMicros,
   Random? random,
+  Duration? queryDelay,
+  void Function()? onIssue,
+  void Function()? onComplete,
 }) =>
     _testClient(
       nowFn: nowFn,
       rtts: rtts,
       serverOffsetMicros: serverOffsetMicros,
       random: random,
+      queryDelay: queryDelay,
+      onIssue: onIssue,
+      onComplete: onComplete,
     );
 
 class _FakeQueryError implements Exception {

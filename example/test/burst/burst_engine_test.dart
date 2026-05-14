@@ -146,7 +146,8 @@ void main() {
       expect(tooFew.queries, hasLength(1));
     });
 
-    test('rejects negative jitterWindow / sequentialSpacing', () async {
+    test('rejects negative or oversized jitterWindow / sequentialSpacing',
+        () async {
       final client = testClient(
         nowFn: _fixedNow(_anchorMicros),
         rtts: const [50000],
@@ -169,6 +170,43 @@ void main() {
         ),
         throwsArgumentError,
       );
+      expect(
+        () => client.burst(
+          sampleCount: 1,
+          mode: BurstMode.jittered,
+          jitterWindow: const Duration(minutes: 75),
+        ),
+        throwsArgumentError,
+      );
+    });
+
+    test(
+        'sequential mode actually serializes — second query waits for first to complete',
+        () async {
+      var inFlight = 0;
+      var maxInFlight = 0;
+      final client = testClient(
+        nowFn: _fixedNow(_anchorMicros),
+        rtts: const [50000, 50000, 50000],
+        serverOffsetMicros: 0,
+        // Fake query that takes 100ms wall-clock per call so a buggy
+        // sequential mode (pre-scheduled Future.delayed) would let
+        // the next query fire 50ms before the previous completes.
+        queryDelay: const Duration(milliseconds: 100),
+        onIssue: () {
+          inFlight++;
+          if (inFlight > maxInFlight) maxInFlight = inFlight;
+        },
+        onComplete: () => inFlight--,
+      );
+
+      await client.burst(
+        sampleCount: 3,
+        mode: BurstMode.sequential,
+        sequentialSpacing: const Duration(milliseconds: 50),
+      );
+
+      expect(maxInFlight, 1, reason: 'sequential mode must serialize');
     });
   });
 }
