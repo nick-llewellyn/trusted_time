@@ -55,6 +55,19 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
   Object? _lastError;
   StackTrace? _lastErrorStack;
 
+  // Cached burst client, keyed by (host, port) via _cachedClientKey.
+  // NtsBurstClient is explicitly designed to be long-lived: subsequent
+  // bursts against the same host reuse the cached NTS-KE session and
+  // freshly-rotated cookies, avoiding the TLS+KE handshake each time.
+  // Recreating per burst would skew operator RTT/offset measurements
+  // (handshake latency serialises in front of the burst window) and
+  // discard the engine's cookie pre-fetch. The cache is invalidated
+  // and a new client constructed when the target host or port
+  // changes; no manual disposal is required because NtsClient itself
+  // is GC-managed (no Dart-side `dispose()` exists in package:nts).
+  NtsBurstClient? _cachedClient;
+  String? _cachedClientKey;
+
   @override
   void didUpdateWidget(BurstProbePanel oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -70,17 +83,37 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
     }
   }
 
-  Future<void> _runBurst() async {
-    final host = _selectedHost ?? widget.candidateHosts.firstOrNull;
-    if (host == null || _running) return;
+  /// Returns the cached [NtsBurstClient] for `(host, port)`,
+  /// constructing and caching a new one if the target changed since
+  /// the last call. Caching across same-target calls is what keeps
+  /// repeated bursts in this panel honest: without it every run pays
+  /// the full NTS-KE handshake cost in front of the burst window.
+  NtsBurstClient _clientFor(String host, int port) {
+    final key = '$host:$port';
+    if (_cachedClient == null || _cachedClientKey != key) {
+      _cachedClient = NtsBurstClient(
+        spec: nts.NtsServerSpec(host: host, port: port),
+      );
+      _cachedClientKey = key;
+    }
+    return _cachedClient!;
+  }
+
+  /// Runs a burst against the currently-displayed [host]. Accepting
+  /// the host as an argument (rather than recomputing
+  /// `_selectedHost ?? candidateHosts.firstOrNull` here) ensures the
+  /// burst hits exactly what the dropdown shows, even when
+  /// `widget.candidateHosts` is an unordered or non-repeatable
+  /// Iterable that could re-yield a different first element on a
+  /// second `firstOrNull` call.
+  Future<void> _runBurst(String host) async {
+    if (_running) return;
     setState(() {
       _running = true;
       _lastError = null;
       _lastErrorStack = null;
     });
-    final client = NtsBurstClient(
-      spec: nts.NtsServerSpec(host: host, port: widget.ntsKePort),
-    );
+    final client = _clientFor(host, widget.ntsKePort);
     try {
       final result = await client.burst(
         sampleCount: _sampleCount,
@@ -124,7 +157,7 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
               setState(() => _sequentialSpacing = d),
           running: _running,
           canRun: effectiveHost != null && !_running,
-          onRun: _runBurst,
+          onRun: effectiveHost == null ? null : () => _runBurst(effectiveHost),
         ),
         const SizedBox(height: 16),
         _BurstResultCard(
@@ -169,7 +202,7 @@ class _BurstControls extends StatelessWidget {
   final ValueChanged<Duration> onSequentialSpacingChanged;
   final bool running;
   final bool canRun;
-  final VoidCallback onRun;
+  final VoidCallback? onRun;
 
   @override
   Widget build(BuildContext context) {
@@ -437,16 +470,30 @@ class _BurstResultBody extends StatelessWidget {
   }
 
   Widget _statRow(String label, String value) {
+    // Flexible columns rather than a fixed 200 px label width so the
+    // row stays inside the card on narrow phones (small-form Android,
+    // foldables in their portrait pose) and at large accessibility
+    // text scales (`MediaQuery.textScaler` > 1.3 makes a 200 px label
+    // overflow with the long-form labels here, e.g. "Aggregated
+    // uncertainty"). The 2:3 flex ratio gives the value column more
+    // room because the monospace numerics it carries are typically
+    // wider than the prose label.
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width: 200, child: Text(label)),
-          Text(
-            value,
-            style: const TextStyle(
-              fontFamily: 'monospace',
-              fontWeight: FontWeight.bold,
+          Expanded(flex: 2, child: Text(label, softWrap: true)),
+          const SizedBox(width: 12),
+          Expanded(
+            flex: 3,
+            child: Text(
+              value,
+              softWrap: true,
+              style: const TextStyle(
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
         ],
