@@ -22,6 +22,11 @@ NtsBurstClient testClient({
   Duration? queryDelay,
   void Function()? onIssue,
   void Function()? onComplete,
+  // Per-issue PhaseTimings override. When supplied, `phaseTimings[i]`
+  // populates the `i`th successful query's `nts.NtsTimeSample`. Use
+  // a list shorter than `rtts` (e.g. only the first entry) when the
+  // remaining queries should fall back to the all-zero default.
+  List<nts.PhaseTimings>? phaseTimings,
 }) {
   return NtsBurstClient.forTest(
     spec: const nts.NtsServerSpec(host: 'test.local', port: 4460),
@@ -37,18 +42,21 @@ NtsBurstClient testClient({
         if (rtt < 0) {
           throw _FakeQueryError('synthetic failure for issue $index');
         }
+        final phases = phaseTimings != null && index < phaseTimings.length
+            ? phaseTimings[index]
+            : const nts.PhaseTimings(
+                dnsMicros: 0,
+                connectMicros: 0,
+                tlsHandshakeMicros: 0,
+                keRecordIoMicros: 0,
+              );
         return nts.NtsTimeSample(
           utcUnixMicros: nowFn() + serverOffsetMicros,
           roundTripMicros: rtt,
           serverStratum: 1,
           aeadId: 15,
           freshCookies: 8,
-          phaseTimings: const nts.PhaseTimings(
-            dnsMicros: 0,
-            connectMicros: 0,
-            tlsHandshakeMicros: 0,
-            keRecordIoMicros: 0,
-          ),
+          phaseTimings: phases,
           trustBackend: nts.TrustBackend.platform,
         );
       } finally {

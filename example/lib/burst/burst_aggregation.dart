@@ -38,6 +38,15 @@ BurstResult aggregateBurst({
       aggregatedOffsetMicros: 0,
       aggregatedUncertaintyMicros: 0,
       intraOffsetSpreadMicros: 0,
+      // Whole-burst failure: no per-query phase timings to derive
+      // mobile-budget figures from. Zero-fill rather than nullable
+      // so the panel can render the budget row unconditionally.
+      budget: const (
+        radioWindowMicros: 0,
+        dnsTotalMicros: 0,
+        dnsLookupCount: 0,
+        handshakeTotalMicros: 0,
+      ),
     );
   }
 
@@ -62,6 +71,36 @@ BurstResult aggregateBurst({
 
   final spread = offsets.last - offsets.first;
 
+  // Mobile-budget figures derived from the per-query timings. Radio
+  // window is bracketed by the earliest send and the latest
+  // (send + RTT) — both modes' wall-clock cost map cleanly into this
+  // even though the burst issue strategy differs (parallel = nearly
+  // simultaneous sends; sequential = staggered). DNS / handshake
+  // aggregates come straight from package:nts's PhaseTimings; see
+  // [BurstBudget] dartdoc for the per-field semantics.
+  var firstSend = completed.first.sendUtcMicros;
+  var lastReceive = completed.first.sendUtcMicros + completed.first.rttMicros;
+  var dnsTotal = 0;
+  var dnsLookups = 0;
+  var handshakeTotal = 0;
+  for (final q in completed) {
+    if (q.sendUtcMicros < firstSend) firstSend = q.sendUtcMicros;
+    final receive = q.sendUtcMicros + q.rttMicros;
+    if (receive > lastReceive) lastReceive = receive;
+    final phases = q.sample.phaseTimings;
+    dnsTotal += phases.dnsMicros;
+    if (phases.dnsMicros > 0) dnsLookups += 1;
+    handshakeTotal += phases.connectMicros +
+        phases.tlsHandshakeMicros +
+        phases.keRecordIoMicros;
+  }
+  final budget = (
+    radioWindowMicros: lastReceive - firstSend,
+    dnsTotalMicros: dnsTotal,
+    dnsLookupCount: dnsLookups,
+    handshakeTotalMicros: handshakeTotal,
+  );
+
   return BurstResult(
     host: host,
     mode: mode,
@@ -74,6 +113,7 @@ BurstResult aggregateBurst({
     aggregatedOffsetMicros: minRttQuery.offsetMicros,
     aggregatedUncertaintyMicros: uncertainty,
     intraOffsetSpreadMicros: spread,
+    budget: budget,
   );
 }
 
