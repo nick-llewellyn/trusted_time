@@ -158,7 +158,11 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
           selectedHost: effectiveHost,
           onHostChanged: (h) => setState(() => _selectedHost = h),
           sampleCount: _sampleCount,
-          onSampleCountChanged: (v) => setState(() => _sampleCount = v.toInt()),
+          // round() not toInt(): the Slider has divisions=7 so it
+          // snaps to integers internally, but the callback value is
+          // a double and a snap-to-8 can surface as 7.999...; toInt()
+          // would floor that to 7 and make sampleCount=8 unselectable.
+          onSampleCountChanged: (v) => setState(() => _sampleCount = v.round()),
           mode: _mode,
           onModeChanged: (m) => setState(() => _mode = m),
           jitterWindow: _jitterWindow,
@@ -343,9 +347,13 @@ class _DurationSlider extends StatelessWidget {
           max: maxMs.toDouble(),
           divisions: (maxMs - minMs) ~/ 50,
           label: '$ms ms',
+          // round() not toInt(): the Slider snaps to division-aligned
+          // milliseconds (50 ms steps), but a snap-to-max can surface
+          // as e.g. 1999.99...; toInt() would clip back below the max
+          // and make the highest division unselectable.
           onChanged: onChanged == null
               ? null
-              : (v) => onChanged!(Duration(milliseconds: v.toInt())),
+              : (v) => onChanged!(Duration(milliseconds: v.round())),
         ),
       ],
     );

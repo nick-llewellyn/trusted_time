@@ -206,5 +206,41 @@ void main() {
         expect(find.text('mmo1.nts.netnod.se'), findsOneWidget);
       },
     );
+
+    testWidgets(
+      'sample-count slider can reach the maximum (8) without floating-point clip',
+      (tester) async {
+        // Regression: the previous v.toInt() call would floor a
+        // snap-to-8 value of 7.999... back to 7, making sampleCount=8
+        // unselectable on platforms whose Slider interpolation
+        // surfaces sub-integer values at the max division. round()
+        // closes that gap. Pin it.
+        await tester.pumpWidget(
+          _harness(hosts: const ['time.cloudflare.com']),
+        );
+
+        // Default is 4; verify the label shows that before the drag.
+        expect(
+          find.text('Sample count: 4  (clamped to [1, 8])'),
+          findsOneWidget,
+        );
+
+        // Drag the sample-count Slider to its visual right edge.
+        // The first Slider in the tree is the sample-count slider
+        // (the duration slider only appears in jittered/sequential
+        // modes, and we're in the default parallel mode here).
+        final sliderCenter = tester.getCenter(find.byType(Slider).first);
+        await tester.dragFrom(
+          sliderCenter,
+          const Offset(2000, 0), // overshoot intentional; clipped at max
+        );
+        await tester.pump();
+
+        expect(
+          find.text('Sample count: 8  (clamped to [1, 8])'),
+          findsOneWidget,
+        );
+      },
+    );
   });
 }
