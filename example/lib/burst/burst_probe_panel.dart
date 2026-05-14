@@ -395,9 +395,16 @@ class _BurstResultCard extends StatelessWidget {
         ),
       );
     }
+    // Whole-burst failures (every query raised, so r.hasResult ==
+    // false) use the same error color as the panel-level _lastError
+    // path above so the operator can tell at a glance that this was
+    // a hard failure rather than a partial success. Partial failures
+    // (hasResult == true with non-empty failures) stay green because
+    // there is still an aggregated estimate to look at.
+    final failed = !r.hasResult;
     return _resultBox(
       title: 'Last burst: ${r.host} (${r.mode.name})',
-      titleColor: r.hasResult ? Colors.green : Colors.orange,
+      titleColor: failed ? Theme.of(context).colorScheme.error : Colors.green,
       body: _BurstResultBody(result: r),
     );
   }
@@ -472,16 +479,40 @@ class _BurstResultBody extends StatelessWidget {
         if (r.failures.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(
-            'Failures (issue index → error):',
+            'Failures (issue index → error; tap to expand stack trace):',
             style: Theme.of(context).textTheme.bodySmall,
           ),
+          // ExpansionTile keeps the common case (just the error
+          // message) compact while making the captured stack trace
+          // (BurstFailure.stackTrace, populated by the engine's
+          // try/catch) one tap away. Without this, the panel would
+          // discard the stack trace the wy3 engine deliberately
+          // captures, defeating the debuggability invariant the
+          // BurstFailure typedef was added for in PR #37.
           for (final f in r.failures)
-            Text(
-              '  #${f.index}: ${f.error}',
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12,
+            ExpansionTile(
+              dense: true,
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: const EdgeInsets.only(left: 16, bottom: 4),
+              expandedCrossAxisAlignment: CrossAxisAlignment.start,
+              title: Text(
+                '#${f.index}: ${f.error}',
+                style: const TextStyle(
+                  fontFamily: 'monospace',
+                  fontSize: 12,
+                ),
               ),
+              children: [
+                Text(
+                  f.stackTrace == StackTrace.empty
+                      ? '(no stack trace captured)'
+                      : f.stackTrace.toString(),
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 11,
+                  ),
+                ),
+              ],
             ),
         ],
       ],
