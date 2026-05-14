@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time_example/burst/burst_types.dart';
 
@@ -38,50 +39,81 @@ void main() {
       expect(result.aggregatedOffsetMicros, 975000);
     });
 
-    test('jittered mode: completes within the configured window', () async {
-      final stopwatch = Stopwatch()..start();
-      final client = testClient(
-        nowFn: _fixedNow(_anchorMicros),
-        rtts: List.filled(6, 50000),
-        serverOffsetMicros: 0,
-        random: Random(0xBEEF), // deterministic jitter
-      );
+    test('jittered mode: completes within the configured window', () {
+      // fake_async virtualises Future.delayed: the burst's per-issue
+      // delays consume virtual time only, so the test is decoupled
+      // from CI scheduler jitter that previously made a Stopwatch
+      // assertion flaky.
+      fakeAsync((async) {
+        final client = testClient(
+          nowFn: _fixedNow(_anchorMicros),
+          rtts: List.filled(6, 50000),
+          serverOffsetMicros: 0,
+          random: Random(0xBEEF), // deterministic jitter
+        );
 
-      final result = await client.burst(
-        sampleCount: 6,
-        mode: BurstMode.jittered,
-        jitterWindow: const Duration(milliseconds: 100),
-      );
-      stopwatch.stop();
+        BurstResult? result;
+        client
+            .burst(
+              sampleCount: 6,
+              mode: BurstMode.jittered,
+              jitterWindow: const Duration(milliseconds: 100),
+            )
+            .then((r) => result = r);
 
-      expect(result.queries, hasLength(6));
-      // Jitter window bounds the maximum issue delay; mocked queries
-      // are instant so the whole burst completes within (window +
-      // generous slack for the await scheduler).
-      expect(stopwatch.elapsedMilliseconds, lessThan(500));
+        // Advance enough virtual time to cover any per-issue delay
+        // bounded by jitterWindow plus the (zero) mocked query
+        // duration. 200ms is generous; the burst must complete.
+        async.elapse(const Duration(milliseconds: 200));
+
+        expect(result, isNotNull);
+        expect(result!.queries, hasLength(6));
+        // Pending timers must have all fired — confirms no per-issue
+        // delay leaked past the window bound.
+        expect(async.pendingTimers, isEmpty);
+      });
     });
 
-    test('sequential mode: each query waits for the configured spacing',
-        () async {
-      final stopwatch = Stopwatch()..start();
-      final client = testClient(
-        nowFn: _fixedNow(_anchorMicros),
-        rtts: const [10000, 10000, 10000],
-        serverOffsetMicros: 0,
-      );
+    test('sequential mode: each query waits for the configured spacing', () {
+      // Use fake_async to make the spacing assertion deterministic:
+      // the previous Stopwatch lower-bound was vulnerable to CI
+      // scheduler skew. Here we drive virtual time forward in
+      // tranches to verify that the next query genuinely waits for
+      // the configured spacing rather than firing concurrently.
+      fakeAsync((async) {
+        final client = testClient(
+          nowFn: _fixedNow(_anchorMicros),
+          rtts: const [10000, 10000, 10000],
+          serverOffsetMicros: 0,
+        );
 
-      final result = await client.burst(
-        sampleCount: 3,
-        mode: BurstMode.sequential,
-        sequentialSpacing: const Duration(milliseconds: 50),
-      );
+        BurstResult? result;
+        client
+            .burst(
+              sampleCount: 3,
+              mode: BurstMode.sequential,
+              sequentialSpacing: const Duration(milliseconds: 50),
+            )
+            .then((r) => result = r);
 
-      stopwatch.stop();
-      expect(result.queries, hasLength(3));
-      // 3 queries with 50ms spacing -> last issue starts at +100ms,
-      // plus the (mocked, instant) query itself. Expect at least
-      // ~100ms of wall-clock; allow generous slack for slow CI.
-      expect(stopwatch.elapsedMilliseconds, greaterThanOrEqualTo(95));
+        // After the first synchronous flush only one query has fired
+        // (mocked queries are instant) and the engine is awaiting
+        // Future.delayed(50ms) before the second issue.
+        async.flushMicrotasks();
+        expect(result, isNull);
+
+        // Advance 49ms — still under the spacing, second issue must
+        // not have fired yet.
+        async.elapse(const Duration(milliseconds: 49));
+        expect(result, isNull);
+
+        // Advance past the first spacing tranche, then past the
+        // second; total 100ms of virtual time covers both Delays.
+        async.elapse(const Duration(milliseconds: 60));
+
+        expect(result, isNotNull);
+        expect(result!.queries, hasLength(3));
+      });
     });
 
     test('partial failures: aggregates over successes; failures preserved',
@@ -108,6 +140,30 @@ void main() {
       expect(result.failures.single.stackTrace, isNot(StackTrace.empty));
       expect(result.minRttMicros, 60000);
       expect(result.minRttQuery!.rttMicros, 60000);
+    });
+
+    test('failures are sorted by issue index regardless of completion order',
+        () async {
+      // Three failures at indices 0, 2, 4 plus successes at 1, 3.
+      // In parallel mode the failure futures may complete in any
+      // order; the aggregator must still surface them sorted by
+      // index so the BurstResult.failures dartdoc holds.
+      final client = testClient(
+        nowFn: _fixedNow(_anchorMicros),
+        rtts: const [-1, 50000, -1, 50000, -1],
+        serverOffsetMicros: 0,
+      );
+
+      final result = await client.burst(
+        sampleCount: 5,
+        mode: BurstMode.parallel,
+      );
+
+      expect(result.failures, hasLength(3));
+      expect(
+        result.failures.map((f) => f.index).toList(),
+        [0, 2, 4],
+      );
     });
 
     test('whole-burst failure: returns hasResult=false with empty stats',

@@ -43,6 +43,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^5.0.0
+  fake_async: ^1.3.3
 
 # Native-asset build-hook user defines. Forwarded to transitive
 # packages' build hooks. Enabling nts.verbose_logs surfaces

@@ -89,16 +89,21 @@ class BurstResult {
   /// results in completion order).
   final List<BurstQueryResult> queries;
 
-  /// Per-issue-order index, surfaced error, and captured stack trace
-  /// for each failed query. Empty list when the whole burst
-  /// succeeded; `queries.length + failures.length` equals the burst's
-  /// *issued* sample count, which is the requested count after the
-  /// `[1, 8]` clamp applied by [NtsBurstClient.burst].
+  /// Failed queries, sorted by issue index so the list order matches
+  /// the order the queries were issued (regardless of which mode
+  /// completed them in which order — parallel/jittered modes append
+  /// failures in completion order; the aggregator re-sorts before
+  /// surfacing). Empty list when the whole burst succeeded;
+  /// `queries.length + failures.length` equals the burst's *issued*
+  /// sample count, which is the requested count after the `[1, 8]`
+  /// clamp applied by [NtsBurstClient.burst].
   ///
-  /// `stackTrace` is whatever `dart:core`'s `try`/`catch` surfaces for
-  /// the failure — `StackTrace.empty` is possible for synchronous
-  /// non-`Error` throws but in practice every NTS-side failure
-  /// produces a real stack.
+  /// Each [BurstFailure] carries the issue [BurstFailure.index],
+  /// the surfaced [BurstFailure.error], and the
+  /// [BurstFailure.stackTrace] from the per-query `try`/`catch` so
+  /// failures remain debuggable. `StackTrace.empty` is possible for
+  /// synchronous non-`Error` throws but in practice every NTS-side
+  /// failure produces a real stack.
   final List<BurstFailure> failures;
 
   /// Minimum-RTT successful query, or `null` if every query failed.

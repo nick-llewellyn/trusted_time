@@ -2,8 +2,12 @@ import 'dart:math' as math;
 
 import 'burst_types.dart';
 
-/// Aggregates a set of completed [BurstQueryResult]s and the parallel
-/// list of per-issue-order [failures] into a [BurstResult].
+/// Aggregates a set of completed [BurstQueryResult]s and the
+/// per-query [failures] (in arbitrary completion order) into a
+/// [BurstResult]. Failures are sorted by issue index before being
+/// stored so callers see them in the same order the queries were
+/// issued, matching [BurstResult.failures]'s "per-issue-order"
+/// contract.
 ///
 /// Pure function on its inputs; extracted from [NtsBurstClient] so
 /// the min-RTT / median-RTT / jitter-floor reductions can be unit
@@ -14,12 +18,19 @@ BurstResult aggregateBurst({
   required List<BurstQueryResult> completed,
   required List<BurstFailure> failures,
 }) {
+  // Sort by issue index so the public list order matches
+  // BurstResult.failures's documented "per-issue-order" claim
+  // regardless of which mode (parallel/jittered/sequential) issued
+  // the queries. Copy first to keep this function pure on its inputs.
+  final sortedFailures = [...failures]
+    ..sort((a, b) => a.index.compareTo(b.index));
+
   if (completed.isEmpty) {
     return BurstResult(
       host: host,
       mode: mode,
       queries: const [],
-      failures: List.unmodifiable(failures),
+      failures: List.unmodifiable(sortedFailures),
       minRttQuery: null,
       minRttMicros: 0,
       medianRttMicros: 0,
@@ -55,7 +66,7 @@ BurstResult aggregateBurst({
     host: host,
     mode: mode,
     queries: List.unmodifiable(completed),
-    failures: List.unmodifiable(failures),
+    failures: List.unmodifiable(sortedFailures),
     minRttQuery: minRttQuery,
     minRttMicros: minRtt,
     medianRttMicros: medianRtt,
