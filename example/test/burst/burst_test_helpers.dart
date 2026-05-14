@@ -22,10 +22,18 @@ NtsBurstClient testClient({
   Duration? queryDelay,
   void Function()? onIssue,
   void Function()? onComplete,
-  // Per-issue PhaseTimings override. When supplied, `phaseTimings[i]`
-  // populates the `i`th successful query's `nts.NtsTimeSample`. Use
-  // a list shorter than `rtts` (e.g. only the first entry) when the
-  // remaining queries should fall back to the all-zero default.
+  // Per-issued-query PhaseTimings override. When supplied,
+  // `phaseTimings[i]` is attached to the sample produced by the
+  // i-th *issued* query (i.e. the query whose index in `rtts` is
+  // `i`), regardless of whether neighbouring issues succeed or
+  // fail. If issue `i` fails (its `rtts[i] < 0`) no sample is
+  // produced for that index and `phaseTimings[i]` is silently
+  // unused — callers running mixed success/failure scenarios should
+  // still align the list to the issued-index space, leaving zero-
+  // filled entries (or relying on the all-zero default by
+  // truncating the list) for the failing slots. Pass a list shorter
+  // than `rtts` to let trailing queries fall back to the all-zero
+  // default.
   List<nts.PhaseTimings>? phaseTimings,
 }) {
   return NtsBurstClient.forTest(

@@ -190,8 +190,11 @@ typedef BurstBudget = ({
 
   /// Number of successful queries that incurred a non-zero DNS
   /// lookup phase. Caller can derive a cache-hit ratio as
-  /// `(queries.length - dnsLookupCount) / queries.length`. A burst
-  /// against a cookie-cached client should observe 0 here.
+  /// `(queries.length - dnsLookupCount) / queries.length` *only
+  /// when [BurstResult.queries] is non-empty*; on a whole-burst
+  /// failure both counts are zero (see [BurstResult.budget]) and
+  /// the ratio is undefined. A burst against a cookie-cached
+  /// client should observe 0 here.
   int dnsLookupCount,
 
   /// Sum of all KE-pipeline phase timings

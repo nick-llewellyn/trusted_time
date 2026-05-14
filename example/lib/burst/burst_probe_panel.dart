@@ -567,21 +567,43 @@ class _BurstResultBody extends StatelessWidget {
           'Mobile budget (wy3):',
           style: Theme.of(context).textTheme.bodySmall,
         ),
+        // Radio window and battery delta remain meaningful on a
+        // whole-burst failure (the radio was active across the
+        // attempted window, and the device drained battery while
+        // those handshakes were retrying), so they render
+        // unconditionally. The DNS / KE handshake rows are derived
+        // from successful-query phase timings only — on a whole-
+        // burst failure both totals are zero by construction and a
+        // raw "0.000 ms (0/0 queries hit a fresh lookup)" /
+        // "(cookie-cached burst)" readout would be actively
+        // misleading (no queries succeeded; nothing was cached).
+        // Special-case queries.isEmpty to surface a placeholder.
         _statRow(
           'Radio window',
           '${_us(r.budget.radioWindowMicros)} ms',
         ),
-        _statRow(
-          'DNS phase total',
-          '${_us(r.budget.dnsTotalMicros)} ms '
-              '(${r.budget.dnsLookupCount}/${r.queries.length} '
-              'queries hit a fresh lookup)',
-        ),
-        _statRow(
-          'KE handshake total',
-          '${_us(r.budget.handshakeTotalMicros)} ms '
-              '${r.budget.handshakeTotalMicros == 0 ? "(cookie-cached burst)" : "(fresh handshake on ≥1 query)"}',
-        ),
+        if (r.queries.isEmpty) ...[
+          _statRow(
+            'DNS phase total',
+            '(no successful queries)',
+          ),
+          _statRow(
+            'KE handshake total',
+            '(no successful queries)',
+          ),
+        ] else ...[
+          _statRow(
+            'DNS phase total',
+            '${_us(r.budget.dnsTotalMicros)} ms '
+                '(${r.budget.dnsLookupCount}/${r.queries.length} '
+                'queries hit a fresh lookup)',
+          ),
+          _statRow(
+            'KE handshake total',
+            '${_us(r.budget.handshakeTotalMicros)} ms '
+                '${r.budget.handshakeTotalMicros == 0 ? "(cookie-cached burst)" : "(fresh handshake on ≥1 query)"}',
+          ),
+        ],
         _statRow(
           'Battery delta',
           _formatBatteryDelta(batteryBefore, batteryAfter),
