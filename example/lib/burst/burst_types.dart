@@ -76,6 +76,7 @@ class BurstResult {
     required this.aggregatedOffsetMicros,
     required this.aggregatedUncertaintyMicros,
     required this.intraOffsetSpreadMicros,
+    required this.budget,
   });
 
   /// Source host this burst was directed at (e.g. `time.cloudflare.com`).
@@ -136,6 +137,12 @@ class BurstResult {
   /// window and the min-RTT estimate may be over-confident.
   final int intraOffsetSpreadMicros;
 
+  /// Mobile-budget breakdown derived from the per-query
+  /// [BurstQueryResult.sample] phase timings; see [BurstBudget].
+  /// Always populated, even when the whole burst failed (in which
+  /// case all fields are zero).
+  final BurstBudget budget;
+
   /// Whether the burst yielded any usable estimate.
   bool get hasResult => minRttQuery != null;
 }
@@ -147,3 +154,57 @@ class BurstResult {
 /// (especially for unexpected programmer errors that would otherwise
 /// be silently demoted to "query failures").
 typedef BurstFailure = ({int index, Object error, StackTrace stackTrace});
+
+/// Mobile-budget breakdown derived from the per-query phase timings
+/// surfaced by `package:nts` ([nts.PhaseTimings] on each
+/// [nts.NtsTimeSample]) plus the per-query send / RTT timings the
+/// engine already records. Carried on [BurstResult.budget].
+///
+/// Shapes the empirical numbers wy3 needs to retire the
+/// "burst-on-establish" educated guess in ADRs 0006/0007/0008 with
+/// observed ground truth (per the wy3 ticket: "12-18 hosts,
+/// cold-start <3s, battery <1%/day"). See `trusted_time-wy3`.
+///
+/// All timing fields are microseconds; [dnsLookupCount] is a unitless
+/// count. Every field is zero on a whole-burst failure (no successful
+/// queries to derive timings from); see [BurstResult.budget].
+///
+/// CPU time on the orchestrating isolate is intentionally not
+/// included here; that's tracked separately under
+/// `trusted_time-8re` because it requires native method-channel
+/// plumbing on each platform.
+typedef BurstBudget = ({
+  /// Wall-clock window the radio was active for the burst, computed
+  /// as `max(sendUtcMicros + roundTripMicros) - min(sendUtcMicros)`
+  /// across successful queries. Approximates the cost the burst
+  /// imposes on the cellular / Wi-Fi radio (which dominates mobile
+  /// energy use under typical idle baselines). For a parallel mode
+  /// burst this is roughly `maxRttMicros`; for sequential mode it
+  /// is roughly `(N-1) * sequentialSpacing + sum(rtts)`.
+  int radioWindowMicros,
+
+  /// Sum of [nts.PhaseTimings.dnsMicros] across successful queries.
+  /// Zero on a fully cache-warm burst; non-zero whenever any query
+  /// in the burst incurred a fresh DNS resolution (KE-host or
+  /// NTPv4-host lookup) per the package:nts dartdoc on dnsMicros.
+  int dnsTotalMicros,
+
+  /// Number of successful queries that incurred a non-zero DNS
+  /// lookup phase. Caller can derive a cache-hit ratio as
+  /// `(queries.length - dnsLookupCount) / queries.length` *only
+  /// when [BurstResult.queries] is non-empty*; on a whole-burst
+  /// failure both counts are zero (see [BurstResult.budget]) and
+  /// the ratio is undefined. A burst against a cookie-cached
+  /// client should observe 0 here.
+  int dnsLookupCount,
+
+  /// Sum of all KE-pipeline phase timings
+  /// ([nts.PhaseTimings.connectMicros] + `tlsHandshakeMicros` +
+  /// `keRecordIoMicros`) across successful queries. Expected to be
+  /// 0 for the second-and-later bursts against a cookie-cached
+  /// client; a non-zero handshake total on a repeat burst means
+  /// the engine paid the full TLS+KE round trip again, which
+  /// invalidates the burst's RTT measurements as a steady-state
+  /// proxy.
+  int handshakeTotalMicros,
+});

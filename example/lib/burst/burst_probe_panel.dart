@@ -1,10 +1,34 @@
 import 'dart:collection';
 
+import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:nts/nts.dart' as nts;
 
 import 'burst_engine.dart';
 import 'burst_types.dart';
+
+/// Async probe returning the current battery level as a `0..100`
+/// percentage, or `null` when the platform doesn't support battery
+/// reporting (web, headless test environments) or the underlying
+/// query throws. Injected into [BurstProbePanel] so widget tests
+/// can avoid the `battery_plus` method channel.
+///
+/// The default factory [defaultBatteryProbe] wraps
+/// `Battery().batteryLevel` and swallows platform exceptions so the
+/// panel renders cleanly even when battery data is unavailable.
+typedef BatteryProbe = Future<int?> Function();
+
+/// Default [BatteryProbe] backed by `package:battery_plus`. Returns
+/// `null` on any platform exception so the panel can render the
+/// "battery sampling unavailable" branch instead of crashing the
+/// burst flow on a desktop / web run where the plugin isn't wired.
+Future<int?> defaultBatteryProbe() async {
+  try {
+    return await Battery().batteryLevel;
+  } on Exception {
+    return null;
+  }
+}
 
 /// Operator-driven UI for firing a single per-host NTS burst against a
 /// chosen server with configurable size and inter-burst spacing mode,
@@ -17,15 +41,17 @@ import 'burst_types.dart';
 /// ADR 0006 (cadence) / 0007 (trust tiers) defaults before any
 /// library-side burst API is considered.
 ///
-/// Etiquette guards (1 burst per host per 10 mins) and mobile-budget
-/// instrumentation are deferred to wy3 Slices 4 and 3 respectively;
-/// this panel deliberately fires bursts on demand without throttling
-/// so the operator can drive ad-hoc measurements.
+/// Surfaces the engine's [BurstResult.budget] alongside a
+/// panel-side battery delta sampled before / after the burst window.
+/// Etiquette guards (1 burst per host per 10 mins) are deferred to
+/// wy3 Slice 4; this panel deliberately fires bursts on demand
+/// without throttling so the operator can drive ad-hoc measurements.
 class BurstProbePanel extends StatefulWidget {
   const BurstProbePanel({
     super.key,
     required this.candidateHosts,
     this.ntsKePort = 4460,
+    this.batteryProbe = defaultBatteryProbe,
   });
 
   /// Hosts the dropdown will offer. Typically the live engine's NTS
@@ -40,6 +66,12 @@ class BurstProbePanel extends StatefulWidget {
   /// 4460 as the IANA-assigned NTS-KE default; override only for
   /// deployments running on a non-standard port.
   final int ntsKePort;
+
+  /// Battery sampler invoked before and after the burst. Defaults to
+  /// the `package:battery_plus`-backed [defaultBatteryProbe]; widget
+  /// tests inject a deterministic stub so they don't depend on the
+  /// underlying platform plugin.
+  final BatteryProbe batteryProbe;
 
   @override
   State<BurstProbePanel> createState() => _BurstProbePanelState();
@@ -56,6 +88,18 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
   BurstResult? _lastResult;
   Object? _lastError;
   StackTrace? _lastErrorStack;
+
+  // Battery snapshots taken immediately before and after the most
+  // recent burst. Both null until the first burst completes; either
+  // can be null individually if the corresponding probe call returned
+  // null (web / desktop without battery_plus support, or platform
+  // exceptions surfaced as null by the probe wrapper). Carried in
+  // panel state rather than on BurstResult because the engine has no
+  // dependency on battery_plus and the budget surfaced by the engine
+  // is intentionally restricted to data derivable from the per-query
+  // NTS sample timings.
+  int? _batteryBefore;
+  int? _batteryAfter;
 
   // Cached burst client, keyed by (host, port) via _cachedClientKey.
   // NtsBurstClient is explicitly designed to be long-lived: subsequent
@@ -101,6 +145,25 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
     return _cachedClient!;
   }
 
+  /// Belt-and-braces wrapper around [BurstProbePanel.batteryProbe]
+  /// that coerces any throw to `null`. The default probe
+  /// ([defaultBatteryProbe]) already swallows `Exception`s, but
+  /// nothing in the [BatteryProbe] type signature forbids a custom
+  /// injected probe from throwing — and a throw from the
+  /// before-burst probe (which has to run *before* the burst's
+  /// try/catch/finally so the snapshot brackets the burst window)
+  /// would skip the `_running = false` cleanup and wedge the panel
+  /// into a permanently-disabled state. Coercing throws to `null`
+  /// here keeps the burst flow and `finally` cleanup running on any
+  /// probe failure mode (Exception, Error, or otherwise).
+  Future<int?> _safeBatteryProbe() async {
+    try {
+      return await widget.batteryProbe();
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Runs a burst against the currently-displayed [host]. Accepting
   /// the host as an argument (rather than recomputing
   /// `_selectedHost ?? candidateHosts.firstOrNull` here) ensures the
@@ -114,7 +177,17 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
       _running = true;
       _lastError = null;
       _lastErrorStack = null;
+      // Clear stale battery snapshots up front so a failed before
+      // probe doesn't show last-burst's delta on this burst's card.
+      _batteryBefore = null;
+      _batteryAfter = null;
     });
+    // Probe the battery before the burst so the operator's "battery
+    // delta during burst" reading actually brackets the burst window.
+    // The probe is allowed to fail (returns null) without aborting
+    // the burst — a missing battery reading is strictly less useful
+    // than a missing burst.
+    final batteryBefore = await _safeBatteryProbe();
     final client = _clientFor(host, widget.ntsKePort);
     try {
       final result = await client.burst(
@@ -123,13 +196,24 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
         jitterWindow: _jitterWindow,
         sequentialSpacing: _sequentialSpacing,
       );
+      final batteryAfter = await _safeBatteryProbe();
       if (!mounted) return;
-      setState(() => _lastResult = result);
+      setState(() {
+        _lastResult = result;
+        _batteryBefore = batteryBefore;
+        _batteryAfter = batteryAfter;
+      });
     } catch (err, st) {
+      // Probe the after-battery even on failure so the operator can
+      // see what was drained by the failed burst (handshake retries
+      // on a flaky network can be expensive).
+      final batteryAfter = await _safeBatteryProbe();
       if (!mounted) return;
       setState(() {
         _lastError = err;
         _lastErrorStack = st;
+        _batteryBefore = batteryBefore;
+        _batteryAfter = batteryAfter;
       });
     } finally {
       if (mounted) setState(() => _running = false);
@@ -180,6 +264,8 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
           error: _lastError,
           errorStack: _lastErrorStack,
           running: _running,
+          batteryBefore: _batteryBefore,
+          batteryAfter: _batteryAfter,
         ),
       ],
     );
@@ -366,12 +452,16 @@ class _BurstResultCard extends StatelessWidget {
     required this.error,
     required this.errorStack,
     required this.running,
+    required this.batteryBefore,
+    required this.batteryAfter,
   });
 
   final BurstResult? result;
   final Object? error;
   final StackTrace? errorStack;
   final bool running;
+  final int? batteryBefore;
+  final int? batteryAfter;
 
   @override
   Widget build(BuildContext context) {
@@ -405,7 +495,11 @@ class _BurstResultCard extends StatelessWidget {
     return _resultBox(
       title: 'Last burst: ${r.host} (${r.mode.name})',
       titleColor: failed ? Theme.of(context).colorScheme.error : Colors.green,
-      body: _BurstResultBody(result: r),
+      body: _BurstResultBody(
+        result: r,
+        batteryBefore: batteryBefore,
+        batteryAfter: batteryAfter,
+      ),
     );
   }
 
@@ -440,9 +534,15 @@ class _BurstResultCard extends StatelessWidget {
 }
 
 class _BurstResultBody extends StatelessWidget {
-  const _BurstResultBody({required this.result});
+  const _BurstResultBody({
+    required this.result,
+    required this.batteryBefore,
+    required this.batteryAfter,
+  });
 
   final BurstResult result;
+  final int? batteryBefore;
+  final int? batteryAfter;
 
   @override
   Widget build(BuildContext context) {
@@ -476,6 +576,66 @@ class _BurstResultBody extends StatelessWidget {
             'Whole burst failed; no aggregated stats available.',
             style: TextStyle(fontStyle: FontStyle.italic),
           ),
+        // Mobile-budget subsection. Always rendered (with placeholder
+        // text substituted on whole-burst failure; see the explanatory
+        // block below) so the operator gets a stable layout across
+        // success / failure runs and can spot anomalies (e.g. a
+        // non-zero handshake total on a repeat burst against the
+        // same host means the cookie cache didn't apply).
+        const SizedBox(height: 12),
+        Text(
+          'Mobile budget (wy3):',
+          style: Theme.of(context).textTheme.bodySmall,
+        ),
+        // Every engine-derived budget field (radio window, DNS,
+        // handshake) is computed from successful-query timings only;
+        // on a whole-burst failure the engine zero-fills the entire
+        // BurstBudget by construction. Rendering raw "0.000 ms" /
+        // "0/0 queries hit a fresh lookup" / "(cookie-cached burst)"
+        // readouts in that case would be actively misleading (it
+        // would look like "we measured 0" when in fact "we couldn't
+        // measure"). Special-case queries.isEmpty to surface a
+        // placeholder for all three.
+        //
+        // Battery delta stays outside the conditional because it's
+        // sampled by the panel itself (not derived from the engine's
+        // budget) and the snapshots bracket the burst window
+        // regardless of whether any queries succeeded — the device
+        // drained battery while the failing handshakes retried.
+        if (r.queries.isEmpty) ...[
+          _statRow(
+            'Radio window',
+            '(no successful queries)',
+          ),
+          _statRow(
+            'DNS phase total',
+            '(no successful queries)',
+          ),
+          _statRow(
+            'KE handshake total',
+            '(no successful queries)',
+          ),
+        ] else ...[
+          _statRow(
+            'Radio window',
+            '${_us(r.budget.radioWindowMicros)} ms',
+          ),
+          _statRow(
+            'DNS phase total',
+            '${_us(r.budget.dnsTotalMicros)} ms '
+                '(${r.budget.dnsLookupCount}/${r.queries.length} '
+                'queries hit a fresh lookup)',
+          ),
+          _statRow(
+            'KE handshake total',
+            '${_us(r.budget.handshakeTotalMicros)} ms '
+                '${r.budget.handshakeTotalMicros == 0 ? "(cookie-cached burst)" : "(fresh handshake on ≥1 query)"}',
+          ),
+        ],
+        _statRow(
+          'Battery delta',
+          _formatBatteryDelta(batteryBefore, batteryAfter),
+        ),
         if (r.failures.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(
@@ -557,4 +717,20 @@ class _BurstResultBody extends StatelessWidget {
   /// Same as [_us] but preserves the sign for offset readouts (a
   /// positive value means the server is ahead of the local clock).
   static String _signedUs(int micros) => (micros >= 0 ? '+' : '') + _us(micros);
+
+  /// Renders the before/after battery snapshots as a signed delta
+  /// alongside the raw endpoints so the operator can tell a "0 pp"
+  /// reading from "no sample". Either snapshot may be null when the
+  /// platform doesn't expose battery state (web / desktop without
+  /// the plugin) or the probe surfaced an exception as null; in
+  /// those cases the row degrades to "(unavailable)" rather than
+  /// fabricating a delta.
+  static String _formatBatteryDelta(int? before, int? after) {
+    if (before == null || after == null) {
+      return '(unavailable)';
+    }
+    final delta = after - before;
+    final sign = delta > 0 ? '+' : '';
+    return '$sign$delta pp ($before% → $after%)';
+  }
 }

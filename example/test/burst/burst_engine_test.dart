@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:nts/nts.dart' as nts;
 import 'package:trusted_time_example/burst/burst_types.dart';
 
 import 'burst_test_helpers.dart';
@@ -37,6 +38,17 @@ void main() {
       // only with rtt/2. min-RTT sample (rtt=50k) -> offset =
       // 1_000_000 - 25_000 = 975_000.
       expect(result.aggregatedOffsetMicros, 975000);
+      // Mobile-budget figures derived from the per-query timings.
+      // Every send is at the same fixed clock value (the test helper
+      // uses a constant nowFn) so firstSend == every sendUtcMicros;
+      // lastReceive = sendUtcMicros + max(rtts) = sendUtcMicros +
+      // 200_000. Test fixtures use zero PhaseTimings so the DNS /
+      // handshake aggregates are all zero — the dedicated
+      // 'budget' test below exercises non-zero PhaseTimings.
+      expect(result.budget.radioWindowMicros, 200000);
+      expect(result.budget.dnsTotalMicros, 0);
+      expect(result.budget.dnsLookupCount, 0);
+      expect(result.budget.handshakeTotalMicros, 0);
     });
 
     test('jittered mode: completes within the configured window', () {
@@ -167,6 +179,59 @@ void main() {
       );
     });
 
+    test(
+        'budget: aggregates DNS / handshake phase timings from package:nts PhaseTimings',
+        () async {
+      // Three queries with mixed phase timings: query 0 paid the
+      // full KE handshake (DNS + connect + TLS + KE I/O); queries
+      // 1 and 2 are cookie-cached (zero handshake phases) — query 1
+      // still incurred a fresh DNS lookup (e.g. KE-host TTL expired
+      // mid-burst) while query 2 was fully cache-warm.
+      final phases = const [
+        nts.PhaseTimings(
+          dnsMicros: 30000,
+          connectMicros: 12000,
+          tlsHandshakeMicros: 80000,
+          keRecordIoMicros: 20000,
+        ),
+        nts.PhaseTimings(
+          dnsMicros: 5000,
+          connectMicros: 0,
+          tlsHandshakeMicros: 0,
+          keRecordIoMicros: 0,
+        ),
+        nts.PhaseTimings(
+          dnsMicros: 0,
+          connectMicros: 0,
+          tlsHandshakeMicros: 0,
+          keRecordIoMicros: 0,
+        ),
+      ];
+      final client = testClient(
+        nowFn: _fixedNow(_anchorMicros),
+        rtts: const [50000, 60000, 70000],
+        serverOffsetMicros: 0,
+        phaseTimings: phases,
+      );
+
+      final result = await client.burst(
+        sampleCount: 3,
+        mode: BurstMode.parallel,
+      );
+
+      // dnsTotal sums all dnsMicros (30k + 5k + 0 = 35k); dnsLookups
+      // counts queries with non-zero dnsMicros (2). handshakeTotal
+      // sums (connect + tls + keRecordIo) across all queries — only
+      // query 0 contributes here = 12k + 80k + 20k = 112k.
+      expect(result.budget.dnsTotalMicros, 35000);
+      expect(result.budget.dnsLookupCount, 2);
+      expect(result.budget.handshakeTotalMicros, 112000);
+      // radioWindow is bracketed by min(send) and max(send + rtt);
+      // all sends are at the same fixed clock value, so it equals
+      // max(rtts) = 70000.
+      expect(result.budget.radioWindowMicros, 70000);
+    });
+
     test('whole-burst failure: returns hasResult=false with empty stats',
         () async {
       final client = testClient(
@@ -186,6 +251,14 @@ void main() {
       expect(result.minRttMicros, 0);
       expect(result.aggregatedOffsetMicros, 0);
       expect(result.aggregatedUncertaintyMicros, 0);
+      // Whole-burst failure: no successful queries to derive
+      // mobile-budget figures from. Aggregator zero-fills the
+      // budget rather than nullable so the panel can render the
+      // budget row unconditionally.
+      expect(result.budget.radioWindowMicros, 0);
+      expect(result.budget.dnsTotalMicros, 0);
+      expect(result.budget.dnsLookupCount, 0);
+      expect(result.budget.handshakeTotalMicros, 0);
     });
 
     test('sampleCount is clamped to [1, 8]', () async {
