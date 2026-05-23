@@ -203,7 +203,7 @@ a hint, not a verdict.
   violates the fork's own non-breaking-1.x stance (ADR 0005). The
   flag costs one enum and gives integrators a controlled landing.
 
-## Postscript — upstream 2.1.0 `SourceQualityTracker` composition
+## Postscript: upstream 2.1.0 `SourceQualityTracker` composition (2026-05-23)
 
 Upstream 2.1.0 (release commit `12ad768`, merged into this fork via
 `chore/sync-upstream-2.1.0`) introduces

@@ -184,7 +184,7 @@ burst-sampling will further reduce.
   see open question 3. Returns as a possible later refinement once
   `wy3` data lands.
 
-## Postscript — upstream 2.1.0 composition (quality tracker + `NtsAuthLevel.advisory` removal)
+## Postscript: upstream 2.1.0 composition — quality tracker + `NtsAuthLevel.advisory` removal (2026-05-23)
 
 Upstream 2.1.0 (release commit `12ad768`, merged into this fork via
 `chore/sync-upstream-2.1.0`) lands two changes that touch the
