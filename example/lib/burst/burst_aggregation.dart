@@ -73,11 +73,13 @@ BurstResult aggregateBurst({
 
   // Mobile-budget figures derived from the per-query timings. Radio
   // window is bracketed by the earliest send and the latest
-  // (send + RTT) — both modes' wall-clock cost map cleanly into this
-  // even though the burst issue strategy differs (parallel = nearly
-  // simultaneous sends; sequential = staggered). DNS / handshake
-  // aggregates come straight from package:nts's PhaseTimings; see
-  // [BurstBudget] dartdoc for the per-field semantics.
+  // (send + RTT) — all three modes' wall-clock cost maps cleanly
+  // into this even though the burst issue strategy differs
+  // (parallel = nearly simultaneous sends; jittered = sends spread
+  // across the jitter window; sequential = staggered by the
+  // configured spacing). DNS / handshake aggregates come straight
+  // from package:nts's PhaseTimings; see [BurstBudget] dartdoc for
+  // the per-field semantics.
   var firstSend = completed.first.sendUtcMicros;
   var lastReceive = completed.first.sendUtcMicros + completed.first.rttMicros;
   var dnsTotal = 0;
