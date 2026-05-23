@@ -576,10 +576,11 @@ class _BurstResultBody extends StatelessWidget {
             'Whole burst failed; no aggregated stats available.',
             style: TextStyle(fontStyle: FontStyle.italic),
           ),
-        // Mobile-budget subsection. Always rendered (zero-filled on
-        // whole-burst failure) so the operator gets a stable layout
-        // across success / failure runs and can spot anomalies (e.g.
-        // a non-zero handshake total on a repeat burst against the
+        // Mobile-budget subsection. Always rendered (with placeholder
+        // text substituted on whole-burst failure; see the explanatory
+        // block below) so the operator gets a stable layout across
+        // success / failure runs and can spot anomalies (e.g. a
+        // non-zero handshake total on a repeat burst against the
         // same host means the cookie cache didn't apply).
         const SizedBox(height: 12),
         Text(
