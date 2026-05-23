@@ -550,7 +550,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// Reads `package:nts`'s DNS pool snapshot, returning null on any
-  /// failure (RustLib not initialised, FFI error). Mirrors the same
+  /// failure (NtsRustLib not initialised, FFI error). Mirrors the same
   /// guard used by the telemetry panel's live readout so a failure
   /// here cannot crash a benchmark in progress.
   NtsDnsPoolStats? _readDnsStatsOrNull() {
@@ -889,7 +889,7 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
   // loads and explicitly endorsed for UI poll loops, so a 1 s timer
   // rather than coupling to telemetry events keeps the readout
   // responsive even when no syncs are firing. Null until the first
-  // poll succeeds; stays null if RustLib was never initialised
+  // poll succeeds; stays null if NtsRustLib was never initialised
   // (NTS-disabled config path) or the FFI throws for any reason.
   NtsDnsPoolStats? _dnsStats;
   // Companion live snapshot of `package:nts`'s process-global
@@ -899,7 +899,7 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
   // backend identity, Android JNI bootstrap success bit, and
   // hybrid-fallback counter; null on the same conditions as
   // `_dnsStats` so the readout degrades gracefully on the
-  // NTS-disabled / RustLib-uninitialised path.
+  // NTS-disabled / NtsRustLib-uninitialised path.
   NtsTrustStatus? _trustStatus;
   // Single 1 s timer that polls every `package:nts` diagnostic
   // surface this panel renders (currently DNS pool stats and the
@@ -934,7 +934,7 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
   }
 
   /// Reads `package:nts`'s DNS pool snapshot. Returns null instead of
-  /// rethrowing on any failure (RustLib not initialised, FFI error,
+  /// rethrowing on any failure (NtsRustLib not initialised, FFI error,
   /// etc.) so the UI degrades gracefully when NTS is disabled in the
   /// active config.
   NtsDnsPoolStats? _safeReadDnsStats() {
@@ -947,7 +947,7 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
 
   /// Companion of [_safeReadDnsStats] for the trust-status snapshot.
   /// `TrustedTime.ntsTrustStatus()` is documented as throwing
-  /// `StateError` if `RustLib.init()` has not completed, so guard
+  /// `StateError` if `NtsRustLib.init()` has not completed, so guard
   /// the same way the DNS pool reader does.
   NtsTrustStatus? _safeReadTrustStatus() {
     try {
@@ -1399,7 +1399,7 @@ class _RotationStatusLine extends StatelessWidget {
 /// scraping logs.
 ///
 /// Renders a placeholder when stats are null (NTS disabled in the
-/// active config or RustLib not initialised).
+/// active config or NtsRustLib not initialised).
 class _DnsPoolStatsBar extends StatelessWidget {
   const _DnsPoolStatsBar({required this.stats});
 
@@ -1409,7 +1409,7 @@ class _DnsPoolStatsBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = stats;
     final detail = s == null
-        ? 'DNS pool: n/a (NTS disabled or RustLib not initialised)'
+        ? 'DNS pool: n/a (NTS disabled or NtsRustLib not initialised)'
         : 'DNS pool — inFlight: ${s.inFlight}  '
             'hwm: ${s.highWaterMark}  '
             'recovered: ${s.recovered}  '
@@ -1429,7 +1429,7 @@ class _DnsPoolStatsBar extends StatelessWidget {
 /// diagnostic snapshot: the singleton client's most-recent backend,
 /// the Android JNI bootstrap success bit, and the Android hybrid-
 /// fallback counter. Sibling of [_DnsPoolStatsBar]; same null-stats
-/// degradation contract (NTS disabled or RustLib uninitialised).
+/// degradation contract (NTS disabled or NtsRustLib uninitialised).
 ///
 /// `defaultClientBackend` is rendered as `singleton: <name>` (or
 /// `singleton: idle` when null, meaning the singleton client has
@@ -1448,7 +1448,7 @@ class _TrustStatusBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = status;
     final detail = s == null
-        ? 'Trust status: n/a (NTS disabled or RustLib not initialised)'
+        ? 'Trust status: n/a (NTS disabled or NtsRustLib not initialised)'
         : 'Trust status — '
             'singleton: ${s.defaultClientBackend?.name ?? 'idle'}  '
             'androidInit: ${s.androidPlatformInitSucceeded}  '

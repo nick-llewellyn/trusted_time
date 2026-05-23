@@ -51,9 +51,11 @@ final class NtsSource implements TimeSource, Warmable {
   ///
   /// [dnsConcurrencyCap] is forwarded verbatim to every `ntsQuery` and
   /// `ntsWarmCookies` call. Defaults to [nts.kDefaultDnsConcurrencyCap]
-  /// (`0`), which inherits the package's built-in cap of 4. [SyncEngine]
-  /// overrides this with `ntsServers.length + 2` so multi-host pools do
-  /// not lose admission races against the global resolver pool.
+  /// (`4` as of `package:nts` 4.0.0; the pre-4.0 `0` sentinel that
+  /// inherited the same cap is now rejected by the wrapper's range
+  /// validator). [SyncEngine] overrides this with
+  /// `ntsServers.length + 2` so multi-host pools do not lose admission
+  /// races against the global resolver pool.
   ///
   /// [maxLatency] is forwarded as `ntsQuery`'s `timeoutMs`. [SyncEngine]
   /// passes [TrustedTimeConfig.maxLatency] so the inner per-query budget
@@ -127,7 +129,7 @@ final class NtsSource implements TimeSource, Warmable {
     await warm();
 
     // Mint the client here as a fallback if [_performWarming]
-    // swallowed a construction failure (e.g. RustLib not yet
+    // swallowed a construction failure (e.g. NtsRustLib not yet
     // initialised at warm time, in which case
     // `nts.NtsClient(trustMode: _trustMode)` throws `StateError`).
     // Two distinct failure modes propagate unwrapped from this
@@ -136,7 +138,7 @@ final class NtsSource implements TimeSource, Warmable {
     //   - Construction failure: `StateError` from
     //     `nts.NtsClient(trustMode: _trustMode)` below, before the
     //     query try/catch is entered. Indicates a structural
-    //     problem (RustLib not initialised) rather than a transient
+    //     problem (NtsRustLib not initialised) rather than a transient
     //     network issue, so it is intentionally not translated into
     //     an `nts.NtsError` subtype.
     //   - Query failure: `nts.NtsError` (or `TransientSourceError`
@@ -203,7 +205,7 @@ final class NtsSource implements TimeSource, Warmable {
       // Lazy-mint the per-source client.
       // `nts.NtsClient(trustMode: _trustMode)` is a synchronous
       // factory backed by an FRB dispatch; it throws `StateError`
-      // if `RustLib.init()` has not completed. The outer catch
+      // if `NtsRustLib.init()` has not completed. The outer catch
       // swallows that case so the warm path stays lossy as
       // documented; [getTime] re-attempts construction so the
       // structural failure surfaces with a real query attempt.

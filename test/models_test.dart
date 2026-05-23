@@ -180,7 +180,7 @@ void main() {
     // returns at call time, without asserting specific field values
     // (those depend on platform / runtime state). Here we exercise
     // the negative half of the pass-through contract: with no
-    // `RustLib.init()` having run in the unit-test process, both
+    // `NtsRustLib.init()` having run in the unit-test process, both
     // `nts.ntsTrustStatus()` and `TrustedTime.ntsTrustStatus()`
     // throw `StateError` for the same FRB-dispatcher reason. If the
     // wrapper were swallowing, wrapping, or otherwise converting
@@ -195,7 +195,7 @@ void main() {
       // Capture the underlying call's failure first so we have a
       // concrete reference to compare against. Per the ffi
       // dispatcher's contract, this throws StateError when
-      // RustLib.init() has not run.
+      // NtsRustLib.init() has not run.
       StateError? underlyingError;
       try {
         nts.ntsTrustStatus();
@@ -218,7 +218,7 @@ void main() {
         isNotNull,
         reason:
             'Sanity check: nts.ntsTrustStatus() must throw '
-            'StateError without RustLib.init(). If a future '
+            'StateError without NtsRustLib.init(). If a future '
             'package:nts version makes this returnable in test '
             'envs, this group becomes vacuous and should be '
             'redesigned to compare snapshot identity instead.',

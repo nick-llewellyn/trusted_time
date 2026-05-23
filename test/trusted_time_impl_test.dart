@@ -248,7 +248,7 @@ void main() {
         // Empty source lists keep the test fully offline: the engine
         // constructs, but the bootstrap sync fails fast (no quorum)
         // and never touches the network. `ntsServers: []` also skips
-        // the `RustLib.init` -> `copyWith(ntsServers: [])` rewrite in
+        // the `NtsRustLib.init` -> `copyWith(ntsServers: [])` rewrite in
         // TrustedTime.initialize, so the exact instance we pass in is
         // what gets stashed on TrustedTimeImpl._config.
         const config = TrustedTimeConfig(
