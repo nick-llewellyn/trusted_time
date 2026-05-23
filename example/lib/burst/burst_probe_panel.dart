@@ -145,13 +145,6 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
     return _cachedClient!;
   }
 
-  /// Runs a burst against the currently-displayed [host]. Accepting
-  /// the host as an argument (rather than recomputing
-  /// `_selectedHost ?? candidateHosts.firstOrNull` here) ensures the
-  /// burst hits exactly what the dropdown shows, even when
-  /// `widget.candidateHosts` is an unordered or non-repeatable
-  /// Iterable that could re-yield a different first element on a
-  /// second `firstOrNull` call.
   /// Belt-and-braces wrapper around [BurstProbePanel.batteryProbe]
   /// that coerces any throw to `null`. The default probe
   /// ([defaultBatteryProbe]) already swallows `Exception`s, but
@@ -171,6 +164,13 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
     }
   }
 
+  /// Runs a burst against the currently-displayed [host]. Accepting
+  /// the host as an argument (rather than recomputing
+  /// `_selectedHost ?? candidateHosts.firstOrNull` here) ensures the
+  /// burst hits exactly what the dropdown shows, even when
+  /// `widget.candidateHosts` is an unordered or non-repeatable
+  /// Iterable that could re-yield a different first element on a
+  /// second `firstOrNull` call.
   Future<void> _runBurst(String host) async {
     if (_running) return;
     setState(() {
