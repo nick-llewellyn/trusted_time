@@ -7,6 +7,7 @@ import 'domain/time_interval.dart';
 import 'exceptions.dart' show TransientSourceError, TrustedTimeSyncException;
 import 'models.dart';
 import 'monotonic_clock.dart';
+import 'source_quality_tracker.dart';
 import 'sources/time_sources.dart';
 import 'infra/sync_observer.dart';
 import 'infra/consensus_cache.dart';
@@ -67,6 +68,8 @@ final class SyncEngine {
             _config.ntsDnsConcurrencyCap ?? _config.ntsServers.length + 2,
         maxLatency: _config.maxLatency,
         trustMode: _config.ntsTrustMode,
+        onStratumObserved: (s) =>
+            _qualityTracker.setStratum('${TimeSource.prefixNts}$host', s),
       ),
     ..._config.additionalSources,
   ];
@@ -85,6 +88,17 @@ final class SyncEngine {
   /// each escalation. The escalation threshold is
   /// [TrustedTimeConfig.transientStreakThreshold].
   final _sourceTransientStreak = <String, int>{};
+
+  /// Per-source quality tracker introduced by upstream 2.1.0. Ranks
+  /// healthy sources by a weighted score (RTT/uncertainty 40% +
+  /// consensus participation 40% + NTP stratum 20%) so high-quality
+  /// sources are queried first, with a starvation guard that
+  /// force-includes any source not queried within 5 consecutive
+  /// cycles. Composes with our outer-fast-path source filtering: the
+  /// fast-path still bails the cycle when `_sources` is empty or
+  /// every source is cooled down; ranking only re-orders what
+  /// survives the cooldown filter.
+  final _qualityTracker = SourceQualityTracker();
 
   int _syncAttempts = 0;
 
@@ -154,11 +168,33 @@ final class SyncEngine {
     // through the observer here keeps the no-op cycle's telemetry
     // shape identical to a populated cycle that produced zero
     // eligible samples.
+    //
+    // Source ordering composes cooldown filtering (this code path)
+    // with upstream 2.1.0's quality-ranked + starvation-guarded
+    // composition from `_qualityTracker`: the cooldown filter
+    // determines which sources are even eligible this cycle, then
+    // the quality tracker re-orders the survivors so high-quality
+    // sources are queried first (for early-exit latency) with
+    // starvation-forced sources appended so low-rankers don't go
+    // permanently un-sampled. Empty-pool detection stays here
+    // (operates on the cooldown-filtered set) so the actionable
+    // error distinguishing "no sources configured" from "all in
+    // cooldown" is preserved.
     final now = DateTime.now();
-    final activeSources = _sources.where((s) {
+    final healthySources = _sources.where((s) {
       final until = _blacklistUntil[s.id];
       return until == null || now.isAfter(until);
     }).toList();
+    final rankedIds = _qualityTracker.ranked(healthySources.map((s) => s.id));
+    final activeSources = [
+      // High-quality sources first, in ranked order.
+      for (final id in rankedIds) healthySources.firstWhere((s) => s.id == id),
+      // Starvation-forced sources not already in the ranked set, so
+      // their quality estimates stay fresh and the engine cannot
+      // permanently ignore lower-ranked sources.
+      for (final s in healthySources)
+        if (_qualityTracker.isStarved(s.id) && !rankedIds.contains(s.id)) s,
+    ];
     if (activeSources.isEmpty) {
       // Distinguish "no sources configured" from "all sources in
       // cooldown" so the surfaced error is actionable. Both collapse
@@ -347,6 +383,7 @@ final class SyncEngine {
 
       _syncAttempts = 0;
       _cache?.update(anchor);
+      _qualityTracker.advanceCycle();
       return anchor;
     } catch (e) {
       _markSyncFailed(e);
@@ -403,6 +440,16 @@ final class SyncEngine {
       // out-of-band.
       if (completer.isCompleted) return;
       _observer?.onConsensusReached(result);
+
+      // Record quality observations for all participant samples.
+      final participantIds = result.participants.map((s) => s.sourceId).toSet();
+      for (final sample in result.participants) {
+        _qualityTracker.record(
+          sourceId: sample.sourceId,
+          uncertaintyMs: sample.uncertaintyMs,
+          participatedInConsensus: participantIds.contains(sample.sourceId),
+        );
+      }
 
       _observer?.onMetricsReported(
         SyncMetrics(
@@ -553,6 +600,16 @@ final class SyncEngine {
       return null;
     } catch (e) {
       _observer?.onSourceFailed(source.id, e);
+      // Record the failure against the quality score *before*
+      // arming the cooldown so the tracker sees the failed
+      // observation even if subsequent cycles never query this
+      // source again (cooldown could keep it out for a while).
+      // _armCooldown is our centralised helper (added in our
+      // wy3 / cooldown work) that the transient-streak path
+      // also reuses; upstream inlined the cooldown bookkeeping
+      // here, but the centralised form is the load-bearing
+      // shape on this fork.
+      _qualityTracker.recordFailure(source.id);
       _armCooldown(source.id);
       return null;
     }

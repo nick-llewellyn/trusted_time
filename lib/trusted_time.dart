@@ -167,7 +167,9 @@ abstract final class TrustedTime {
             e is StateError && message.contains('flutter_rust_bridge');
         if (!alreadyInitialised) {
           if (kDebugMode) {
-            debugPrint('[TrustedTime] NTS disabled — NtsRustLib.init failed: $e');
+            debugPrint(
+              '[TrustedTime] NTS disabled — NtsRustLib.init failed: $e',
+            );
           }
           config = config.copyWith(ntsServers: const []);
         }
