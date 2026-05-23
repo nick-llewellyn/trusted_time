@@ -128,8 +128,8 @@ abstract final class TrustedTime {
     // Initialize the flutter_rust_bridge runtime backing package:nts
     // before any NtsSource is constructed.  Gated on
     // ntsServers.isNotEmpty to preserve the package's "zero overhead
-    // when unused" guarantee.  RustLib uses a process-wide singleton:
-    // a second init() call within the same process throws
+    // when unused" guarantee.  NtsRustLib uses a process-wide
+    // singleton: a second init() call within the same process throws
     // `StateError: Should not initialize flutter_rust_bridge twice`.
     // That happens whenever the host app re-initialises TrustedTime
     // (benchmark UIs that cycle the engine through different source
@@ -142,7 +142,7 @@ abstract final class TrustedTime {
     // configuration.
     if (config.ntsServers.isNotEmpty) {
       try {
-        await nts.RustLib.init();
+        await nts.NtsRustLib.init();
       } catch (e) {
         // Detect "already initialised" loosely: any StateError whose
         // message references flutter_rust_bridge. The exact phrase
@@ -167,7 +167,7 @@ abstract final class TrustedTime {
             e is StateError && message.contains('flutter_rust_bridge');
         if (!alreadyInitialised) {
           if (kDebugMode) {
-            debugPrint('[TrustedTime] NTS disabled — RustLib.init failed: $e');
+            debugPrint('[TrustedTime] NTS disabled — NtsRustLib.init failed: $e');
           }
           config = config.copyWith(ntsServers: const []);
         }
@@ -301,7 +301,7 @@ abstract final class TrustedTime {
   /// the snapshot is intended for human / dashboard consumption,
   /// not for cross-thread synchronisation.
   ///
-  /// Throws `StateError` if `package:nts`'s `RustLib.init()` has
+  /// Throws `StateError` if `package:nts`'s `NtsRustLib.init()` has
   /// not completed (matches `nts.ntsTrustStatus()`'s contract).
   /// [TrustedTime.initialize] performs the FFI bootstrap when
   /// [TrustedTimeConfig.ntsServers] is non-empty; calling this

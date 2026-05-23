@@ -169,7 +169,7 @@ void main() {
       // The engine's network I/O is run via tester.runAsync so its
       // real timers and stream subscriptions execute on the host
       // event loop instead of fighting flutter_test's FakeAsync zone.
-      // RustLib.init may fail in the test environment, in which case
+      // NtsRustLib.init may fail in the test environment, in which case
       // TrustedTime.initialize rewrites ntsServers to []. The
       // assertion is robust to either outcome — it pins
       // "chips == TrustedTime.config.ntsServers" rather than
@@ -177,14 +177,14 @@ void main() {
       // or not the bundled Rust dylib is available.
       //
       // Hermetic-CI design notes:
-      //  - With RustLib unavailable (the standard `flutter test` host
+      //  - With NtsRustLib unavailable (the standard `flutter test` host
       //    environment), initialize() rewrites ntsServers to []. The
       //    two _FakeTimeSource instances in additionalSources keep
       //    the engine's source pool non-empty so the bootstrap sync
       //    reaches consensus, succeeds, and does not arm the
       //    exponential retry timer that would otherwise leak into
       //    sibling tests for the rest of the suite.
-      //  - With RustLib available (rare in `flutter test`; expected
+      //  - With NtsRustLib available (rare in `flutter test`; expected
       //    in `flutter test integration_test/`), initialize() will
       //    attempt three NTS-KE handshakes alongside the two fake
       //    samples. The bounded 30 s timeout surfaces a wedged
@@ -215,7 +215,7 @@ void main() {
             // Two distinct group ids so MarzulloEngine treats them as
             // independent samples and consensus is reachable on the
             // bootstrap cycle even when ntsServers is stripped to []
-            // by the RustLib-unavailable path.
+            // by the NtsRustLib-unavailable path.
             additionalSources: [
               _FakeTimeSource(id: 'fake:a', groupId: 'fake-a'),
               _FakeTimeSource(id: 'fake:b', groupId: 'fake-b'),

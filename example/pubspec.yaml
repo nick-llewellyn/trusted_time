@@ -29,7 +29,7 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   path_provider: ^2.1.5
-  nts: ^3.0.0
+  nts: ^5.0.0
   battery_plus: ^7.0.0
 
 dev_dependencies:
