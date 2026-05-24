@@ -162,3 +162,81 @@ A change that alters the conditions under which `NtsAuthLevel.verified` is emitt
 - `test/security_policy_test.dart` — current `requireSecure: true` enforcement tests
 - `test/nts_auth_level_migration_test.dart` — current binary-enum migration tests
 
+
+## Trust Tiering
+
+This section adds the consumer-persona framing for the tiered trust model whose end-to-end implementation is documented in [`doc/design/tiered-trust-implementation.md`](../design/tiered-trust-implementation.md). The two personas are not separate code paths — the same library implements both — but they configure the engine differently and read its outputs with different expectations.
+
+### Persona: Security-Conscious (Bundled / Custom)
+
+**Configuration shape:**
+
+```dart
+const TrustedTimeConfig(
+  // usePlatformTrust: false (the default)
+  // customRootCerts: const [] (the default)
+  ntsServers: ['time.cloudflare.com'],
+)
+```
+
+Or, for deployments with caller-controlled roots (private NTS-KE infrastructure, regulated environments that require pinned anchors):
+
+```dart
+const TrustedTimeConfig(
+  customRootCerts: <int>[...myRootsPem],
+  ntsServers: ['time.internal.example.com'],
+)
+```
+
+**Library behaviour for this persona:**
+
+- Every NTS handshake runs against a library-controlled trust store: bundled `webpki-roots` (default) or `customRootCerts`. The platform store is not consulted.
+- Successful NTS samples carry `NtsAuthLevel.verified` and form the Tier 1 truth box.
+- Marzullo's truth-box construction is anchored exclusively by Tier 1 samples. Tier 2/3 contribute to consensus only when their intervals intersect the truth box.
+- `requireSecure: true` is honoured strictly: if the cycle's Tier 1 quorum fails to form, `getTime(requireSecure: true)` throws `TrustedTimeSecurityException`.
+- The `degradedTier` `IntegrityEvent` fires when Tier 1 quorum fails. Consumers can read it from `onIntegrityLost` and pause anchor consumption.
+- In TLS-inspecting / managed-network deployments where a corporate CA is required, this persona's NTS sources will fail — the bundled trust store does not include corporate CAs by design. The contract is satisfied by failing closed, not by misrepresenting platform-validated samples as `verified`.
+
+**Use this persona when:** authenticity is load-bearing for the consumer's logic (cryptographic signing, attestation, audit timestamps, certificate validity windows, replay protection, rate-limit windows whose integrity matters under adversarial conditions). The deployment must tolerate fail-closed behaviour on corporate networks; if it cannot, see the Operational-First persona.
+
+### Persona: Operational-First (Platform)
+
+**Configuration shape:**
+
+```dart
+const TrustedTimeConfig(
+  usePlatformTrust: true,
+  ntsServers: ['time.cloudflare.com'],
+)
+```
+
+**Library behaviour for this persona:**
+
+- Every NTS handshake runs against the platform / OS trust store via `rustls-platform-verifier`. Bundled roots are not consulted.
+- Successful NTS samples carry `NtsAuthLevel.none` regardless of whether the handshake succeeded. `TimeSample.trustBackend` is populated with `TrustBackend.platform` (or `platformWithHybridFallback` on Android) so telemetry consumers can distinguish platform-mediated NTS from plain NTP / HTTPS.
+- Tier 1 (`verified`) samples will not be produced under this configuration. The truth box is never formed; Marzullo falls back to single-tier reduction over all available samples — the legacy pre-tier behaviour.
+- `requireSecure: true` will always fail under this configuration. Consumers using this persona must call `getTime(requireSecure: false)` (or `TrustedTime.now()`) and accept best-effort time.
+- `authLevel` will be `NtsAuthLevel.none`; `isSecure` will be `false`. Quality grading still works: `ConfidenceLevel` reflects source diversity and population depth, independent of authentication.
+- Managed-network deployments (corporate MDM, pinned roots) work: the platform store includes the deployment's CAs, NTS handshakes succeed, the engine produces samples, consensus forms.
+
+**Use this persona when:** the deployment's network policy *requires* platform-trust traversal (corporate MITM appliance, MDM-installed root, regulated environment that mandates platform-store conformance), and the consumer is comfortable with operational best-effort time rather than cryptographic authenticity. The persona honours the contract by emitting `none` rather than misrepresenting the trust path.
+
+### Persona selection at construction time
+
+The two personas are mutually exclusive at construction:
+
+| `usePlatformTrust` | `customRootCerts` | Resulting persona | Effective `nts.TrustMode` |
+|---|---|---|---|
+| `false` (default) | `[]` (default) | Security-Conscious (bundled) | `bundledOnly` |
+| `false` | non-empty | Security-Conscious (custom) | `custom` |
+| `true` | `[]` | Operational-First | `platformOnly` |
+| `true` | non-empty | — | rejected at construction |
+
+`usePlatformTrust: true` + non-empty `customRootCerts` is structurally ambiguous (two trust sources, no defined precedence) and is rejected with `ArgumentError` at config construction. The combination cannot occur on a live engine.
+
+### What this section is *not*
+
+- **A runtime switch.** The persona is fixed at `TrustedTime.initialize()`. A consumer that needs both shapes in the same process must instantiate two engines (the public API supports a single global instance, so this would require a custom integration; out of scope for the spec).
+- **A confidence statement.** `ConfidenceLevel` and `NtsAuthLevel` are orthogonal. A Security-Conscious deployment can have low confidence (few sources, narrow geographic diversity); an Operational-First deployment can have high confidence (many sources, broad diversity). The personas describe the *trust path*, not the consensus quality.
+- **A network-environment classifier.** Neither persona detects whether the device is on a TLS-inspecting network. Detection happens implicitly: the Security-Conscious persona's NTS handshakes succeed iff the environment permits end-to-end TLS to the configured NTS-KE endpoint. A `degradedTier` event followed by sustained Tier-1 quorum failure is the operational signal for "the network is hostile to my trust configuration"; reacting to that signal is the consumer's responsibility.
+
