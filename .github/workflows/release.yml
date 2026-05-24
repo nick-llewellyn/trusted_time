@@ -27,7 +27,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -45,7 +45,7 @@ jobs:
     outputs:
       version: ${{ steps.check.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
 
       - name: Check tag matches pubspec.yaml version
         id: check
@@ -70,7 +70,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: verify-version
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0   # Full history for release notes
 
@@ -86,7 +86,7 @@ jobs:
           echo "CHANGELOG_EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ needs.verify-version.outputs.version }}"
           name: "TrustedTime v${{ needs.verify-version.outputs.version }}"
@@ -103,7 +103,7 @@ jobs:
     needs: github-release
     environment: pub-deploy
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
       - uses: subosito/flutter-action@v2
         with:
