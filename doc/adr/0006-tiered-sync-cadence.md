@@ -202,3 +202,45 @@ a hint, not a verdict.
   Rejected: behavioural break without an opt-in escape hatch
   violates the fork's own non-breaking-1.x stance (ADR 0005). The
   flag costs one enum and gives integrators a controlled landing.
+
+## Postscript: upstream 2.1.0 `SourceQualityTracker` composition (2026-05-23)
+
+Upstream 2.1.0 (release commit `12ad768`, merged into this fork via
+`chore/sync-upstream-2.1.0`) introduces
+`lib/src/source_quality_tracker.dart`, a per-source quality score
+computed from observed RTT, consensus-participation rate, and
+server stratum. `SyncEngine` consults the tracker each cycle to
+re-order eligible sources and surfaces a starvation guard so
+low-ranked sources are still periodically sampled (their quality
+estimates would otherwise stagnate and never recover).
+
+The quality tracker is **orthogonal to cadence tier** — cadence
+decides *when* a cycle runs, the tracker decides *in what order*
+sources within an already-eligible pool are queried. The
+composition with this ADR's establish/validate tiering is:
+
+- **Establish cycles** (the wide-pool initial anchor) keep their
+  full pool definition unchanged. The quality tracker simply
+  re-orders the query sequence within that pool so high-quality
+  sources are tried first and the cycle can terminate early once
+  the stability threshold is reached. No establish-pool member is
+  ever excluded by quality alone.
+- **Validate cycles** (the narrow-pool freshness probe) also keep
+  their pool definition unchanged. The starvation guard already
+  forces fresh observations on low-rankers, so the validate pool
+  does not need a separate "rotate low-quality source back in"
+  policy — open question 4 of this ADR is partially addressed by
+  the tracker's starvation mechanism, though the establish-vs-
+  validate pool split itself is still owed.
+- **Cooldown filtering precedes quality ranking.** A source that
+  is blacklisted by the exponential-cooldown ladder is filtered
+  out *before* the tracker re-orders the survivors, so a sick
+  source cannot consume validate-cycle budget just because its
+  pre-failure quality score was high.
+
+Net: the tracker is additive to this ADR — it improves intra-cycle
+ordering and freshness, but neither replaces the cadence tiering
+nor changes any of the open questions enumerated above. The
+implementation ticket (`trusted_time-az9`) remains unchanged in
+scope; the tracker will be consulted from the existing query
+loop, not from the new cadence scheduler.

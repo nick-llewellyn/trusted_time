@@ -74,22 +74,31 @@ final class NtsSource implements TimeSource, Warmable {
   /// [TrustedTimeConfig.ntsTrustMode] for the full semantics
   /// (build-time vs per-chain decision; Android `HybridVerifier`
   /// scope; enterprise / MDM use case for `platformOnly`).
+  ///
+  /// [onStratumObserved] is called with the NTP stratum reported by
+  /// the server after each successful query. Used by [SyncEngine] to
+  /// feed stratum hints into `SourceQualityTracker` without widening
+  /// [TimeSample]. Added in upstream 2.1.0; optional so callers that
+  /// don't run quality scoring (e.g. unit tests) need not supply it.
   NtsSource(
     this._host, {
     int port = 4460,
     int dnsConcurrencyCap = nts.kDefaultDnsConcurrencyCap,
     Duration maxLatency = const Duration(seconds: 5),
     nts.TrustMode trustMode = nts.TrustMode.platformWithFallback,
+    void Function(int)? onStratumObserved,
   }) : _spec = nts.NtsServerSpec(host: _host, port: port),
        _dnsConcurrencyCap = dnsConcurrencyCap,
        _timeoutMs = maxLatency.inMilliseconds,
-       _trustMode = trustMode;
+       _trustMode = trustMode,
+       _onStratumObserved = onStratumObserved;
 
   final String _host;
   final nts.NtsServerSpec _spec;
   final int _dnsConcurrencyCap;
   final int _timeoutMs;
   final nts.TrustMode _trustMode;
+  final void Function(int)? _onStratumObserved;
 
   /// Per-source [nts.NtsClient]. Lazily constructed on first [warm]
   /// or first [getTime] call so the [NtsSource] constructor never
@@ -177,6 +186,12 @@ final class NtsSource implements TimeSource, Warmable {
         'ke=${(p.keRecordIoMicros / 1000).toStringAsFixed(1)}ms',
       );
     }
+
+    // Report stratum to quality tracker if a listener is registered.
+    // Added in upstream 2.1.0; SyncEngine wires this to
+    // SourceQualityTracker.setStratum so the 20% stratum weight in
+    // the quality score has fresh data after every successful query.
+    _onStratumObserved?.call(result.serverStratum);
 
     // Calculate uncertainty from network RTT (convert microseconds to
     // milliseconds).

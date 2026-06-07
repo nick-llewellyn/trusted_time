@@ -183,3 +183,57 @@ burst-sampling will further reduce.
 - **Weighted admission scoring.** Deferred, not rejected outright —
   see open question 3. Returns as a possible later refinement once
   `wy3` data lands.
+
+## Postscript: upstream 2.1.0 composition — quality tracker + `NtsAuthLevel.advisory` removal (2026-05-23)
+
+Upstream 2.1.0 (release commit `12ad768`, merged into this fork via
+`chore/sync-upstream-2.1.0`) lands two changes that touch the
+surface area this ADR depends on. Both are additive; this ADR's
+decision stands unchanged.
+
+### `SourceQualityTracker` composition with tier-aware admission
+
+Upstream's new `lib/src/source_quality_tracker.dart` scores sources
+on RTT, consensus participation, and stratum. `SyncEngine` uses it
+to re-order which sources are queried within each cycle. This is
+**orthogonal to the trust-tier admission step proposed here**:
+
+- The quality tracker operates on *operational* signal (was this
+  source recently fast, recently agreeing, recently low-stratum)
+  and decides query order.
+- The admission filter proposed in this ADR operates on
+  *cryptographic* signal (`authLevel != NtsAuthLevel.none` for the
+  truth-box quorum) and decides whether a sample's interval is
+  allowed into the Marzullo sweep at all.
+
+A source can be high-quality but cryptographically unauthenticated
+(an HTTPS or NTP source with fast, agreeing history) — it is queried
+early because of its quality score, then either admitted to or
+filtered out of the consensus sweep based on whether its interval
+intersects the NTS truth box. The two filters compose without
+ordering hazards because the quality tracker runs before sample
+collection and the admission filter runs during consensus.
+
+The `degradedTier` integrity event still fires solely on the
+condition this ADR specifies (fewer than 2 NTS samples or empty NTS
+intersection); the quality tracker has no input into that decision
+because it cannot distinguish "all NTS samples were
+network-attackable" from "all NTS samples happened to be slow".
+
+### `NtsAuthLevel.advisory` removal
+
+Upstream 2.1.0 removes the `NtsAuthLevel.advisory` enum value
+(previously a third state between `verified` and `none`, surfaced
+for sources that completed the NTS handshake but failed a soft
+policy check). The `NtsAuthLevel` enum is now binary:
+`{verified, none}`.
+
+This ADR's admission filter was specified against
+`authLevel != NtsAuthLevel.none` for truth-box participation, which
+remains correct under the binary enum — only `verified` participates
+in the truth box, exactly as intended. No re-specification is owed.
+The implementation ticket (`trusted_time-c8y`) is unchanged in
+scope; the upstream migration test
+(`test/nts_auth_level_migration_test.dart`) already covers the
+behavioural shift for downstream callers and is shipped with the
+sync merge.

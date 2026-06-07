@@ -9,9 +9,10 @@ final class NtsSource implements TimeSource {
   NtsSource(
     this._host, {
     int port = 4460,
-    int dnsConcurrencyCap = 0,
+    int dnsConcurrencyCap = nts.kDefaultDnsConcurrencyCap,
     Duration maxLatency = const Duration(seconds: 5),
     nts.TrustMode trustMode = nts.TrustMode.platformWithFallback,
+    void Function(int)? onStratumObserved,
   });
 
   final String _host;
