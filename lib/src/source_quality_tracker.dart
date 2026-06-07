@@ -4,13 +4,13 @@ import 'dart:math';
 /// How many recent observations are retained per source.
 const int _kHistoryDepth = 10;
 
-/// Minimum fraction of sync cycles between forced low-ranking queries to
-/// prevent source starvation. Sources that haven't been queried within
+/// Number of sync cycles a source may go unqueried before it is force-included
+/// to prevent starvation. Sources that haven't been queried within
 /// [_kStarvationCycles] cycles are promoted to forced-query regardless of
 /// score.
 const int _kStarvationCycles = 5;
 
-/// Per-source observation recorded after each successful [TimeSample].
+/// Per-source observation recorded after each successful `TimeSample`.
 class _SourceObservation {
   const _SourceObservation({
     required this.uncertaintyMs,
@@ -47,7 +47,7 @@ final class SourceQualityTracker {
   /// Records a completed sync cycle observation for a source.
   ///
   /// [sourceId] uniquely identifies the source.
-  /// [uncertaintyMs] is the half-width of the returned [TimeInterval].
+  /// [uncertaintyMs] is the half-width of the returned `TimeInterval`.
   /// [participatedInConsensus] is true if the source's sample was part of
   /// the Marzullo winning set.
   void record({

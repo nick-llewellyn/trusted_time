@@ -22,12 +22,12 @@ class _Observation {
 /// Tracks per-device oscillator drift by comparing successive trust anchors
 /// and computes a running median drift rate.
 ///
-/// The computed rate replaces [TrustedTimeConfig.oscillatorDriftFactor] in
-/// [TrustedTimeImpl.nowEstimated] once a sufficiently long observation window
+/// The computed rate replaces `TrustedTimeConfig.oscillatorDriftFactor` in
+/// `TrustedTimeImpl.nowEstimated` once a sufficiently long observation window
 /// has been accumulated and the rate passes a sanity bound check.
 ///
 /// All methods are synchronous (no I/O). Instances are not thread-safe; they
-/// must be accessed from the same isolate as [TrustedTimeImpl].
+/// must be accessed from the same isolate as `TrustedTimeImpl`.
 final class DriftCalibrator {
   final _observations = <_Observation>[];
 
