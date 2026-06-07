@@ -388,11 +388,32 @@ final class SyncEngine {
       final anchor = await completer.future.timeout(
         _config.maxLatency + const Duration(seconds: 6),
         onTimeout: () async {
-          // Safety-net path: the completion machinery never resolved
-          // [completer] within the deadline, yet enough samples arrived
-          // to form a consensus. Route through [_completeSync] rather
-          // than building a raw anchor inline so this path performs the
-          // exact same bookkeeping as the early-exit and finalize paths:
+          // Safety-net path: [completer] was not resolved within the
+          // deadline. The per-cycle re-entry guard splits this into two
+          // sub-cases that must be handled differently.
+          //
+          // (1) A sibling _completeSync is already in flight: an
+          // early-exit or finalize invocation set guard.inFlight and is
+          // awaiting _createAnchor. It owns this cycle's completion — it
+          // will record the per-source quality observations and resolve
+          // [completer] with the anchor momentarily. Defer to it by
+          // returning [completer.future]. Calling _completeSync here
+          // would no-op on the guard, and then throwing would discard an
+          // anchor that resolves microtasks later (the functional
+          // regression flagged in r3369282558). The only way the guard
+          // is still in flight this far past the query window is a
+          // stalled monotonic _createAnchor read, in which case no path
+          // can produce an anchor anyway; we do not trade that reachable
+          // discard-a-success regression for an unreachable hang.
+          if (completionGuard.inFlight) {
+            return completer.future;
+          }
+          // (2) No completion is in flight: the machinery never resolved
+          // [completer], yet enough samples arrived to form a consensus.
+          // Drive completion ourselves, routing through [_completeSync]
+          // rather than building a raw anchor inline so this path
+          // performs the same bookkeeping as the early-exit and finalize
+          // paths:
           //  - per-source quality observations are recorded for the
           //    collected samples (flagged against the winning set), so
           //    the advanceCycle() below does not treat sources that
@@ -400,9 +421,6 @@ final class SyncEngine {
           //    skew the next cycle's ranking and starvation rescue; and
           //  - [completer] is resolved, so the sample-stream listener
           //    short-circuits instead of running on after sync() returns.
-          // The per-cycle re-entry guard makes this a no-op (no
-          // double-record, no duplicate observer events) if an
-          // early-exit invocation is already in flight for this cycle.
           if (!completer.isCompleted &&
               samples.length >= _config.minimumQuorum) {
             final result = _engine.resolve(samples);
