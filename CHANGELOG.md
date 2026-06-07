@@ -10,23 +10,26 @@
   weak-auth signal should use `NtsAuthLevel.none` for unauthenticated sources and
   `NtsAuthLevel.verified` for RFC 8915-authenticated ones.
 
-  **Persisted anchor migration**: `TrustAnchor.fromJson` safely remaps the old
-  three-variant ordinals to the new two-variant layout. Old `advisory` (index 1)
-  decodes as `none`; old `verified` (index 2) decodes as `verified`. No data loss,
-  no misidentification as verified.
+  **Persisted anchor migration**: `authLevel` is now serialized by name — a
+  self-describing encoding that survives enum changes — so a `verified` anchor
+  round-trips back to `verified`. `TrustAnchor.fromJson` reads the current name
+  form and still decodes legacy v2.0.x ordinals (`none=0, advisory=1,
+  verified=2`): old `advisory` decodes as `none`, old `verified` as `verified`.
+  No data loss, no misidentification as verified.
 
 ### Dependencies
 
-- **`nts` `^1.3.1` → `^5.0.0`**: Picks up the hand-written stable DTO layer,
-  the `NtsClient` session API, and per-query `serverStratum` on `NtsTimeSample`.
-  `RustLib` was renamed to `NtsRustLib` — handled internally; no consumer changes needed.
-  NTS server stratum is now automatically fed into source quality scoring.
+- **`nts`** (already `^5.0.0` on this fork since #40): v2.1.0 now consumes the
+  per-query `serverStratum` on `NtsTimeSample`, feeding NTS server stratum into
+  source quality scoring. The `RustLib` → `NtsRustLib` rename is handled
+  internally; no consumer changes needed.
 - **`flutter_secure_storage` `^10.0.0`** (lower bound unchanged — all 10.x are
   API-compatible; consumers on any 10.x version are unaffected).
 - **`http` `">=1.0.0 <2.0.0"` → `^1.3.0`**: Tightens the lower bound to a known-good
   version. Consumers already on 1.3.x+ are unaffected.
-- **`timezone` `">=0.9.0 <1.0.0"` → `">=0.9.0 <0.12.0"`**: Widens to cover the
-  current latest (0.11.0). Consumers on 0.9.x–0.11.x are all satisfied.
+- **`timezone` `">=0.9.0 <1.0.0"` → `">=0.9.0 <0.12.0"`**: Tightens the upper
+  bound, capping below the untested `0.12.0` line. Consumers on 0.9.x–0.11.x
+  remain satisfied; `0.12.0` and above are now excluded.
 
 ### Added
 

@@ -65,27 +65,23 @@ void main() {
       final base = DateTime.utc(2024, 1, 1).millisecondsSinceEpoch;
       final segmentMs = Duration(minutes: 20).inMilliseconds;
 
-      // Three segments: two near-zero drift, one bad (corrupted wall clock).
-      calibrator.recordAnchor(base, base);
+      // Six clean anchors (near-zero drift) establish a stable history, then a
+      // seventh corrupted anchor injects one wildly out-of-bounds segment (a
+      // 5-second backward network jump, ≈ 4000 ppm). Median filtering ignores
+      // the lone outlier, so the calibrator still yields a non-null, in-bounds
+      // factor. A mean- or last-value-based estimator would breach the 100 ppm
+      // sanity cap and clear the factor, failing the non-null assertion — which
+      // is what keeps this test from passing vacuously.
+      for (var i = 0; i <= 5; i++) {
+        calibrator.recordAnchor(base + segmentMs * i, base + segmentMs * i);
+      }
       calibrator.recordAnchor(
-        base + segmentMs,
-        base + segmentMs, // good
-      );
-      calibrator.recordAnchor(
-        base + segmentMs * 2,
-        // Simulate a single bad segment: network suddenly jumped 5 seconds.
-        base + segmentMs * 2 - 5000, // bad outlier
-      );
-      calibrator.recordAnchor(
-        base + segmentMs * 3,
-        base + segmentMs * 3, // good
+        base + segmentMs * 6,
+        base + segmentMs * 6 - 5000, // corrupted anchor (most recent)
       );
 
-      // With median filtering, the one bad segment is dominated by good ones.
-      // The result should still be within sane bounds (< 100 ppm).
-      if (calibrator.calibratedFactor != null) {
-        expect(calibrator.calibratedFactor!, lessThanOrEqualTo(0.0001));
-      }
+      expect(calibrator.calibratedFactor, isNotNull);
+      expect(calibrator.calibratedFactor!, lessThanOrEqualTo(0.0001));
     });
 
     test('reset clears all state', () {

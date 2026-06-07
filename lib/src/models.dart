@@ -386,22 +386,33 @@ final class TrustAnchor {
   /// Deserializes a [TrustAnchor] from a JSON map with rigorous bounds checking.
   factory TrustAnchor.fromJson(Map<String, dynamic> json) {
     try {
-      final authIdx = json['authLevel'] as int? ?? 0;
       final confIdx = json['confidence'] as int? ?? 0;
 
       // CRITICAL-6: Prevent RangeError or malformed state during deserialization.
       //
-      // Migration: v2.0.x persisted NtsAuthLevel as a 3-variant enum
-      //   (none=0, advisory=1, verified=2).
-      // v2.1.0 removes advisory, so the enum is now (none=0, verified=1).
-      // Remap old index 2 (verified) → 1 (verified); old index 1 (advisory)
-      // → 0 (none) so stale anchors degrade safely rather than misidentifying
-      // as verified.
-      final remappedAuthIdx = authIdx == 2 ? 1 : (authIdx == 1 ? 0 : authIdx);
-      final authLevel =
-          (remappedAuthIdx >= 0 && remappedAuthIdx < NtsAuthLevel.values.length)
-          ? NtsAuthLevel.values[remappedAuthIdx]
-          : NtsAuthLevel.none;
+      // authLevel is serialized by name (current format), a self-describing
+      // encoding that survives enum changes: a verified anchor round-trips back
+      // to verified rather than colliding with a legacy ordinal. Legacy v2.0.x
+      // persisted it as a 3-variant ordinal (none=0, advisory=1, verified=2);
+      // those int values are still decoded, with the removed advisory (1)
+      // degrading to none so stale anchors never misidentify as verified.
+      final rawAuth = json['authLevel'];
+      final NtsAuthLevel authLevel;
+      if (rawAuth is String) {
+        authLevel = NtsAuthLevel.values.firstWhere(
+          (v) => v.name == rawAuth,
+          orElse: () => NtsAuthLevel.none,
+        );
+      } else if (rawAuth is int) {
+        final remappedAuthIdx = rawAuth == 2 ? 1 : (rawAuth == 1 ? 0 : rawAuth);
+        authLevel =
+            (remappedAuthIdx >= 0 &&
+                remappedAuthIdx < NtsAuthLevel.values.length)
+            ? NtsAuthLevel.values[remappedAuthIdx]
+            : NtsAuthLevel.none;
+      } else {
+        authLevel = NtsAuthLevel.none;
+      }
 
       final confidence =
           (confIdx >= 0 && confIdx < ConfidenceLevel.values.length)
@@ -462,7 +473,7 @@ final class TrustAnchor {
     'uptimeMs': uptimeMs,
     'wallMs': wallMs,
     'uncertaintyMs': uncertaintyMs,
-    'authLevel': authLevel.index,
+    'authLevel': authLevel.name,
     'confidence': confidence.index,
   };
 }

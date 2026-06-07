@@ -46,4 +46,26 @@ void main() {
       expect(makeAnchor(99).authLevel, equals(NtsAuthLevel.none));
     });
   });
+
+  group('TrustAnchor current-format round trip', () {
+    TrustAnchor roundTrip(NtsAuthLevel level) => TrustAnchor.fromJson(
+      TrustAnchor(
+        networkUtcMs: 1_700_000_000_000,
+        uptimeMs: 12345,
+        wallMs: 1_700_000_000_000,
+        uncertaintyMs: 50,
+        authLevel: level,
+      ).toJson(),
+    );
+
+    test('verified survives a toJson/fromJson round trip', () {
+      // Regression guard: the new verified ordinal (1) must not collide with
+      // the legacy advisory ordinal (1) and decode back as none.
+      expect(roundTrip(NtsAuthLevel.verified).authLevel, NtsAuthLevel.verified);
+    });
+
+    test('none survives a toJson/fromJson round trip', () {
+      expect(roundTrip(NtsAuthLevel.none).authLevel, NtsAuthLevel.none);
+    });
+  });
 }
