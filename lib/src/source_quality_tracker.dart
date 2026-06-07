@@ -1,6 +1,8 @@
 import 'dart:collection';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
+
 /// How many recent observations are retained per source.
 const int _kHistoryDepth = 10;
 
@@ -33,10 +35,11 @@ class _SourceObservation {
 /// 3. **NTP stratum** (optional, 1–15) — lower stratum (closer to reference)
 ///    → higher weight.
 ///
-/// **Starvation guard**: Sources that haven't been queried within
-/// [_kStarvationCycles] cycles are always included in the next cycle at
-/// minimum query rate, keeping their quality estimates fresh and preventing
-/// the engine from permanently ignoring lower-ranked sources.
+/// **Starvation guard**: [isStarved] flags a source that has not been
+/// queried within [_kStarvationCycles] cycles. The engine pairs this with
+/// the ranking to force-include such a source (even one the cooldown filter
+/// would exclude), keeping its quality estimate fresh and preventing the
+/// engine from permanently ignoring a source stuck in cooldown.
 final class SourceQualityTracker {
   final _history = <String, Queue<_SourceObservation>>{};
   final _lastQueriedCycle = <String, int>{};
@@ -88,11 +91,13 @@ final class SourceQualityTracker {
   /// Advances the internal cycle counter. Call once per completed sync cycle.
   void advanceCycle() => _cycleIndex++;
 
-  /// Returns a sorted list of source IDs, highest quality first, given the
-  /// full set of candidate [sourceIds].
+  /// Returns the provided [sourceIds] sorted by quality score, highest
+  /// first. Every input id is returned exactly once; this method neither
+  /// adds nor drops sources.
   ///
-  /// Sources flagged for **forced inclusion** (starvation guard) appear after
-  /// the ranked set so the engine always queries them even at lower priority.
+  /// Starvation handling is the caller's responsibility: the engine pairs
+  /// this ranking with [isStarved] to force-include sources the cooldown
+  /// filter would otherwise exclude.
   List<String> ranked(Iterable<String> sourceIds) {
     final ids = sourceIds.toList();
     final scores = {for (final id in ids) id: _score(id)};
@@ -106,6 +111,18 @@ final class SourceQualityTracker {
     final last = _lastQueriedCycle[sourceId];
     if (last == null) return true; // Never queried.
     return (_cycleIndex - last) >= _kStarvationCycles;
+  }
+
+  /// Fraction of retained observations for [sourceId] that participated in
+  /// the consensus winning set, or `null` when the source has no history.
+  ///
+  /// Exposed for tests asserting that the engine records non-participant
+  /// samples, so the participation dimension is not pinned at 1.0.
+  @visibleForTesting
+  double? participationRate(String sourceId) {
+    final q = _history[sourceId];
+    if (q == null || q.isEmpty) return null;
+    return q.where((o) => o.participatedInConsensus).length / q.length;
   }
 
   double _score(String sourceId) {

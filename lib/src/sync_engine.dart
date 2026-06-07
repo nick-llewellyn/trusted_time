@@ -31,10 +31,12 @@ final class SyncEngine {
     required MonotonicClock clock,
     SyncObserver? observer,
     ConsensusCache? cache,
+    SourceQualityTracker? qualityTracker,
   }) : _config = config,
        _clock = clock,
        _observer = observer,
        _cache = cache,
+       _qualityTracker = qualityTracker ?? SourceQualityTracker(),
        _engine = MarzulloEngine(
          minQuorumRatio: config.minQuorumRatio,
          maxAllowedUncertaintyMs: config.maxAllowedUncertaintyMs,
@@ -92,13 +94,18 @@ final class SyncEngine {
   /// Per-source quality tracker introduced by upstream 2.1.0. Ranks
   /// healthy sources by a weighted score (RTT/uncertainty 40% +
   /// consensus participation 40% + NTP stratum 20%) so high-quality
-  /// sources are queried first, with a starvation guard that
-  /// force-includes any source not queried within 5 consecutive
-  /// cycles. Composes with our outer-fast-path source filtering: the
-  /// fast-path still bails the cycle when `_sources` is empty or
-  /// every source is cooled down; ranking only re-orders what
-  /// survives the cooldown filter.
-  final _qualityTracker = SourceQualityTracker();
+  /// sources are queried first. Paired with a starvation rescue in
+  /// [sync] that force-includes a source the cooldown filter excluded
+  /// once it has gone unqueried for 5 consecutive successful cycles.
+  /// Composes with our outer-fast-path source filtering: the fast-path
+  /// still bails the cycle when `_sources` is empty or every cooled-down
+  /// source is also not yet starved; ranking re-orders what survives the
+  /// cooldown filter, and the rescue re-admits a long-ignored cooled
+  /// source so it cannot be starved indefinitely.
+  ///
+  /// Constructor-injectable so tests can observe the recorded
+  /// observations; defaults to a fresh instance in production.
+  final SourceQualityTracker _qualityTracker;
 
   int _syncAttempts = 0;
 
@@ -174,26 +181,38 @@ final class SyncEngine {
     // composition from `_qualityTracker`: the cooldown filter
     // determines which sources are even eligible this cycle, then
     // the quality tracker re-orders the survivors so high-quality
-    // sources are queried first (for early-exit latency) with
-    // starvation-forced sources appended so low-rankers don't go
-    // permanently un-sampled. Empty-pool detection stays here
-    // (operates on the cooldown-filtered set) so the actionable
-    // error distinguishing "no sources configured" from "all in
-    // cooldown" is preserved.
+    // sources are queried first (for early-exit latency). A
+    // starvation rescue then re-admits any source the cooldown filter
+    // excluded that has gone unqueried for too long, so a source stuck
+    // in exponential cooldown cannot be permanently ignored. Empty-pool
+    // detection stays here so the actionable error distinguishing "no
+    // sources configured" from "all in cooldown" is preserved — it now
+    // fires only when no cooled-down source is yet due for rescue.
     final now = DateTime.now();
     final healthySources = _sources.where((s) {
       final until = _blacklistUntil[s.id];
       return until == null || now.isAfter(until);
     }).toList();
+    // Index healthy sources by id so the ranked-order construction below
+    // is O(n) (one map lookup per id) instead of O(n^2) (a firstWhere
+    // scan per id). Doubles as the O(1) membership test for the
+    // starvation rescue pass.
+    final healthyById = {for (final s in healthySources) s.id: s};
     final rankedIds = _qualityTracker.ranked(healthySources.map((s) => s.id));
-    final activeSources = [
+    final activeSources = <TimeSource>[
       // High-quality sources first, in ranked order.
-      for (final id in rankedIds) healthySources.firstWhere((s) => s.id == id),
-      // Starvation-forced sources not already in the ranked set, so
-      // their quality estimates stay fresh and the engine cannot
-      // permanently ignore lower-ranked sources.
-      for (final s in healthySources)
-        if (_qualityTracker.isStarved(s.id) && !rankedIds.contains(s.id)) s,
+      for (final id in rankedIds) healthyById[id]!,
+      // Starvation rescue: a source the cooldown filter excluded that has
+      // gone unqueried for _kStarvationCycles successful cycles is
+      // force-included for a single query, so a source stuck in
+      // exponential cooldown cannot be permanently ignored and its
+      // quality estimate stays fresh. Iterating _sources (rather than
+      // healthySources, which are all already in rankedIds) is what makes
+      // this branch reachable; the healthyById membership check prevents
+      // double-inclusion.
+      for (final s in _sources)
+        if (!healthyById.containsKey(s.id) && _qualityTracker.isStarved(s.id))
+          s,
     ];
     if (activeSources.isEmpty) {
       // Distinguish "no sources configured" from "all sources in
@@ -304,6 +323,7 @@ final class SyncEngine {
                 unawaited(
                   _completeSync(
                     result,
+                    List<TimeSample>.of(samples),
                     swSync.elapsedMilliseconds,
                     completer,
                     completionGuard,
@@ -409,6 +429,7 @@ final class SyncEngine {
 
   Future<void> _completeSync(
     ConsensusResult result,
+    List<TimeSample> samples,
     int latencyMs,
     Completer<TrustAnchor> completer,
     _CompletionGuard guard,
@@ -441,9 +462,17 @@ final class SyncEngine {
       if (completer.isCompleted) return;
       _observer?.onConsensusReached(result);
 
-      // Record quality observations for all participant samples.
+      // Record one quality observation per source that returned a sample
+      // this cycle, flagging whether it landed in the consensus winning
+      // set. Iterating the full collected `samples` population (not just
+      // `result.participants`) is what lets the tracker tell a
+      // consistently-rejected source apart from a consistently-agreeing
+      // one; looping participants alone pins every participation rate at
+      // 1.0 because every iterated sample is a participant by definition.
       final participantIds = result.participants.map((s) => s.sourceId).toSet();
-      for (final sample in result.participants) {
+      final recorded = <String>{};
+      for (final sample in samples) {
+        if (!recorded.add(sample.sourceId)) continue;
         _qualityTracker.record(
           sourceId: sample.sourceId,
           uncertaintyMs: sample.uncertaintyMs,
@@ -545,7 +574,9 @@ final class SyncEngine {
     // Try one final resolve with all samples before failing.
     final finalResult = _engine.resolve(samples);
     if (finalResult != null && samples.length >= _config.minimumQuorum) {
-      unawaited(_completeSync(finalResult, elapsedMs ?? 0, completer, guard));
+      unawaited(
+        _completeSync(finalResult, samples, elapsedMs ?? 0, completer, guard),
+      );
     } else {
       // Improved quorum-failure messaging with accurate counts
       final eligibleCount = samples.length;
@@ -585,6 +616,13 @@ final class SyncEngine {
       // exponential backoff and surfaces as unhealthy through the
       // standard `_blacklistUntil` path.
       _observer?.onSourceFailed(source.id, e);
+      // The source was actually queried this cycle (it just failed
+      // transiently), so refresh its last-queried cycle for starvation
+      // accounting. Without this, a source later escalated to cooldown via
+      // the streak path would carry no recorded query, so isStarved() would
+      // treat it as never-queried and the starvation rescue would re-admit
+      // it on the very next cycle, defeating the cooldown it just entered.
+      _qualityTracker.recordFailure(source.id);
       final threshold = _config.transientStreakThreshold;
       // threshold <= 0 disables escalation entirely; skip the streak
       // bookkeeping so the map cannot accumulate unbounded entries

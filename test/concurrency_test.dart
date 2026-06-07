@@ -10,6 +10,7 @@ import 'package:trusted_time/src/domain/time_sample.dart';
 import 'package:trusted_time/src/domain/time_interval.dart';
 import 'package:trusted_time/src/infra/sync_observer.dart';
 import 'package:trusted_time/src/monotonic_clock.dart';
+import 'package:trusted_time/src/source_quality_tracker.dart';
 
 class MockMonotonicClock implements MonotonicClock {
   @override
@@ -1186,6 +1187,134 @@ void main() {
           .toList();
       expect(stuckFailures, hasLength(8));
     });
+  });
+
+  group('SyncEngine quality-tracker integration (4em, a4d)', () {
+    late MockMonotonicClock clock;
+    late TrustedTimeConfig config;
+
+    setUp(() {
+      clock = MockMonotonicClock();
+      // ntsServers: [] keeps the default Cloudflare NtsSource out of the
+      // pool (see the TransientSourceError group for the full rationale).
+      config = const TrustedTimeConfig(
+        minimumQuorum: 2,
+        minGroupCount: 1,
+        ntpServers: [],
+        httpsSources: [],
+        ntsServers: [],
+      );
+    });
+
+    test('starvation guard re-admits a cooled source after '
+        '_kStarvationCycles successful cycles (trusted_time-4em)', () async {
+      // flaky fails once with a non-transient error -> blacklisted with a
+      // 2-minute cooldown that never expires within this (instant) test.
+      // h1/h2 keep every cycle reaching quorum so the engine advances its
+      // internal cycle counter on each success. The cooldown filter keeps
+      // flaky out of the ranked set every cycle, so the only path that can
+      // re-query it is the starvation rescue.
+      final flaky = FlakySource(
+        id: 'flaky',
+        groupId: 'g-flaky',
+        utcMs: 1000000,
+        firstCallError: StateError('regular failure'),
+      );
+      final h1 = RaceConditionSource('h1', Duration.zero, 1000000, 'g-h1');
+      final h2 = RaceConditionSource('h2', Duration.zero, 1000000, 'g-h2');
+
+      final engine = SyncEngine(
+        config: config.copyWith(additionalSources: [flaky, h1, h2]),
+        clock: clock,
+      );
+
+      // Cycle 1 fails flaky (callCount 1) and arms the cooldown; cycles
+      // 2-5 must NOT re-query it, because it has not yet gone unqueried
+      // for _kStarvationCycles (5) advanced cycles.
+      for (var i = 0; i < 5; i++) {
+        await engine.sync();
+      }
+      expect(
+        flaky.callCount,
+        1,
+        reason:
+            'a cooled source must not be re-queried before the starvation '
+            'threshold; isStarved is still false here',
+      );
+
+      // Cycle 6: flaky has now been unqueried for 5 advanced cycles, so the
+      // starvation rescue force-includes it for a single query. Pre-fix
+      // (dead rescue branch) callCount would stay 1 forever.
+      await engine.sync();
+      expect(
+        flaky.callCount,
+        2,
+        reason:
+            'starvation rescue must force-include a source stuck in '
+            'cooldown once it has gone unqueried for _kStarvationCycles '
+            'successful cycles; a permanently-1 callCount means the rescue '
+            'branch is unreachable (trusted_time-4em regression)',
+      );
+    });
+
+    test(
+      'records non-participant samples with participatedInConsensus=false '
+      'so participation rate is not pinned at 1.0 (trusted_time-a4d)',
+      () async {
+        final tracker = SourceQualityTracker();
+        // w1/w2/w3 agree on 1_000_000 and form the consensus winning set.
+        final w1 = RaceConditionSource('w1', Duration.zero, 1000000, 'g1');
+        final w2 = RaceConditionSource('w2', Duration.zero, 1000000, 'g2');
+        final w3 = RaceConditionSource('w3', Duration.zero, 1000000, 'g3');
+        // loser returns a valid, non-outlier sample 5 s away from
+        // consensus: its uncertainty (10 ms) is far under the outlier cap,
+        // so it is collected into `samples`, but its interval does not
+        // contain the consensus midpoint, so it is excluded from
+        // result.participants.
+        final loser = RaceConditionSource(
+          'loser',
+          Duration.zero,
+          1005000,
+          'g4',
+        );
+
+        // earlyExit:false so the engine collects every source's sample
+        // before completing. With the default early-exit the engine would
+        // complete on the three agreeing winners and drop loser's
+        // (marginally later) sample before it could be recorded — a
+        // property of the engine's exit timing, not of the recording loop
+        // under test here.
+        final engine = SyncEngine(
+          config: config.copyWith(
+            additionalSources: [w1, w2, w3, loser],
+            earlyExit: false,
+          ),
+          clock: clock,
+          qualityTracker: tracker,
+        );
+
+        await engine.sync();
+
+        // Pre-fix the recording loop iterated result.participants only, so
+        // a losing source was never recorded at all (participationRate ->
+        // null) and a winner's rate was a vacuous 1.0. Post-fix the full
+        // collected sample population is recorded with the correct flag.
+        expect(
+          tracker.participationRate('loser'),
+          0.0,
+          reason:
+              'a source that returned a valid sample but lost consensus '
+              'must be recorded as a non-participant, not skipped; null '
+              'here means the engine still records winners only '
+              '(trusted_time-a4d)',
+        );
+        expect(
+          tracker.participationRate('w1'),
+          1.0,
+          reason: 'a consensus winner must record as a participant',
+        );
+      },
+    );
   });
 
   group('SyncEngine _completeSync re-entry guard (skj.2)', () {
