@@ -197,7 +197,17 @@ final class SyncEngine {
     // is O(n) (one map lookup per id) instead of O(n^2) (a firstWhere
     // scan per id). Doubles as the O(1) membership test for the
     // starvation rescue pass.
-    final healthyById = {for (final s in healthySources) s.id: s};
+    //
+    // putIfAbsent keeps the first-seen source for a colliding id, which
+    // must agree with ranked()'s toSet() dedup (also first-seen): the
+    // ranked slot for a duplicated id and the source actually queried for
+    // it have to resolve to the same instance. A map literal would instead
+    // keep the last-seen source, making that choice depend on _sources
+    // construction order.
+    final healthyById = <String, TimeSource>{};
+    for (final s in healthySources) {
+      healthyById.putIfAbsent(s.id, () => s);
+    }
     final rankedIds = _qualityTracker.ranked(healthySources.map((s) => s.id));
     final activeSources = <TimeSource>[
       // High-quality sources first, in ranked order.

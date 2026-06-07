@@ -223,6 +223,30 @@ class FlakySource implements TimeSource {
   }
 }
 
+/// Test source that records how many times [getTime] was invoked, so the
+/// colliding-id regression test can assert which of two sources sharing an
+/// `id` the engine actually queries.
+class CountingSource implements TimeSource {
+  CountingSource(this.id, this.utcMs, [this.groupId = 'test-group']);
+  @override
+  final String id;
+  final int utcMs;
+  @override
+  final String groupId;
+
+  int callCount = 0;
+
+  @override
+  Future<TimeSample> getTime() async {
+    callCount++;
+    return TimeSample(
+      interval: TimeInterval(startMs: utcMs - 10, endMs: utcMs + 10),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
+}
+
 enum WarmingPhase { warmStart, warmEnd, getTimeStart, getTimeEnd }
 
 class WarmingEvent {
@@ -1315,6 +1339,51 @@ void main() {
         );
       },
     );
+
+    test('colliding source ids query only the first-seen source, matching '
+        "ranked()'s first-seen dedup (trusted_time-awj)", () async {
+      // dupA and dupB share id "dup" (a misconfiguration the tracker
+      // defends against). ranked() deduplicates ids keeping the first
+      // occurrence; healthyById must resolve that same colliding id to
+      // the first-seen source so the ranked slot and the queried
+      // instance agree. Pre-fix, healthyById (a map literal) kept the
+      // last-seen source, so dupB was queried and dupA was not --
+      // letting one misconfigured id contribute the wrong (and
+      // construction-order-dependent) instance, and risking two samples
+      // from one id reaching the quorum.
+      final dupA = CountingSource('dup', 1000000, 'g-dup');
+      final dupB = CountingSource('dup', 1000000, 'g-dup');
+      final h1 = RaceConditionSource('h1', Duration.zero, 1000000, 'g-h1');
+      final h2 = RaceConditionSource('h2', Duration.zero, 1000000, 'g-h2');
+
+      // earlyExit:false so every active source is queried, removing exit
+      // timing as a variable: dupB's callCount staying 0 then means it
+      // was excluded from the active set, not merely raced past.
+      final engine = SyncEngine(
+        config: config.copyWith(
+          additionalSources: [dupA, dupB, h1, h2],
+          earlyExit: false,
+        ),
+        clock: clock,
+      );
+
+      await engine.sync();
+
+      expect(
+        dupA.callCount,
+        1,
+        reason: 'the first-seen source for a colliding id must be queried',
+      );
+      expect(
+        dupB.callCount,
+        0,
+        reason:
+            'the second source sharing an id must never be queried; '
+            "querying it disagrees with ranked()'s first-seen dedup and "
+            'would let one misconfigured id contribute two samples to the '
+            'quorum (trusted_time-awj)',
+      );
+    });
   });
 
   group('SyncEngine _completeSync re-entry guard (skj.2)', () {
