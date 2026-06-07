@@ -6,24 +6,33 @@
 
 This document is the implementation bridge between the abstract contract in `secure-time-contract.md` and the per-component changes that uphold it. Each section below names the file(s) it touches, the data-shape change, the behavioural change, and the test obligation. Filing tickets directly from this document means each ticket already has the file list, the type signatures, and the acceptance criteria pre-baked.
 
+## Implementation status (2026-06 update)
+
+This design predates the `nts 5.1.0` bump (PR #42) and the upstream 2.1.0 sync. Two of its original assumptions are now stale and are corrected inline below:
+
+- **`package:nts` shipped the trust primitives as an additive minor (5.1.0), not a breaking 6.0.0.** `TrustMode.bundledOnly`, `TrustMode.custom`, the `custom` `TrustBackend`, and the `NtsClient` `customRoots` parameter are all present in the pinned `nts 5.1.0`. Section 1's "Target" listings are therefore **already shipped**; what remains is *consuming* them from `trusted_time`. `package:nts` kept its own historic default (`platformWithFallback`); the move to bundled-only is a `trusted_time`-side decision applied through the effective-mode resolver (Section 2.3), not an `nts` default flip.
+- **`NtsAuthLevel.advisory` is already removed** (upstream 2.1.0). Section 3.1's "Current state" listing is historic; the enum is binary `{none, verified}` on trunk today.
+
+Everything else here is **pending under `trusted_time-m8t`**: the `TrustedTimeConfig` field additions (Section 2), the `TrustBackend → NtsAuthLevel` mapping (Section 3.2), the tier-aware Marzullo admission and `degradedTier` event (Section 4), and the public-API tightening (Section 5). On trunk the engine still applies a **weakest-link** reduction and `NtsSource` hard-codes `verified`.
+
 ## Layering invariant
 
 The Secure Time Contract collapses to a single sentence: **`NtsAuthLevel.verified` is reachable iff the chain that authenticated the NTS-KE TLS session was anchored in a trust store the library controls** (bundled `webpki-roots`, or caller-supplied custom roots). Every layer below enforces a slice of that invariant:
 
-| Layer | File | Slice it enforces |
-|---|---|---|
-| Rust backend | `nts/rust/src/nts/ke.rs`, `trust_state.rs` | Configurable `KeTrustMode` (BundledOnly / PlatformOnly / Custom); per-handshake `KeTrustBackend` reported truthfully. |
-| FFI / package:nts public API | `nts/lib/src/api/models.dart` | `TrustMode` Dart enum gains `bundledOnly` + `custom`; `TrustBackend` gains `custom` variant; `NtsClient` ctor takes `customRoots`. |
-| trusted_time config | `lib/src/models.dart` (`TrustedTimeConfig`) | Default flips to `bundledOnly`; `customRootCerts` field added; legacy `platformWithFallback` becomes opt-in. |
-| NTS source mapping | `lib/src/sources/nts_source.dart`, `nts_auth_level.dart` | `TrustBackend → NtsAuthLevel` mapping table; `.advisory` removed; `verified` reserved for bundled/custom; platform-mediated samples emit `none` with `trustBackend` retained. |
-| Sync engine admission | `lib/src/sync_engine.dart`, `domain/marzullo_engine.dart` | Tier 1 (`verified`) samples define the truth box; Tier 2 (platform NTS) admitted only when intersecting it; truth-box-empty triggers `degradedTier` event. |
-| Public API | `lib/trusted_time.dart` (`getTime`, `isSecure`, `authLevel`) | `requireSecure: true` filters strictly on `NtsAuthLevel.verified`; `isSecure` reflects the same boundary. |
+| Layer | File | Slice it enforces | Status |
+|---|---|---|---|
+| Rust backend | `nts/rust/src/nts/ke.rs`, `trust_state.rs` | Configurable `KeTrustMode` (BundledOnly / PlatformOnly / Custom); per-handshake `KeTrustBackend` reported truthfully. | Shipped in `nts 5.1.0` |
+| FFI / package:nts public API | `nts/lib/src/api/models.dart` | `TrustMode` Dart enum gains `bundledOnly` + `custom`; `TrustBackend` gains `custom` variant; `NtsClient` ctor takes `customRoots`. | Shipped in `nts 5.1.0` |
+| trusted_time config | `lib/src/models.dart` (`TrustedTimeConfig`) | Effective default resolves to `bundledOnly`; `customRootCerts` field added; legacy `platformWithFallback` becomes opt-in. | **Pending — `trusted_time-m8t`** (trunk selects via `ntsTrustMode`) |
+| NTS source mapping | `lib/src/sources/nts_source.dart`, `nts_auth_level.dart` | `TrustBackend → NtsAuthLevel` mapping table; `verified` reserved for bundled/custom; platform-mediated samples emit `none` with `trustBackend` retained. | `.advisory` removal **done** (2.1.0); mapping **pending — `trusted_time-m8t`** (trunk hard-codes `verified`) |
+| Sync engine admission | `lib/src/sync_engine.dart`, `domain/marzullo_engine.dart` | Tier 1 (`verified`) samples define the truth box; Tier 2 (platform NTS) admitted only when intersecting it; truth-box-empty triggers `degradedTier` event. | **Pending — `trusted_time-m8t`** (trunk is weakest-link) |
+| Public API | `lib/trusted_time.dart` (`getTime`, `isSecure`, `authLevel`) | `requireSecure: true` filters strictly on `NtsAuthLevel.verified`; `isSecure` reflects the same boundary. | Fail-closed **live**; truth-box semantics **pending — `trusted_time-m8t`** |
 
 The invariant is *additive* — a layer further down cannot rescue a layer above that mis-classifies a sample. Every layer fails closed: misconfigured input collapses to `NtsAuthLevel.none`, never silently to `verified`.
 
 ## 1. Rust backend & FFI integration (`package:nts`)
 
-**Cross-repo work:** This section lives in `/Users/nick.l/Projects/nts`. Changes here ship as a `package:nts` major version bump (6.0.0, breaking) consumed by this fork via the standard pubspec pinning workflow.
+**Cross-repo work (shipped):** This section lived in `/Users/nick.l/Projects/nts`. It shipped as an **additive `package:nts` 5.1.0 minor** — not the breaking `6.0.0` originally planned — and is consumed by this fork via the pubspec pin landed in PR #42. The "Target" listings below are present in `nts 5.1.0` today; they are retained as the design record. `package:nts` kept its historic default trust mode; the bundled-only posture is enforced on the `trusted_time` side (Section 2.3).
 
 ### 1.1 `KeTrustMode` enum expansion
 
@@ -63,7 +72,7 @@ pub enum KeTrustMode {
 ```
 
 
-**Default choice:** `BundledOnly`. Reverses the historic default; surfaces as a breaking change in the `package:nts` major bump. Rationale is in the Secure Time Contract's "Implementation requirements" section: the library's authentication property is structurally undermined by `PlatformOnly` and `PlatformWithFallback` in TLS-inspection environments, and the historic default silently exposed every consumer to that risk.
+**Default choice:** `BundledOnly` *as resolved by `trusted_time`*. `package:nts` 5.1.0 added this variant without changing its own constructor default (which stayed `PlatformWithFallback` for additive compatibility); `trusted_time` never relies on the `nts` default and always passes an explicit mode resolved by `_effectiveTrustMode` (Section 2.3). Rationale is in the Secure Time Contract's "Implementation requirements" section: the library's authentication property is structurally undermined by `PlatformOnly` and `PlatformWithFallback` in TLS-inspection environments, and the historic default silently exposed every consumer to that risk.
 
 ### 1.2 `KeTrustBackend` enum expansion
 
@@ -123,6 +132,8 @@ NtsClient({
 });
 ```
 
+> **[Shipped in 5.1.0, with one deviation]** The `customRoots` parameter and the `bundledOnly` / `custom` enum values are present in `nts 5.1.0`. The constructor's *default* stayed `TrustMode.platformWithFallback` in `nts`; `trusted_time` does not depend on the `nts` default and always passes an explicit mode resolved by `_effectiveTrustMode` (Section 2.3).
+
 Validation:
 
 - `customRoots != null` *requires* `trustMode == TrustMode.custom`; mismatched combinations throw `ArgumentError` synchronously at construction. The Rust side never sees an ambiguous request.
@@ -146,13 +157,13 @@ No structural change to `NtsTimeSample` or `NtsWarmCookiesOutcome` — the exist
 
 ### 1.6 Backwards-compatibility posture
 
-This is a **breaking** change to `package:nts`. The breakage is intentional: the contract violation the historic default permits cannot be fixed without flipping it. The package's CHANGELOG must:
+This shipped as an **additive `package:nts` 5.1.0 minor**, not the breaking major originally planned: the new modes and `customRoots` were added without removing the historic default, so existing callers keep compiling unchanged. The bundled-only posture is therefore enforced on the `trusted_time` side (Section 2.3), and the `package:nts` CHANGELOG records the additive surface:
 
-1. Call out the default-mode flip prominently (`platformWithFallback → bundledOnly`).
-2. Document the migration step for callers that genuinely need platform trust (`NtsClient(trustMode: TrustMode.platformWithFallback)`).
-3. Note that the historic `TrustBackend.webpkiRoots` value's interpretation under `bundledOnly` is "validation succeeded as intended" rather than the historic "fallback was used".
+1. New `TrustMode.bundledOnly` and `TrustMode.custom` variants, plus the `NtsClient` `customRoots` parameter.
+2. The historic default (`platformWithFallback`) is retained for additive compatibility; callers who want end-to-end bundled trust opt in via `NtsClient(trustMode: TrustMode.bundledOnly)`.
+3. Under `bundledOnly`, a `TrustBackend.webpkiRoots` result means "validation succeeded as intended" rather than the historic "fallback was used".
 
-trusted_time consumes this via `pubspec.yaml`'s `nts:` constraint; the bump is a routine PR on the fork's `integration/bleeding-edge` once `package:nts` ships the new major.
+trusted_time consumes this via `pubspec.yaml`'s `nts:` constraint; the pin to `nts 5.1.0` landed as PR #42 on the fork's `integration/bleeding-edge`.
 
 
 ## 2. trusted_time configuration (`lib/src/models.dart`)
@@ -203,7 +214,7 @@ Validation in the constructor (asserts in debug mode, no-op in release; the engi
 
 ### 2.2 Default security posture
 
-`usePlatformTrust = false`, `customRootCerts = const []`. The engine resolves this to `nts.TrustMode.bundledOnly` (after Section 1's `package:nts` major bump ships). This flips the historic default away from `platformWithFallback`, closing the "consumer who never thought about trust" exposure path that the research document describes.
+`usePlatformTrust = false`, `customRootCerts = const []`. The engine resolves this to `nts.TrustMode.bundledOnly` using the primitive already present in `nts 5.1.0`. This flips the *effective* default away from `platformWithFallback` on the `trusted_time` side (the `nts` constructor default is unchanged), closing the "consumer who never thought about trust" exposure path the research document describes. **[Target — `trusted_time-m8t`]** the resolver and the field additions are pending; trunk still defaults `ntsTrustMode` to `platformWithFallback`.
 
 The flip is announced in the trusted_time CHANGELOG and surfaced in the package's README migration table. Consumers on managed-device deployments (corporate MDM, pinned roots) must explicitly opt into `usePlatformTrust: true`; the change is visible and intentional.
 
@@ -229,26 +240,22 @@ The mutability contract documented on the existing list fields applies verbatim 
 
 ## 3. NtsAuthLevel mapping (`lib/src/sources/nts_source.dart`, `nts_auth_level.dart`)
 
-### 3.1 `NtsAuthLevel` enum cleanup
+### 3.1 `NtsAuthLevel` enum — already binary
 
-Current state:
+**[Done — upstream 2.1.0]** This cleanup has already landed. The pre-2.1.0 three-variant shape:
 
 ```dart
-enum NtsAuthLevel {
-  none,
-  @Deprecated('Use verified instead. ...')
-  advisory,
-  verified,
-}
+// historic (pre-2.1.0) — no longer on trunk
+enum NtsAuthLevel { none, advisory, verified }
 ```
 
-The deprecated `advisory` variant is removed in this change. The migration test at `test/nts_auth_level_migration_test.dart` covers the binary `{verified, none}` shape and the persisted-anchor ordinal migration; the removal here completes that migration on the fork's side. Persisted anchors stored under the three-variant ordinal scheme are still readable because `TrustAnchor.fromJson`'s `RangeError`-safe path falls back to `NtsAuthLevel.none` for out-of-range ordinals.
-
-Target:
+is gone; trunk carries the binary enum:
 
 ```dart
 enum NtsAuthLevel { none, verified }
 ```
+
+`test/nts_auth_level_migration_test.dart` covers the binary `{verified, none}` shape and the persisted-anchor ordinal migration: anchors stored under the three-variant scheme stay readable because `TrustAnchor.fromJson`'s `RangeError`-safe path maps out-of-range ordinals (the old `advisory == 1`) to `NtsAuthLevel.none`. No further enum work is owed by `trusted_time-m8t`; this section is retained as the migration record.
 
 
 ### 3.2 `TrustBackend → NtsAuthLevel` mapping table
@@ -319,7 +326,7 @@ The classifier is a pure function `_Tier _tierOf(TimeSample)` on `marzullo_engin
 
 ### 4.2 Truth box construction
 
-1. **Filter for Tier 1.** If `samples.where(_Tier.verified)` produces fewer than `minimumQuorum` items, **no truth box exists for this cycle.** The engine emits an `IntegrityEvent` of reason `degradedTier` (already defined on `IntegrityEvent`; ADR 0007 names it `degradedTier`) and falls back to the legacy single-tier Marzullo over `samples` for `requireSecure: false` consumers. For `requireSecure: true` consumers, `getTime` then fails closed (see Section 5).
+1. **Filter for Tier 1.** If `samples.where(_Tier.verified)` produces fewer than `minimumQuorum` items, **no truth box exists for this cycle.** The engine emits an `IntegrityEvent` of reason `degradedTier` (**to be added** as `TamperReason.degradedTier`; ADR 0007 §2 names it but it is not yet a member of the enum on trunk) and falls back to the legacy single-tier Marzullo over `samples` for `requireSecure: false` consumers. For `requireSecure: true` consumers, `getTime` then fails closed (see Section 5).
 2. **Run Marzullo on Tier 1 only** to produce the verified consensus interval. This interval *is* the truth box: `[startMs, endMs]` over which the verified samples agree.
 3. **Re-admit Tier 2 + Tier 3.** Every Tier 2 / Tier 3 sample whose interval intersects the truth box is folded into the merged sample set for the final consensus reduction. Samples whose intervals do not intersect are dropped (observable via `SyncObserver.onSourceFailed` with reason `tier2: outside truth box`).
 4. **Final Marzullo** over the merged set produces the published `ConsensusResult`. The result's `authLevel` reflects the highest tier present in the *participants* of the final reduction — which is `verified` as long as the truth box was non-empty, regardless of how many Tier 2/3 samples participated.
@@ -385,7 +392,7 @@ throw const TrustedTimeSecurityException(
 
 ### 5.3 Integrity events
 
-The `degradedTier` integrity event (already named in ADR 0007) fires whenever Section 4's truth-box construction step 1 fails — Tier 1 quorum cannot form. Consumers reading `onIntegrityLost` see this event and can react (pause anchor updates, alert, etc.). The event does not invalidate the anchor by itself: a `requireSecure: false` consumer still receives the degraded best-effort consensus, and a `requireSecure: true` consumer's next `getTime` call fails with the message above.
+**[Target — `trusted_time-m8t`]** The `degradedTier` integrity event (named in ADR 0007 §2, but not yet a `TamperReason` member on trunk) fires whenever Section 4's truth-box construction step 1 fails — Tier 1 quorum cannot form. Consumers reading `onIntegrityLost` see this event and can react (pause anchor updates, alert, etc.). The event does not invalidate the anchor by itself: a `requireSecure: false` consumer still receives the degraded best-effort consensus, and a `requireSecure: true` consumer's next `getTime` call fails with the message above.
 
 ## 6. Trust Tiering documentation update
 
@@ -419,9 +426,9 @@ The implementation surfaces interactions with three existing `bd` tickets:
 
 The tickets filed alongside this design have the following dependency shape; implementations should land in this order:
 
-1. `package:nts` `KeTrustMode::BundledOnly` + `Custom` variants (Section 1) — ships as a new `package:nts` major.
-2. trusted_time pubspec bump to the new `package:nts` major.
-3. `TrustedTimeConfig` field additions (Section 2) — non-breaking until Stage 2 retires `ntsTrustMode`.
+1. ✅ **Done.** `package:nts` `bundledOnly` + `custom` trust primitives (Section 1) — shipped as the additive `nts 5.1.0` minor.
+2. ✅ **Done.** trusted_time pubspec pin to `nts 5.1.0` (PR #42).
+3. `TrustedTimeConfig` field additions (Section 2) — non-breaking until Stage 2 retires `ntsTrustMode`. **First pending step of `trusted_time-m8t`.**
 4. `NtsAuthLevel.advisory` removal + mapping table (Section 3) — completes the binary-enum migration on the fork.
 5. Tier-aware Marzullo admission (Section 4) — supersedes `trusted_time-c8y` once landed.
 6. Public API tightening (Section 5) — exception message update + `authLevel` doc refresh.
