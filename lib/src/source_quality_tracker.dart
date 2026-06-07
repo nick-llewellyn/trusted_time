@@ -92,14 +92,18 @@ final class SourceQualityTracker {
   void advanceCycle() => _cycleIndex++;
 
   /// Returns the provided [sourceIds] sorted by quality score, highest
-  /// first. Every input id is returned exactly once; this method neither
-  /// adds nor drops sources.
+  /// first. Every distinct input id is returned exactly once; this method
+  /// neither adds nor drops sources. Duplicate ids are collapsed to a
+  /// single entry — a colliding id (e.g. two misconfigured sources sharing
+  /// an `id`) must not be ranked, and therefore queried, twice in a cycle.
   ///
   /// Starvation handling is the caller's responsibility: the engine pairs
   /// this ranking with [isStarved] to force-include sources the cooldown
   /// filter would otherwise exclude.
   List<String> ranked(Iterable<String> sourceIds) {
-    final ids = sourceIds.toList();
+    // toSet() preserves first-seen order (LinkedHashSet) while dropping
+    // duplicates, so the sort below reorders a deduplicated id set.
+    final ids = sourceIds.toSet().toList();
     final scores = {for (final id in ids) id: _score(id)};
     ids.sort((a, b) => scores[b]!.compareTo(scores[a]!));
     return ids;

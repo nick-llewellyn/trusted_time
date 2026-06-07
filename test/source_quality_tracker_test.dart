@@ -13,6 +13,15 @@ void main() {
       expect(result, unorderedEquals(ids));
     });
 
+    test('ranked deduplicates colliding source IDs', () {
+      // A caller passing the same id more than once (e.g. two sources
+      // sharing an id) must not cause that id to be ranked — and so
+      // queried — twice in a single cycle.
+      final ranked = tracker.ranked(['a', 'b', 'a', 'b', 'a']);
+      expect(ranked, unorderedEquals(['a', 'b']));
+      expect(ranked.length, equals(2));
+    });
+
     test('higher consensus participation ranks higher', () {
       // 'good' participates in consensus every cycle; 'bad' never does.
       for (var i = 0; i < 8; i++) {
