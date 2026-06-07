@@ -387,12 +387,38 @@ final class SyncEngine {
       // processing and consensus resolution overhead.
       final anchor = await completer.future.timeout(
         _config.maxLatency + const Duration(seconds: 6),
-        onTimeout: () {
+        onTimeout: () async {
+          // Safety-net path: the completion machinery never resolved
+          // [completer] within the deadline, yet enough samples arrived
+          // to form a consensus. Route through [_completeSync] rather
+          // than building a raw anchor inline so this path performs the
+          // exact same bookkeeping as the early-exit and finalize paths:
+          //  - per-source quality observations are recorded for the
+          //    collected samples (flagged against the winning set), so
+          //    the advanceCycle() below does not treat sources that
+          //    answered this cycle as unqueried — which would otherwise
+          //    skew the next cycle's ranking and starvation rescue; and
+          //  - [completer] is resolved, so the sample-stream listener
+          //    short-circuits instead of running on after sync() returns.
+          // The per-cycle re-entry guard makes this a no-op (no
+          // double-record, no duplicate observer events) if an
+          // early-exit invocation is already in flight for this cycle.
           if (!completer.isCompleted &&
               samples.length >= _config.minimumQuorum) {
             final result = _engine.resolve(samples);
             if (result != null) {
-              return _createAnchor(result);
+              await _completeSync(
+                result,
+                List<TimeSample>.of(samples),
+                swSync.elapsedMilliseconds,
+                completer,
+                completionGuard,
+              );
+              // _completeSync resolved [completer] with the anchor (or
+              // errored it if _createAnchor threw); surface that same
+              // outcome as the timeout result so the returned/raised
+              // value and the bookkeeping match the non-timeout paths.
+              if (completer.isCompleted) return completer.future;
             }
           }
           throw TrustedTimeSyncException(
