@@ -273,7 +273,7 @@ abstract final class TrustedTime {
   /// trust-anchor diagnostic state.
   ///
   /// Pass-through wrapper around `nts.ntsTrustStatus()` with no
-  /// transformation: the underlying call is documented as three
+  /// transformation: the underlying call is documented as seven
   /// atomic-Relaxed loads, cheap enough to call from a UI poll loop
   /// or a pre-flight "can I even validate against the platform
   /// store?" check. The returned [NtsTrustStatus] exposes:
@@ -286,6 +286,16 @@ abstract final class TrustedTime {
   ///   `trusted_time-51z`) and do not update this field; their
   ///   per-handshake backend identity is on
   ///   [TimeSample.trustBackend] instead.
+  /// - `defaultBackendPlatformCount`,
+  ///   `defaultBackendHybridCount`, `defaultBackendWebpkiCount`, and
+  ///   `defaultBackendCustomCount`: cumulative counts of default-
+  ///   singleton handshakes that resolved to each `TrustBackend`
+  ///   (`platform`, `platformWithHybridFallback`, `webpkiRoots`,
+  ///   `custom` respectively); together they partition the singleton's
+  ///   resolution history. `defaultBackendHybridCount` is always zero
+  ///   off Android, and the default singleton never selects `custom`,
+  ///   so `defaultBackendCustomCount` stays zero unless a caller
+  ///   drives the singleton with custom roots.
   /// - `androidPlatformInitSucceeded`: `true` iff the Android JNI
   ///   bootstrap reported success at least once. `false` on every
   ///   non-Android platform (no JNI bootstrap exists). A `false`

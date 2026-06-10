@@ -115,7 +115,7 @@ Build-time failure under `BundledOnly` / `PlatformOnly` / `Custom` surfaces as `
 
 ### 1.3 Trust-state diagnostic counters
 
-`nts/rust/src/nts/trust_state.rs` currently tracks three counters (`platform`, `platform_with_hybrid_fallback`, `webpki_roots`) on `InternalTrustBackend`. Add a fourth (`custom`). The atomic-Relaxed contract documented on `NtsTrustStatus` (one overwrite-on-store event marker plus per-backend cumulative counters) extends additively; no migration of existing fields, no shape change.
+`nts/rust/src/nts/trust_state.rs` tracks four per-backend counters (`platform`, `platform_with_hybrid_fallback`, `webpki_roots`, `custom`) on `InternalTrustBackend`; the `custom` counter shipped in `nts 5.1.0` alongside the `Custom` trust-backend variant above. The Dart-facing `NtsTrustStatus` snapshot exposes seven atomic-Relaxed observables: the `defaultClientBackend` overwrite-on-store event marker, the four `defaultBackend*Count` per-backend cumulative counters (`defaultBackendPlatformCount` / `defaultBackendHybridCount` / `defaultBackendWebpkiCount` / `defaultBackendCustomCount`), and the two Android observables (`androidPlatformInitSucceeded`, `androidHybridFallbackCount`). No migration of existing fields, no shape change.
 
 ### 1.4 FFI surface — `NtsClient` constructor
 
