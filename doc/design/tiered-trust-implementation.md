@@ -34,7 +34,7 @@ The invariant is *additive* — a layer further down cannot rescue a layer above
 
 ## 1. Rust backend & FFI integration (`package:nts`)
 
-**Cross-repo work (shipped):** This section lived in `/Users/nick.l/Projects/nts`. It shipped as an **additive `package:nts` 5.1.0 minor** — not the breaking `6.0.0` originally planned — and is consumed by this fork via the pubspec pin landed in PR #42. The "Target" listings below are present in `nts 5.1.0` today; they are retained as the design record. `package:nts` kept its historic default trust mode; the bundled-only posture is enforced on the `trusted_time` side (Section 2.3).
+**Cross-repo work (shipped):** This section's work lives in the `package:nts` repository. It shipped as an **additive `package:nts` 5.1.0 minor** — not the breaking `6.0.0` originally planned — and is consumed by this fork via the pubspec pin landed in PR #42. The "Target" listings below are present in `nts 5.1.0` today; they are retained as the design record. `package:nts` kept its historic default trust mode; the bundled-only posture is enforced on the `trusted_time` side (Section 2.3).
 
 ### 1.1 `KeTrustMode` enum expansion
 
@@ -207,7 +207,7 @@ final bool usePlatformTrust;
 final List<int> customRootCerts;
 ```
 
-Validation in the constructor (asserts in debug mode, no-op in release; the engine fails closed regardless):
+Validation in the constructor throws a synchronous `ArgumentError` (release-safe, not a debug-only `assert`) on an invalid combination; the engine additionally fails closed regardless:
 
 - `usePlatformTrust == true && customRootCerts.isNotEmpty` is rejected: pick one trust source. The two flags are mutually exclusive.
 - The legacy `ntsTrustMode` field is **superseded** by `usePlatformTrust` + `customRootCerts`. The plan retires it across two stages:
@@ -470,7 +470,7 @@ The tickets filed alongside this design have the following dependency shape; imp
 5. Tier-aware Marzullo admission (Section 4) — supersedes `trusted_time-c8y` once landed.
 6. Public API tightening (Section 5) — exception message update + `authLevel` doc refresh.
 
-Each step is a separate PR against `integration/bleeding-edge` per AGENTS.md. Steps 3-6 can pipeline with overlapping branches once step 2 has merged.
+Each step is a separate PR against `integration/bleeding-edge` per `CONTRIBUTING.md`. Steps 3-6 can pipeline with overlapping branches once step 2 has merged.
 
 ## References
 
@@ -482,5 +482,5 @@ Each step is a separate PR against `integration/bleeding-edge` per AGENTS.md. St
 - `lib/src/sources/nts_source.dart` — mapping table integration (Section 3).
 - `lib/src/sync_engine.dart`, `lib/src/domain/marzullo_engine.dart` — tier admission (Section 4).
 - `lib/trusted_time.dart` — public API enforcement (Section 5).
-- `/Users/nick.l/Projects/nts/rust/src/nts/ke.rs`, `trust_state.rs` — Rust backend extensions (Section 1).
-- `/Users/nick.l/Projects/nts/lib/src/api/models.dart` — `TrustMode` / `TrustBackend` Dart-side enum extensions (Section 1).
+- `package:nts` — `rust/src/nts/ke.rs`, `rust/src/nts/trust_state.rs` — Rust backend extensions (Section 1).
+- `package:nts` — `lib/src/api/models.dart` — `TrustMode` / `TrustBackend` Dart-side enum extensions (Section 1).
