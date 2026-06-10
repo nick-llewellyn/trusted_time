@@ -140,7 +140,7 @@ The library's public API surfaces this contract through several mechanisms.
 
 Consumer indicates that the returned time must be cryptographically authenticated. The library is required to:
 
-- Return a time value only if the underlying consensus was reached from samples that include at least one `verified` sample (more strictly, the consensus's truth box is defined by `verified` samples per ADR 0007).
+- Return a time value only if the current anchor is `verified`. **On trunk today** this requires the anchor's `ConsensusResult.authLevel` to be `verified`, which under the engine's weakest-link reduction means *every* quorum participant was `verified` — a single `none` participant collapses the anchor to `none`. **[Target — `trusted_time-m8t`]** Under ADR 0007 this tightens to a truth box *defined by* `verified` samples, with Tier 2/3 samples admitted only when their intervals intersect it.
 - Throw `TrustedTimeSecurityException` if no `verified` sample is available.
 - Never silently substitute a `none` sample's value when `requireSecure: true`.
 
@@ -154,10 +154,12 @@ This is the relaxed-mode path and is appropriate for consumers whose use case is
 
 ### `TrustedTime.authLevel`
 
-Consumer can inspect the authentication level of the current anchor without committing to a fetch. The value reflects the highest authentication level present in the consensus that produced the current anchor:
+Consumer can inspect the authentication level of the current anchor without committing to a fetch. The value is the active anchor's `ConsensusResult.authLevel`. **On trunk today** that is the *weakest-link* reduction across the quorum:
 
-- `NtsAuthLevel.verified` if the anchor's consensus included at least one `verified` sample (and ADR 0007's truth-box-defined-by-NTS admission held).
-- `NtsAuthLevel.none` if it did not.
+- `NtsAuthLevel.verified` only when **every** participating sample is `verified`.
+- `NtsAuthLevel.none` otherwise — any single unauthenticated participant downgrades the anchor.
+
+**[Target — `trusted_time-m8t`]** Under ADR 0007's truth-box admission the level instead reflects a Tier-1-defined box: `verified` when the box was anchored by NTS (`verified`) samples and held per the intersection rules above.
 
 ### `TrustedTime.isSecure`
 
