@@ -20,7 +20,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  nts: ^5.1.0
+  nts: ^5.2.0
   http: ^1.3.0
   flutter_secure_storage: ^10.0.0
   ntp: ^2.0.0
