@@ -15,6 +15,8 @@ This design predates the `nts 5.1.0` bump (PR #42) and the upstream 2.1.0 sync. 
 
 Everything else here is **pending under `trusted_time-m8t`**: the `TrustedTimeConfig` field additions (Section 2), the `TrustBackend → NtsAuthLevel` mapping (Section 3.2), the tier-aware Marzullo admission and `degradedTier` event (Section 4), and the public-API tightening (Section 5). On trunk the engine still applies a **weakest-link** reduction and `NtsSource` hard-codes `verified`.
 
+One further item — the cold-start NTS-KE clock-skew rescue (Section 4.6) — is pending under `trusted_time-m8t`. It depends on a per-handshake verification-time override (the optional `verificationTimeMs` parameter), which is present in the pinned `package:nts`; the remaining work is the `trusted_time-m8t` engine orchestration alone, sibling to the trust-mode work in Section 1.
+
 ## Layering invariant
 
 The Secure Time Contract collapses to a single sentence: **`NtsAuthLevel.verified` is reachable iff the chain that authenticated the NTS-KE TLS session was anchored in a trust store the library controls** (bundled `webpki-roots`, or caller-supplied custom roots). Every layer below enforces a slice of that invariant:
@@ -350,6 +352,40 @@ The tier-aware admission composes orthogonally with upstream 2.1.0's `SourceQual
 
 The latent bugs filed as `trusted_time-4em` (unreachable starvation guard) and `trusted_time-a4d` (participation rate stuck at 1.0) are independent of the tier design — they live in the quality-tracking layer the tier layer sits on top of. See the audit section below for the cross-reference.
 
+### 4.6 Cold-start bootstrapping & the NTS-KE clock-skew rescue
+
+The Secure Time Contract's [Cold-start bootstrapping](../specification/secure-time-contract.md#cold-start-bootstrapping-and-the-nts-circular-dependency) section specifies the *what*; this section is the *where* and *how*.
+
+**The paradox in code terms.** NTS-KE is a TLS 1.3 handshake; rustls validates the server certificate's `notBefore` / `notAfter` against the host clock. `_bootstrap()` (`lib/src/trusted_time_impl.dart`) calls `_syncEngine.warmAllSources()`, which fans out `NtsSource.warm()` → `NtsClient.warmCookies()`. On a skewed-clock cold start every NTS-KE handshake fails in its TLS phase; `warmAllSources()` swallows the failures (best-effort by design, `sync_engine.dart`), and `NtsSource`'s own warm / getTime catch swallows them again. The system reaches its first `sync()` with zero Tier 1 samples — the `degradedTier` fallback (Section 4.2) — and `requireSecure: true` fails closed. Correct, but the device can never reach `verified` until the OS clock is externally corrected.
+
+**Why the library does not yet self-rescue on trunk.** The naive fix is unavailable and the real fix is unimplemented:
+
+1. **No privilege to set the clock.** `NtpSource.getTime` (`lib/src/sources/ntp_source_io.dart`) computes an offset and applies it to `DateTime.now()` to *report* a corrected sample; it does not — and an unprivileged process cannot — write the OS clock. A correct NTP sample therefore does not move the clock rustls reads.
+2. **The engine does not yet thread a verification-time override.** The pinned `package:nts` exposes the optional `verificationTimeMs` parameter on `NtsClient.query` / `NtsClient.warmCookies` (and the top-level `ntsQuery` / `ntsWarmCookies` wrappers) — a coarse-corrected "validate the cert as of *this* instant" hint handed to the rustls verifier in place of the system clock. The primitive is available; what remains is the engine orchestration that supplies it on the cold-start retry.
+
+**Target rescue flow (`trusted_time-m8t`).** The engine gains a cold-start Pre-Sync step that runs *before* the NTS warm fan-out when (a) there is no persisted anchor and (b) a first warm attempt failed in `TimeoutPhase.tls`:
+
+```text
+cold start, no persisted anchor
+  → warmAllSources()  ── all NTS-KE fail in TimeoutPhase.tls ──┐
+                                                               │  (skew signature)
+  → preSync(): query unauthenticated NTP / HTTPS              │
+       → coarse offset Δ  (Tier 3, NtsAuthLevel.none)          │
+  → warmAllSources(verificationTime: now + Δ)  ←───────────────┘
+       → NTS-KE cert window checked against (now + Δ)
+       → handshake succeeds → genuine verified sample
+```
+
+The `nts`-side primitive is a per-handshake verification-time override — the optional `verificationTimeMs` on `warmCookies` / `query` (and the top-level `ntsWarmCookies` / `ntsQuery` wrappers) that, when set, is handed to the rustls `ServerCertVerifier` in place of the system clock. It is present in the pinned `package:nts`, sibling to the trust-mode work in Section 1. The Layering invariant gains a row:
+
+| Layer | File | Slice it enforces | Status |
+|---|---|---|---|
+| NTS-KE clock-skew rescue | `nts/rust/src/nts/ke.rs` (verifier time), `lib/src/sync_engine.dart` (Pre-Sync orchestration) | Cold-start handshake validates against a coarse unauthenticated offset; the offset never becomes `verified`. | **Pending `trusted_time-m8t`** — `nts` primitive present on the pinned dep; needs engine orchestration |
+
+**Invariant preservation in the engine.** The Pre-Sync offset is carried as a transient bootstrap value, never as a `TimeSample` admitted to consensus. It does not enter Marzullo, does not define or intersect the truth box, and does not set `authLevel`. The only state it touches is the verification-time argument passed to the *next* warm attempt. A `verified` anchor is produced only if a real Tier 1 NTS-KE handshake then succeeds and its sample lands in the truth box per Section 4.2 — exactly as on a healthy device.
+
+**Why skew detection keys on `TimeoutPhase.tls`.** A network outage and a clock-skew failure both prevent a `verified` sample, but only the latter is rescuable by a verification-time hint. Keying the Pre-Sync trigger on the TLS phase specifically (rather than "any warm failure") avoids burning an unauthenticated NTP round-trip on cold starts that failed for unrelated reasons (DNS, connect, KE record I/O), where the rescue cannot help.
+
 ## 5. Contract enforcement (`lib/trusted_time.dart`)
 
 ### 5.1 `getTime(requireSecure: true)` strictness
@@ -413,6 +449,7 @@ Each implementation ticket lands with the tests it requires; the audit below nam
 4. **`requireSecure: true` fails closed** (`test/security_policy_test.dart`, extension): with a `degradedTier` anchor, `getTime(requireSecure: true)` throws `TrustedTimeSecurityException`.
 5. **Custom roots round-trip** (`test/custom_roots_test.dart`, new file): a `customRootCerts`-configured engine talks to a test NTS server backed by a self-signed CA and produces `authLevel == verified` samples. Platform store is verified-uninvolved by asserting the active backend is `TrustBackend.custom`.
 6. **Persistence migration** (`test/nts_auth_level_migration_test.dart`, extension): a persisted anchor stored under the three-variant ordinal scheme deserialises correctly with the deprecated `advisory` removed (ordinal `1` maps to `none`).
+7. **Cold-start clock-skew rescue** (`test/cold_start_presync_test.dart`, new file; Section 4.6): a fake NTS source that throws `TimeoutPhase.tls` on the first warm and succeeds only when a verification-time hint is supplied yields a `verified` anchor solely after Pre-Sync — without the hint it stays `degradedTier`. The companion invariant case asserts the Pre-Sync NTP sample never appears in `ConsensusResult.participants` and never, on its own, raises `authLevel` to `verified`. The `nts` verification-time primitive it depends on is present in the pinned `package:nts` (see Section 4.6); the remaining work is the engine orchestration.
 
 ## Audit of existing tickets
 
@@ -427,7 +464,7 @@ The implementation surfaces interactions with three existing `bd` tickets:
 The tickets filed alongside this design have the following dependency shape; implementations should land in this order:
 
 1. ✅ **Done.** `package:nts` `bundledOnly` + `custom` trust primitives (Section 1) — shipped as the additive `nts 5.1.0` minor.
-2. ✅ **Done.** trusted_time pubspec pin to `nts 5.1.0` (PR #42).
+2. ✅ **Done.** trusted_time pubspec pin to `nts` — `5.1.0` for the trust primitives (PR #42), bumped to `5.2.0` for the cold-start `verificationTimeMs` primitive (PR #44).
 3. `TrustedTimeConfig` field additions (Section 2) — non-breaking until Stage 2 retires `ntsTrustMode`. **First pending step of `trusted_time-m8t`.**
 4. `NtsAuthLevel.advisory` removal + mapping table (Section 3) — completes the binary-enum migration on the fork.
 5. Tier-aware Marzullo admission (Section 4) — supersedes `trusted_time-c8y` once landed.

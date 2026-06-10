@@ -95,6 +95,43 @@ These properties are orthogonal and compose at the consensus layer:
 
 The library's authentication contract is the precondition for the accuracy contract. Without authenticated samples, there is no truth box; without a truth box, no accuracy guarantee can be made. This is the architectural intent of ADR 0007.
 
+## Cold-start bootstrapping and the NTS circular dependency
+
+NTS-KE runs over TLS 1.3, and TLS certificate validation checks the server certificate's validity window (`notBefore` / `notAfter`) against the **host's current clock**. This creates a bootstrapping paradox at cold start: the library exists to obtain trustworthy time, but obtaining a `verified` sample requires a TLS handshake that itself presupposes an already-approximately-correct clock.
+
+When a device cold-starts with a grossly incorrect system clock — a depleted CMOS battery resetting to the epoch, a manual user change, a factory-reset wearable — the NTS-KE certificate appears expired or not-yet-valid, the handshake fails in its TLS phase (`package:nts` surfaces this as `NtsError.timeout(TimeoutPhase.tls)` or a chain-validation error), and **no `verified` sample can be produced**. The very condition the library is meant to correct blocks the only mechanism that would correct it authentically.
+
+### Trunk behaviour today: no rescue, fail closed
+
+On the current trunk the library has no mechanism to break this cycle:
+
+- It runs unprivileged and **cannot set the host clock**. Correcting the OS clock is the platform's responsibility (an OS NTP daemon, manual user action, carrier/NITZ time), not the library's.
+- The engine does not yet orchestrate a verification-time rescue. The pinned `package:nts` exposes the `verificationTimeMs` override on `NtsClient.query` / `NtsClient.warmCookies` (and the top-level `ntsQuery` / `ntsWarmCookies` wrappers) — the primitive that would let the handshake check the certificate's validity window against a coarse-corrected estimate rather than the broken clock (see [Pre-Sync rescue](#pre-sync-rescue-target)) — but nothing on trunk supplies it: cold-start warm-up still hands every NTS-KE handshake the host clock.
+
+The resulting behaviour is contract-correct, if degraded: NTS-KE fails, the warm / query catch path swallows the failure (it is indistinguishable from any other handshake failure), `authLevel` stays `none`, and `getTime(requireSecure: true)` **fails closed** with `TrustedTimeSecurityException`. Unauthenticated NTP / HTTPS samples may still serve `requireSecure: false` callers as best-effort time, but the `verified` path remains unavailable until some external agent brings the host clock back inside the certificate validity window.
+
+### Pre-Sync rescue (target)
+
+> **[Target — `trusted_time-m8t`]**
+
+The target architecture breaks the cycle without ever weakening the authentication contract, via a bounded **Pre-Sync** phase:
+
+1. **Detect the paradox.** A cold start with no persisted anchor whose NTS-KE handshakes fail specifically in the TLS phase is the signature of clock skew — as distinct from a network outage, which fails earlier in DNS / connect (`TimeoutPhase.dnsTimeout` / `TimeoutPhase.connect`).
+2. **Obtain a *coarse* offset from an unauthenticated source** (NTP, or an HTTPS `Date` header). This offset is operational scaffolding only.
+3. **Feed the coarse offset into the NTS-KE handshake as a verification-time hint**, so the TLS layer checks the certificate's validity window against the coarse-corrected estimate rather than the host clock. The handshake can then succeed and produce a genuinely `verified` sample, anchored end-to-end against the library-controlled trust store exactly as on a healthy device.
+
+Step 3 requires a per-handshake verification-time override threaded down to the rustls certificate verifier. `package:nts` provides exactly this as an optional `verificationTimeMs` parameter on `NtsClient.query` / `NtsClient.warmCookies` (and the top-level `ntsQuery` / `ntsWarmCookies` wrappers): when set, it substitutes a caller-supplied timestamp for the TLS verifier's "current time" while checking certificate validity windows — and only that check; the returned NTP timestamp, AEAD keying, and cookie contents are unaffected. The primitive is present in the pinned `package:nts`, parallel to the trust-mode work documented in [`doc/design/tiered-trust-implementation.md`](../design/tiered-trust-implementation.md) §1; the only remaining gate is the `trusted_time-m8t` engine work. The library will not — and on an unprivileged process cannot — substitute "set the OS clock" for this primitive.
+
+### Trust invariant preservation
+
+The Pre-Sync rescue is **operational-only** and changes nothing about what the library is willing to call `verified`:
+
+- The coarse NTP / HTTPS sample used to rescue the handshake is, and remains, `NtsAuthLevel.none` — Tier 3 under ADR 0007. It is never promoted, never admitted to the truth box, and never anchors consensus.
+- A Pre-Sync that has run does **not** satisfy `requireSecure: true`. Strict-mode callers continue to receive `TrustedTimeSecurityException` until a *subsequent* NTS-KE handshake (Tier 1) succeeds and its sample lands inside the truth box. The rescue produces the *opportunity* for a `verified` sample; it does not produce the verified sample itself.
+- The rescue widens *availability of the handshake*, not the set of conditions under which a sample is labelled `verified`. The fail-closed boundary specified in [Failure policy: fail closed](#failure-policy-fail-closed) is untouched: it governs which timestamps the library represents as authenticated, not whether the clock may be coarsely nudged to let a TLS handshake proceed.
+
+In short: Pre-Sync may *enable* trust, but it can never *be* trust.
+
 ## Consumer-facing API enforcement
 
 The library's public API surfaces this contract through several mechanisms.
@@ -228,6 +265,7 @@ const TrustedTimeConfig(
 - **[Target — `trusted_time-m8t`]** Marzullo's truth-box construction is anchored exclusively by Tier 1 samples. Tier 2/3 contribute to consensus only when their intervals intersect the truth box. On trunk today the reduction is weakest-link, not truth-box-gated.
 - `requireSecure: true` is honoured strictly: if the cycle's Tier 1 quorum fails to form, `getTime(requireSecure: true)` throws `TrustedTimeSecurityException`.
 - **[Target — `trusted_time-m8t`]** The `degradedTier` `IntegrityEvent` fires when Tier 1 quorum fails; consumers can read it from `onIntegrityLost` and pause anchor consumption. `TamperReason.degradedTier` is not yet a member of the enum on trunk.
+- **[Target — `trusted_time-m8t`]** **Cold-start clock skew is rescued, not refused.** If the device boots with a grossly wrong clock and NTS-KE fails in its TLS phase, the engine runs a bounded unauthenticated Pre-Sync to coax the handshake into the certificate's validity window (see [Cold-start bootstrapping and the NTS circular dependency](#cold-start-bootstrapping-and-the-nts-circular-dependency)). This persona **allows** the rescue: it is operational-only and never relaxes the `verified` boundary. Strict fail-closed is preserved — `requireSecure: true` still throws until a *real* Tier 1 sample lands in the truth box. Refusing the rescue would permanently deny `verified` time to skewed-clock devices for no security gain, since the Pre-Sync sample is itself never `verified`.
 - In TLS-inspecting / managed-network deployments where a corporate CA is required, this persona's NTS sources will fail — the bundled trust store does not include corporate CAs by design. The contract is satisfied by failing closed, not by misrepresenting platform-validated samples as `verified`.
 
 **Use this persona when:** authenticity is load-bearing for the consumer's logic (cryptographic signing, attestation, audit timestamps, certificate validity windows, replay protection, rate-limit windows whose integrity matters under adversarial conditions). The deployment must tolerate fail-closed behaviour on corporate networks; if it cannot, see the Operational-First persona.
@@ -260,6 +298,7 @@ const TrustedTimeConfig(
 - `requireSecure: true` will always fail under this configuration. Consumers using this persona must call `getTime(requireSecure: false)` (or `TrustedTime.now()`) and accept best-effort time.
 - `authLevel` will be `NtsAuthLevel.none`; `isSecure` will be `false`. Quality grading still works: `ConfidenceLevel` reflects source diversity and population depth, independent of authentication.
 - Managed-network deployments (corporate MDM, pinned roots) work: the platform store includes the deployment's CAs, NTS handshakes succeed, the engine produces samples, consensus forms.
+- **[Target — `trusted_time-m8t`]** Cold-start clock skew never affects this persona's *authentication* posture — it produces no `verified` samples regardless — but the same unauthenticated Pre-Sync still benefits operational accuracy: a coarse offset lets platform-mediated NTS-KE handshakes complete on a skewed-clock cold start, so their samples (still `none`) can contribute to consensus precision instead of failing in the TLS phase.
 
 **Use this persona when:** the deployment's network policy *requires* platform-trust traversal (corporate MITM appliance, MDM-installed root, regulated environment that mandates platform-store conformance), and the consumer is comfortable with operational best-effort time rather than cryptographic authenticity. The persona honours the contract by emitting `none` rather than misrepresenting the trust path.
 
