@@ -146,11 +146,16 @@ final class TrustedTimeConfig {
   /// Set to `true` only as the explicit "I have a pinned corporate CA
   /// or MDM-installed root and accept that authenticity is
   /// platform-mediated rather than end-to-end" opt-in. The engine then
-  /// constructs each client in [nts.TrustMode.platformOnly]. NTS
-  /// samples produced under this mode are reported with
-  /// [NtsAuthLevel.none] rather than `verified`, so the Secure Time
-  /// Contract is honoured by under-claiming rather than misrepresenting
-  /// a platform-mediated path as cryptographically verified.
+  /// constructs each client in [nts.TrustMode.platformOnly].
+  ///
+  /// Under the Secure Time Contract, samples authenticated via the
+  /// platform store are *intended* to report [NtsAuthLevel.none] rather
+  /// than `verified`, so a platform-mediated path is never
+  /// misrepresented as cryptographically verified. That
+  /// `TrustBackend`-to-[NtsAuthLevel] mapping is not yet live:
+  /// `NtsSource` currently emits `verified` for every successful
+  /// handshake. This field selects only the trust mode today; the
+  /// auth-level downgrade is tracked separately (design Section 3.2).
   ///
   /// Mutually exclusive with a non-empty [customRootCerts]; the
   /// combination throws [ArgumentError]. See [effectiveTrustMode].

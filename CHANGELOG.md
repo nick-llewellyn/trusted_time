@@ -28,9 +28,7 @@
   validates every NTS-KE handshake against the bundled `webpki-roots`
   set only, so authenticity is end-to-end. Managed-device deployments
   that depend on a pinned corporate CA must explicitly opt in with
-  `usePlatformTrust: true`; the change is visible and intentional. NTS
-  samples produced under `usePlatformTrust: true` report
-  `NtsAuthLevel.none` rather than `verified`.
+  `usePlatformTrust: true`; the change is visible and intentional.
 
 ## [2.1.0]
 
