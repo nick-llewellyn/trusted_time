@@ -135,8 +135,22 @@ void main() {
       const config = TrustedTimeConfig(usePlatformTrust: true);
       final dump = config.toString();
       expect(dump, contains('usePlatformTrust: true'));
-      expect(dump, contains('customRootCerts: []'));
+      expect(dump, contains('customRootCerts: 0 bytes'));
     });
+
+    test(
+      'toString summarises customRootCerts as a byte count, not raw bytes',
+      () {
+        // Guards against regressing to interpolating the raw List<int>:
+        // doing so leaks consumer CA material into logs and produces
+        // huge log lines for PEM bundles. The dump must report only the
+        // length and never the byte values themselves.
+        const config = TrustedTimeConfig(customRootCerts: [10, 20, 30]);
+        final dump = config.toString();
+        expect(dump, contains('customRootCerts: 3 bytes'));
+        expect(dump, isNot(contains('[10, 20, 30]')));
+      },
+    );
   });
 
   group('TimeSample.trustBackend', () {

@@ -407,7 +407,12 @@ final class TrustedTimeConfig {
         '  ntsPort: $ntsPort,\n'
         '  ntsDnsConcurrencyCap: $ntsDnsConcurrencyCap,\n'
         '  usePlatformTrust: $usePlatformTrust,\n'
-        '  customRootCerts: $customRootCerts,\n'
+        // Summarise rather than interpolate the raw bytes: dumping the
+        // list verbatim would leak consumer CA material into logs and
+        // produce a single line megabytes long for a PEM bundle. The
+        // byte count is enough to confirm whether custom roots are
+        // configured during a benchmarking session.
+        '  customRootCerts: ${customRootCerts.length} bytes,\n'
         '  additionalSources: $additionalSources,\n'
         '  minQuorumRatio: $minQuorumRatio,\n'
         '  minimumQuorum: $minimumQuorum,\n'
