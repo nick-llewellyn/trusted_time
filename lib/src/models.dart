@@ -146,7 +146,12 @@ final class TrustedTimeConfig {
   /// Set to `true` only as the explicit "I have a pinned corporate CA
   /// or MDM-installed root and accept that authenticity is
   /// platform-mediated rather than end-to-end" opt-in. The engine then
-  /// constructs each client in [nts.TrustMode.platformOnly].
+  /// constructs each client in [nts.TrustMode.platformOnly], which
+  /// refuses `package:nts`'s Android `webpki-roots` hybrid fallback
+  /// (nts 4.0.0): a `platformOnly` caller never resolves to
+  /// [nts.TrustBackend.platformWithHybridFallback], so the bundled set
+  /// genuinely is not consulted on any platform — hence "instead of"
+  /// above, not "in preference to".
   ///
   /// Under the Secure Time Contract, samples authenticated via the
   /// platform store are *intended* to report [NtsAuthLevel.none] rather
@@ -272,9 +277,11 @@ final class TrustedTimeConfig {
   /// `usePlatformTrust: true` together with a non-empty
   /// [customRootCerts] names two mutually exclusive trust sources with
   /// no defined precedence and throws [ArgumentError]. This getter is
-  /// the single enforcement point: [SyncEngine] reads it when
-  /// constructing each per-source [nts.NtsClient], so an invalid config
-  /// fails closed before any source is built and the combination cannot
+  /// the single enforcement point: [SyncEngine] reads it while building
+  /// its per-source `NtsSource` list — each `NtsSource` forwards the
+  /// resolved mode to its own lazily-constructed [nts.NtsClient] — so an
+  /// invalid config fails closed before any source is built and the
+  /// combination cannot
   /// reach a live engine. (The `const` constructor cannot perform this
   /// check itself — list emptiness is not a const-evaluable
   /// expression.) See the Secure Time Contract, "Persona selection at

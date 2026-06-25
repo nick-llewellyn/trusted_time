@@ -295,9 +295,9 @@ The two personas are mutually exclusive at construction:
 | `true` | `[]` | Operational-First | `platformOnly` |
 | `true` | non-empty | — | rejected on resolve |
 
-`usePlatformTrust: true` + non-empty `customRootCerts` is structurally ambiguous (two trust sources, no defined precedence) and is rejected with `ArgumentError`. The `const` constructor cannot reject it — list emptiness is not a const-evaluable expression — so the combination is caught when `effectiveTrustMode` is resolved (during `SyncEngine` construction, before any NTS client is built). It therefore cannot occur on a live engine.
+`usePlatformTrust: true` + non-empty `customRootCerts` is structurally ambiguous (two trust sources, no defined precedence) and is rejected with `ArgumentError`. The `const` constructor cannot reject it — list emptiness is not a const-evaluable expression — so the combination is caught when `effectiveTrustMode` is resolved (during `SyncEngine` construction, before any source is built). It therefore cannot occur on a live engine.
 
-> **[Implemented — `trusted_time-rjt`]** This table is live on trunk via the `TrustedTimeConfig.effectiveTrustMode` resolver. The conflicting row (`usePlatformTrust: true` + non-empty `customRootCerts`) throws `ArgumentError` from `effectiveTrustMode`; because `SyncEngine` reads the resolver when constructing each NTS client, an invalid config fails closed before any source is built. The `const` constructor cannot reject it directly — list emptiness is not a const-evaluable expression — so the resolver is the single enforcement point.
+> **[Implemented — `trusted_time-rjt`]** This table is live on trunk via the `TrustedTimeConfig.effectiveTrustMode` resolver. The conflicting row (`usePlatformTrust: true` + non-empty `customRootCerts`) throws `ArgumentError` from `effectiveTrustMode`; because `SyncEngine` reads the resolver while building its per-source `NtsSource` list (each `NtsSource` constructs its `nts.NtsClient` lazily), an invalid config fails closed before any source is built. The `const` constructor cannot reject it directly — list emptiness is not a const-evaluable expression — so the resolver is the single enforcement point.
 
 ### What this section is *not*
 

@@ -207,7 +207,7 @@ final bool usePlatformTrust;
 final List<int> customRootCerts;
 ```
 
-The mutually-exclusive combination `usePlatformTrust == true && customRootCerts.isNotEmpty` is rejected with `ArgumentError` — pick one trust source. Enforcement lives in the `effectiveTrustMode` resolver (Section 2.3), **not** in the `const` constructor: a `const` constructor cannot evaluate `customRootCerts.isNotEmpty` (list emptiness is not a const-evaluable expression) and cannot `throw`. Because `SyncEngine` reads `effectiveTrustMode` when constructing each per-source NTS client, an invalid config fails closed before any source is built, so the combination cannot reach a live engine.
+The mutually-exclusive combination `usePlatformTrust == true && customRootCerts.isNotEmpty` is rejected with `ArgumentError` — pick one trust source. Enforcement lives in the `effectiveTrustMode` resolver (Section 2.3), **not** in the `const` constructor: a `const` constructor cannot evaluate `customRootCerts.isNotEmpty` (list emptiness is not a const-evaluable expression) and cannot `throw`. Because `SyncEngine` reads `effectiveTrustMode` while building its per-source `NtsSource` list (each `NtsSource` constructs its `nts.NtsClient` lazily), an invalid config fails closed before any source is built, so the combination cannot reach a live engine.
 
 The single `ntsTrustMode` passthrough is **removed**, not deprecated (`trusted_time-rjt`). It was fork-local with no external consumers, so a deprecation window bought nothing; `usePlatformTrust` + `customRootCerts` fully replace it.
 

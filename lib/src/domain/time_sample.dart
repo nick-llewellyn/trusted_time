@@ -50,6 +50,12 @@ final class TimeSample {
   ///   authenticated end-to-end. This is the backend the default
   ///   [nts.TrustMode.bundledOnly] posture produces; it has no
   ///   visibility into MDM/user-installed roots by design.
+  /// - [nts.TrustBackend.custom] — a caller-supplied root from
+  ///   [TrustedTimeConfig.customRootCerts] authenticated the chain
+  ///   ([nts.TrustMode.custom]). The anchor set is fully
+  ///   caller-controlled — no platform-store or bundled-roots
+  ///   consultation — so it is the on-premise / private-CA
+  ///   counterpart to `webpkiRoots`.
   ///
   /// Per-sample observability is the read-only counterpart to the
   /// [TrustedTimeConfig] trust policy: [TrustedTimeConfig.usePlatformTrust]
