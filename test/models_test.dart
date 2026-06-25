@@ -76,10 +76,11 @@ void main() {
       // The const constructor cannot reject this (list emptiness is not
       // a const-evaluable expression), so the config object constructs
       // fine. effectiveTrustMode is the single enforcement point —
-      // SyncEngine reads it when building each NTS client, so an invalid
-      // config fails closed before any source is built. This is the
-      // "both-non-default -> rejected" criterion from the ticket and the
-      // merged Secure Time Contract persona-selection table.
+      // SyncEngine reads it while building its per-source NtsSource list
+      // (each NtsSource constructs its nts.NtsClient lazily), so an
+      // invalid config fails closed before any source is built. This is
+      // the "both-non-default -> rejected" criterion from the ticket and
+      // the merged Secure Time Contract persona-selection table.
       const config = TrustedTimeConfig(
         usePlatformTrust: true,
         customRootCerts: [1, 2, 3],
