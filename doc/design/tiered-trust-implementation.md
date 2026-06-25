@@ -25,7 +25,7 @@ The Secure Time Contract collapses to a single sentence: **`NtsAuthLevel.verifie
 |---|---|---|---|
 | Rust backend | `nts/rust/src/nts/ke.rs`, `trust_state.rs` | Configurable `KeTrustMode` (BundledOnly / PlatformOnly / Custom); per-handshake `KeTrustBackend` reported truthfully. | Shipped in `nts 5.1.0` |
 | FFI / package:nts public API | `nts/lib/src/api/models.dart` | `TrustMode` Dart enum gains `bundledOnly` + `custom`; `TrustBackend` gains `custom` variant; `NtsClient` ctor takes `customRoots`. | Shipped in `nts 5.1.0` |
-| trusted_time config | `lib/src/models.dart` (`TrustedTimeConfig`) | Effective default resolves to `bundledOnly`; `customRootCerts` field added; legacy `platformWithFallback` becomes opt-in. | **Pending — `trusted_time-m8t`** (trunk selects via `ntsTrustMode`) |
+| trusted_time config | `lib/src/models.dart` (`TrustedTimeConfig`) | Effective default resolves to `bundledOnly`; `usePlatformTrust` / `customRootCerts` fields added; single `ntsTrustMode` passthrough removed. | **Done — `trusted_time-rjt`** |
 | NTS source mapping | `lib/src/sources/nts_source.dart`, `nts_auth_level.dart` | `TrustBackend → NtsAuthLevel` mapping table; `verified` reserved for bundled/custom; platform-mediated samples emit `none` with `trustBackend` retained. | `.advisory` removal **done** (2.1.0); mapping **pending — `trusted_time-m8t`** (trunk hard-codes `verified`) |
 | Sync engine admission | `lib/src/sync_engine.dart`, `domain/marzullo_engine.dart` | Tier 1 (`verified`) samples define the truth box; Tier 2 (platform NTS) admitted only when intersecting it; truth-box-empty triggers `degradedTier` event. | **Pending — `trusted_time-m8t`** (trunk is weakest-link) |
 | Public API | `lib/trusted_time.dart` (`getTime`, `isSecure`, `authLevel`) | `requireSecure: true` filters strictly on `NtsAuthLevel.verified`; `isSecure` reflects the same boundary. | Fail-closed **live**; truth-box semantics **pending — `trusted_time-m8t`** |
@@ -174,7 +174,7 @@ The class is named `TrustedTimeConfig`, not `SyncConfig`; the task description u
 
 ### 2.1 Field additions
 
-The current config exposes `ntsTrustMode` (typed `nts.TrustMode`, default `platformWithFallback`). The two new fields:
+`TrustedTimeConfig` exposes two trust fields. The earlier single `ntsTrustMode` passthrough (typed `nts.TrustMode`, default `platformWithFallback`) was **removed** in `trusted_time-rjt` rather than deprecated: it was fork-local (introduced in PR #28, never present on `upstream/main`), so there were no external consumers a deprecation window would protect. The two fields:
 
 ```dart
 /// If true, the engine constructs every NTS client in
@@ -207,32 +207,35 @@ final bool usePlatformTrust;
 final List<int> customRootCerts;
 ```
 
-Validation in the constructor throws a synchronous `ArgumentError` (release-safe, not a debug-only `assert`) on an invalid combination; the engine additionally fails closed regardless:
+The mutually-exclusive combination `usePlatformTrust == true && customRootCerts.isNotEmpty` is rejected with `ArgumentError` — pick one trust source. Enforcement lives in the `effectiveTrustMode` resolver (Section 2.3), **not** in the `const` constructor: a `const` constructor cannot evaluate `customRootCerts.isNotEmpty` (list emptiness is not a const-evaluable expression) and cannot `throw`. Because `SyncEngine` reads `effectiveTrustMode` when constructing each per-source NTS client, an invalid config fails closed before any source is built, so the combination cannot reach a live engine.
 
-- `usePlatformTrust == true && customRootCerts.isNotEmpty` is rejected: pick one trust source. The two flags are mutually exclusive.
-- The legacy `ntsTrustMode` field is **superseded** by `usePlatformTrust` + `customRootCerts`. The plan retires it across two stages:
-  - **Stage 1 (this change):** retain `ntsTrustMode` as deprecated; the engine derives the effective `nts.TrustMode` from the new fields and ignores the legacy field if either new field is non-default.
-  - **Stage 2 (next major):** remove `ntsTrustMode` from the public surface.
+The single `ntsTrustMode` passthrough is **removed**, not deprecated (`trusted_time-rjt`). It was fork-local with no external consumers, so a deprecation window bought nothing; `usePlatformTrust` + `customRootCerts` fully replace it.
 
 ### 2.2 Default security posture
 
-`usePlatformTrust = false`, `customRootCerts = const []`. The engine resolves this to `nts.TrustMode.bundledOnly` using the primitive already present in `nts 5.1.0`. This flips the *effective* default away from `platformWithFallback` on the `trusted_time` side (the `nts` constructor default is unchanged), closing the "consumer who never thought about trust" exposure path the research document describes. **[Target — `trusted_time-m8t`]** the resolver and the field additions are pending; trunk still defaults `ntsTrustMode` to `platformWithFallback`.
+`usePlatformTrust = false`, `customRootCerts = const []`. The engine resolves this to `nts.TrustMode.bundledOnly` using the primitive already present in `nts 5.1.0`. This flips the *effective* default away from `platformWithFallback` on the `trusted_time` side (the `nts` constructor default is unchanged), closing the "consumer who never thought about trust" exposure path the research document describes. **Implemented in `trusted_time-rjt`.**
 
 The flip is announced in the trusted_time CHANGELOG and surfaced in the package's README migration table. Consumers on managed-device deployments (corporate MDM, pinned roots) must explicitly opt into `usePlatformTrust: true`; the change is visible and intentional.
 
 ### 2.3 Effective-mode resolution
 
-A pure function `nts.TrustMode _effectiveTrustMode(TrustedTimeConfig)` lives on `lib/src/models.dart` and is consumed by `SyncEngine` when constructing per-source `NtsSource` instances:
+The resolver is a getter `nts.TrustMode get effectiveTrustMode` on `TrustedTimeConfig` (`lib/src/models.dart`), consumed by `SyncEngine` when constructing per-source `NtsSource` instances. A getter (rather than the private free function originally sketched here) keeps the logic with the data and makes it directly testable through the package's public export:
 
 ```dart
-nts.TrustMode _effectiveTrustMode(TrustedTimeConfig c) {
-  if (c.customRootCerts.isNotEmpty) return nts.TrustMode.custom;
-  if (c.usePlatformTrust) return nts.TrustMode.platformOnly;
+nts.TrustMode get effectiveTrustMode {
+  if (usePlatformTrust && customRootCerts.isNotEmpty) {
+    throw ArgumentError(
+      'usePlatformTrust and customRootCerts are mutually exclusive: '
+      'set exactly one trust source.',
+    );
+  }
+  if (customRootCerts.isNotEmpty) return nts.TrustMode.custom;
+  if (usePlatformTrust) return nts.TrustMode.platformOnly;
   return nts.TrustMode.bundledOnly;
 }
 ```
 
-The legacy `ntsTrustMode` is consulted only when both new fields are at their defaults, and even then only until Stage 2 retires the field.
+There is no legacy field to consult — `ntsTrustMode` was removed in the same change.
 
 ### 2.4 `copyWith`, `==`, `hashCode`, `toString`
 
@@ -465,7 +468,7 @@ The tickets filed alongside this design have the following dependency shape; imp
 
 1. ✅ **Done.** `package:nts` `bundledOnly` + `custom` trust primitives (Section 1) — shipped as the additive `nts 5.1.0` minor.
 2. ✅ **Done.** trusted_time pubspec pin to `nts` — `5.1.0` for the trust primitives (PR #42), bumped to `5.2.0` for the cold-start `verificationTimeMs` primitive (PR #44).
-3. `TrustedTimeConfig` field additions (Section 2) — non-breaking until Stage 2 retires `ntsTrustMode`. **First pending implementation step; tracked as `trusted_time-rjt`.**
+3. ✅ **Done.** `TrustedTimeConfig` field additions (Section 2) — `usePlatformTrust` / `customRootCerts` added, `bundledOnly` effective default, `ntsTrustMode` removed. Landed as `trusted_time-rjt`.
 4. `NtsAuthLevel.advisory` removal + mapping table (Section 3) — completes the binary-enum migration on the fork.
 5. Tier-aware Marzullo admission (Section 4) — supersedes `trusted_time-c8y` once landed.
 6. Public API tightening (Section 5) — exception message update + `authLevel` doc refresh.

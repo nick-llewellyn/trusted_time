@@ -1,5 +1,37 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking Changes
+
+- **`TrustedTimeConfig.ntsTrustMode` removed; trust policy is now
+  expressed via two fields.** The single `nts.TrustMode` passthrough
+  (`ntsTrustMode`, default `platformWithFallback`) is replaced by
+  `usePlatformTrust` (`bool`, default `false`) and `customRootCerts`
+  (`List<int>`, default `const []`). Migrate:
+  - `ntsTrustMode: nts.TrustMode.bundledOnly` (or unset) → leave both
+    new fields at their defaults (set nothing).
+  - `ntsTrustMode: nts.TrustMode.platformOnly` → `usePlatformTrust: true`.
+  - `ntsTrustMode: nts.TrustMode.custom` (with engine-supplied roots) →
+    `customRootCerts: <int>[...]`.
+
+  Setting both `usePlatformTrust: true` and a non-empty `customRootCerts`
+  names two mutually exclusive trust sources and throws `ArgumentError`
+  when the engine resolves the trust mode (via
+  `TrustedTimeConfig.effectiveTrustMode`).
+
+- **Security-by-default: the effective trust mode now defaults to
+  `bundledOnly`.** The previous effective default,
+  `platformWithFallback`, silently accepts a platform- or MDM-installed
+  inspection CA — and therefore a man-in-the-middle NTS-KE handshake —
+  whenever one is present in the OS trust store. The default now
+  validates every NTS-KE handshake against the bundled `webpki-roots`
+  set only, so authenticity is end-to-end. Managed-device deployments
+  that depend on a pinned corporate CA must explicitly opt in with
+  `usePlatformTrust: true`; the change is visible and intentional. NTS
+  samples produced under `usePlatformTrust: true` report
+  `NtsAuthLevel.none` rather than `verified`.
+
 ## [2.1.0]
 
 ### Breaking Changes
@@ -111,12 +143,12 @@ Thanks to `nick-llewellyn` for the correctness audit enhancing the Marzullo cons
 
 ### Added
 - **Probabilistic Trust Modeling**: Introduced `ConfidenceLevel` (Low, Medium, High) and `confidenceScore` with exponential decay to model temporal uncertainty over time.
-- **Self-Healing Consensus Engine**: 
+- **Self-Healing Consensus Engine**:
     - **Adaptive Thresholds**: Dynamic sample filtering based on 3x median uncertainty.
     - **Exponential Source Cooldown**: Failure-count based blacklisting ($2^{failureCount}$ min) to isolate consistently unreliable authorities.
     - **Consensus Stability Guard**: Incremental processing now requires $N=2$ (or $N=3$ under high variance) consecutive matching intervals before early-exit.
 - **NTS (RFC 8915) Authenticated Time**: Pure-Dart implementation of Network Time Security for tamper-proof NTP synchronization (Cryptographic Preview).
-- **Enterprise Observability**: 
+- **Enterprise Observability**:
     - Introduced `SyncMetrics` for machine-readable telemetry (latency, uncertainty, diversity, depth).
     - Added structured **Confidence Breakdown** for deep-field debugging of trust establishment.
 - **Strict Security Intent API**: New `TrustedTime.getTime({bool requireSecure})` for fail-fast cryptographic guarantees.
@@ -132,11 +164,11 @@ Thanks to `nick-llewellyn` for the correctness audit enhancing the Marzullo cons
 - **Unified Darwin Layout**: Migrated iOS and macOS native implementations to a shared SwiftPM-ready directory for perfect pub.dev compliance.
 
 ### Fixed
-- **Marzullo Engine Correctness**: 
+- **Marzullo Engine Correctness**:
   - Fixed tie-breaking to use closed-interval semantics (depth counting).
   - Corrected `participantCount` to report unique source IDs instead of raw overlap depth.
   - Implemented 1ms uncertainty floor to prevent downstream calculation errors.
-- **Platform Hardening**: 
+- **Platform Hardening**:
   - Windows: Migrated to `GetTickCount64` and subclassed `WM_TIMECHANGE` for robust integrity monitoring.
   - Linux: Switched to `CLOCK_BOOTTIME` and `timerfd` to correctly track time during system suspend.
   - Thread Safety: Re-affirmed and enforced main-thread dispatching for all Darwin platform event channels.

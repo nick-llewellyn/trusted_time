@@ -69,7 +69,10 @@ final class SyncEngine {
         dnsConcurrencyCap:
             _config.ntsDnsConcurrencyCap ?? _config.ntsServers.length + 2,
         maxLatency: _config.maxLatency,
-        trustMode: _config.ntsTrustMode,
+        trustMode: _config.effectiveTrustMode,
+        customRoots: _config.customRootCerts.isEmpty
+            ? null
+            : _config.customRootCerts,
         onStratumObserved: (s) =>
             _qualityTracker.setStratum('${TimeSource.prefixNts}$host', s),
       ),
