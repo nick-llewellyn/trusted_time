@@ -23,7 +23,7 @@ This contract is written in the present tense to describe the **target end state
 
 - `NtsAuthLevel` is the binary `{verified, none}` shape; the pre-2.1.0 `advisory` value is removed.
 - `requireSecure: true` fails closed: `getTime` throws `TrustedTimeSecurityException` when the current anchor is not `verified`.
-- `package:nts` 5.1.0 (pinned via PR #42) exposes the trust primitives the target consumes — `TrustMode.bundledOnly`, `TrustMode.custom`, and an `NtsClient` `customRoots` parameter — but they are not yet wired into `TrustedTimeConfig`.
+- `package:nts` is pinned at `^5.2.0` (PR #44). The trust primitives the target consumes — `TrustMode.bundledOnly`, `TrustMode.custom`, and an `NtsClient` `customRoots` parameter — were introduced in `nts 5.1.0` (PR #42) and remain available under the current pin, but they are not yet wired into `TrustedTimeConfig`.
 
 **Target — `trusted_time-m8t` (not yet on trunk):**
 

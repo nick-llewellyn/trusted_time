@@ -10,7 +10,7 @@ This document is the implementation bridge between the abstract contract in `sec
 
 This design predates the `nts 5.1.0` bump (PR #42) and the upstream 2.1.0 sync. Two of its original assumptions are now stale and are corrected inline below:
 
-- **`package:nts` shipped the trust primitives as an additive minor (5.1.0), not a breaking 6.0.0.** `TrustMode.bundledOnly`, `TrustMode.custom`, the `custom` `TrustBackend`, and the `NtsClient` `customRoots` parameter are all present in the pinned `nts 5.1.0`. Section 1's "Target" listings are therefore **already shipped**; what remains is *consuming* them from `trusted_time`. `package:nts` kept its own historic default (`platformWithFallback`); the move to bundled-only is a `trusted_time`-side decision applied through the effective-mode resolver (Section 2.3), not an `nts` default flip.
+- **`package:nts` shipped the trust primitives as an additive minor (5.1.0), not a breaking 6.0.0.** `TrustMode.bundledOnly`, `TrustMode.custom`, the `custom` `TrustBackend`, and the `NtsClient` `customRoots` parameter were introduced in `nts 5.1.0` and remain available under the current `^5.2.0` pin (PR #44). Section 1's "Target" listings are therefore **already shipped**; what remains is *consuming* them from `trusted_time`. `package:nts` kept its own historic default (`platformWithFallback`); the move to bundled-only is a `trusted_time`-side decision applied through the effective-mode resolver (Section 2.3), not an `nts` default flip.
 - **`NtsAuthLevel.advisory` is already removed** (upstream 2.1.0). Section 3.1's "Current state" listing is historic; the enum is binary `{none, verified}` on trunk today.
 
 Everything else here is **pending under `trusted_time-m8t`**: the `TrustedTimeConfig` field additions (Section 2), the `TrustBackend → NtsAuthLevel` mapping (Section 3.2), the tier-aware Marzullo admission and `degradedTier` event (Section 4), and the public-API tightening (Section 5). On trunk the engine still applies a **weakest-link** reduction and `NtsSource` hard-codes `verified`.
@@ -165,7 +165,7 @@ This shipped as an **additive `package:nts` 5.1.0 minor**, not the breaking majo
 2. The historic default (`platformWithFallback`) is retained for additive compatibility; callers who want end-to-end bundled trust opt in via `NtsClient(trustMode: TrustMode.bundledOnly)`.
 3. Under `bundledOnly`, a `TrustBackend.webpkiRoots` result means "validation succeeded as intended" rather than the historic "fallback was used".
 
-trusted_time consumes this via `pubspec.yaml`'s `nts:` constraint; the pin to `nts 5.1.0` landed as PR #42 on the fork's `integration/bleeding-edge`.
+trusted_time consumes this via `pubspec.yaml`'s `nts:` constraint; the pin to `nts 5.1.0` landed as PR #42 on the fork's `integration/bleeding-edge`, and was later bumped to the current `^5.2.0` (PR #44).
 
 
 ## 2. trusted_time configuration (`lib/src/models.dart`)
@@ -457,7 +457,7 @@ The implementation surfaces interactions with three existing `bd` tickets:
 
 - **`trusted_time-4em`** (SourceQualityTracker starvation guard unreachable). **Unaffected.** The bug is in `SyncEngine`'s consumption of `ranked()`, several layers below tier admission. The fix shape (tighten `ranked()` to return a subset, or drop the unreachable comprehension) is unchanged by this design.
 - **`trusted_time-a4d`** (quality-tracker participation rate stuck at 1.0). **Mildly affected.** The fix already requires plumbing the full `samples` list into `_completeSync`. Once tier-aware admission lands, `participants` may include Tier 2/3 samples that intersected the truth box but were not part of the Tier-1-only first pass. The participation-rate calculation should treat *truth-box-intersection* as the success metric, not "made it into the final reduction". The ticket should be updated to call out the distinction so the fix lands consistent with the tier model.
-- **`trusted_time-8os`** (release.yml tag glob). **Superseded.** The fork no longer carries `release.yml` (the contribution-mode pivot retired the upstream release workflow on `integration/bleeding-edge`; releases now route through manual `pub.dev` publishing per `trusted_time-xb0`). The ticket should be closed with state_reason `not_planned`.
+- **`trusted_time-8os`** (release.yml tag glob). **Still applies.** `.github/workflows/release.yml` is present on `integration/bleeding-edge` and still triggers on the broad `'v[0-9]*'` glob, with the downstream `verify-version` job the only guard against a non-semver tag reaching the publish step. The tightening the ticket describes is therefore not obsolete; the earlier assumption that the fork had dropped the workflow was incorrect.
 
 ## Implementation ordering
 
