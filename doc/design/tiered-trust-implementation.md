@@ -465,7 +465,7 @@ The tickets filed alongside this design have the following dependency shape; imp
 
 1. ✅ **Done.** `package:nts` `bundledOnly` + `custom` trust primitives (Section 1) — shipped as the additive `nts 5.1.0` minor.
 2. ✅ **Done.** trusted_time pubspec pin to `nts` — `5.1.0` for the trust primitives (PR #42), bumped to `5.2.0` for the cold-start `verificationTimeMs` primitive (PR #44).
-3. `TrustedTimeConfig` field additions (Section 2) — non-breaking until Stage 2 retires `ntsTrustMode`. **First pending step of `trusted_time-m8t`.**
+3. `TrustedTimeConfig` field additions (Section 2) — non-breaking until Stage 2 retires `ntsTrustMode`. **First pending implementation step; tracked as `trusted_time-rjt`.**
 4. `NtsAuthLevel.advisory` removal + mapping table (Section 3) — completes the binary-enum migration on the fork.
 5. Tier-aware Marzullo admission (Section 4) — supersedes `trusted_time-c8y` once landed.
 6. Public API tightening (Section 5) — exception message update + `authLevel` doc refresh.
