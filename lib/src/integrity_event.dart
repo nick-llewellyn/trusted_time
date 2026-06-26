@@ -30,9 +30,10 @@ enum TamperReason {
   /// The published anchor is still usable for `requireSecure: false`
   /// consumers, but its [IntegrityEvent.reason] signals that the time is no
   /// longer anchored by a library-controlled trust store. Emitted by the
-  /// engine when the count of `NtsAuthLevel.verified` samples falls below the
-  /// quorum needed to define the truth box (see the tiered-trust design,
-  /// section 4.2). The resulting anchor reports `NtsAuthLevel.none`.
+  /// engine whenever the `NtsAuthLevel.verified` samples cannot form a truth
+  /// box — either too few are present, or those present are too divergent to
+  /// reach a Marzullo quorum (see the tiered-trust design, section 4.2). The
+  /// resulting anchor reports `NtsAuthLevel.none`.
   degradedTier,
 
   /// A manual resynchronization was triggered.

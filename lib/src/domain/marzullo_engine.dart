@@ -190,9 +190,11 @@ final class MarzulloEngine {
   ///    relocate the anchor (design doc section 4.3). The result reports
   ///    `authLevel == NtsAuthLevel.verified`.
   ///
-  /// If fewer than a quorum of verified samples exist no truth box can be
-  /// formed: the cycle is *degraded*. The engine falls back to a legacy
-  /// single-tier Marzullo over all [samples], forces
+  /// If the verified samples cannot form a truth box — too few are present,
+  /// or those present are too divergent to reach a Marzullo quorum (i.e.
+  /// `_resolveCore` over the verified subset returns `null`) — the cycle is
+  /// *degraded*. The engine falls back to a legacy single-tier Marzullo over
+  /// all [samples], forces
   /// `authLevel == NtsAuthLevel.none`, and sets
   /// [ConsensusResult.degradedTier] so `SyncEngine` can emit
   /// [TamperReason.degradedTier]. Returns `null` only when even the
