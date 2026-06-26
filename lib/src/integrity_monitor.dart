@@ -36,6 +36,15 @@ final class IntegrityMonitor {
   /// Reactive stream of detected integrity violations and timezone changes.
   Stream<IntegrityEvent> get events => _controller.stream;
 
+  /// Publishes an externally-detected [event] on the [events] stream.
+  ///
+  /// The dual-layer detection above (native signals + monotonic drift)
+  /// covers clock jumps, reboots, and timezone changes the monitor observes
+  /// directly. This entry point lets the engine surface integrity events it
+  /// detects itself — currently [TamperReason.degradedTier], raised when a
+  /// sync cycle cannot establish a Tier 1 truth box. No-op once disposed.
+  void report(IntegrityEvent event) => _emit(event);
+
   /// Attaches the monitor to an active trust anchor and begins surveillance.
   void attach(TrustAnchor anchor) {
     _anchor = anchor;

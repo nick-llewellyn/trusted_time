@@ -23,6 +23,19 @@ enum TamperReason {
   /// network synchronization to re-establish absolute truth.
   deviceRebooted,
 
+  /// A synchronization cycle could not establish a Tier 1 (cryptographically
+  /// verified) truth box and fell back to a best-effort, single-tier
+  /// consensus.
+  ///
+  /// The published anchor is still usable for `requireSecure: false`
+  /// consumers, but its [IntegrityEvent.reason] signals that the time is no
+  /// longer anchored by a library-controlled trust store. Emitted by the
+  /// engine whenever the `NtsAuthLevel.verified` samples cannot form a truth
+  /// box — either too few are present, or those present are too divergent to
+  /// reach a Marzullo quorum (see the tiered-trust design, section 4.2). The
+  /// resulting anchor reports `NtsAuthLevel.none`.
+  degradedTier,
+
   /// A manual resynchronization was triggered.
   ///
   /// Reserved for consumer-side auditing or mock-based security testing.

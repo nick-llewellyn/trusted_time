@@ -331,10 +331,10 @@ The classifier is a pure function `_Tier _tierOf(TimeSample)` on `marzullo_engin
 
 ### 4.2 Truth box construction
 
-1. **Filter for Tier 1.** If `samples.where(_Tier.verified)` produces fewer than `minimumQuorum` items, **no truth box exists for this cycle.** The engine emits an `IntegrityEvent` of reason `degradedTier` (**to be added** as `TamperReason.degradedTier`; ADR 0007 §2 names it but it is not yet a member of the enum on trunk) and falls back to the legacy single-tier Marzullo over `samples` for `requireSecure: false` consumers. For `requireSecure: true` consumers, `getTime` then fails closed (see Section 5).
+1. **Filter for Tier 1.** If the verified subset does not itself reach a Marzullo quorum (the engine's `minQuorumRatio` floor over the verified samples), **no truth box exists for this cycle.** `resolve` falls back to the legacy single-tier Marzullo over all `samples`, pins the result's `authLevel` to `none`, and sets `ConsensusResult.degradedTier = true`. `SyncEngine` reads that flag at its single completion chokepoint and emits an `IntegrityEvent` of reason `degradedTier` (now a member of `TamperReason`) through its `onIntegrityEvent` sink — which `TrustedTimeImpl` wires to `IntegrityMonitor.report`, so the event reaches the public `onIntegrityLost` stream. The degraded anchor is still published for `requireSecure: false` consumers; for `requireSecure: true` consumers, `getTime` fails closed (see Section 5).
 2. **Run Marzullo on Tier 1 only** to produce the verified consensus interval. This interval *is* the truth box: `[startMs, endMs]` over which the verified samples agree.
-3. **Re-admit Tier 2 + Tier 3.** Every Tier 2 / Tier 3 sample whose interval intersects the truth box is folded into the merged sample set for the final consensus reduction. Samples whose intervals do not intersect are dropped (observable via `SyncObserver.onSourceFailed` with reason `tier2: outside truth box`).
-4. **Final Marzullo** over the merged set produces the published `ConsensusResult`. The result's `authLevel` reflects the highest tier present in the *participants* of the final reduction — which is `verified` as long as the truth box was non-empty, regardless of how many Tier 2/3 samples participated.
+3. **Re-admit Tier 2 + Tier 3.** Every Tier 2 / Tier 3 sample whose interval intersects the truth box is folded into the merged sample set for the final consensus reduction. Samples whose intervals do not intersect are collected onto `ConsensusResult.droppedOutsideTruthBox`; `SyncEngine` surfaces each one exactly once via `SyncObserver.onSourceFailed` with reason `tier2: outside truth box`.
+4. **Final Marzullo** over the merged set refines the published `ConsensusResult`, **subject to a truth-box-authoritative guard**: the refined reduction is accepted only when its midpoint still falls inside the truth box. If a coordinated lower-tier cluster shifts the merged midpoint outside the box, or the widened quorum floor rejects the merged reduction, the verified truth box is published unchanged. Either way the result's `authLevel` is `verified` whenever the truth box was non-empty, regardless of how many Tier 2/3 samples participated — and the per-cycle `SyncMetrics.confidenceBreakdown` carries a `tier1Quorum` key (the verified-participant fraction of the configured pool; `0.0` on a degraded cycle).
 
 ### 4.3 Why Tier 2 cannot anchor
 
@@ -342,11 +342,16 @@ A Tier 2 sample's `groupId` is the NTS server's host; its `sourceId` is `nts:<ho
 
 Restricting truth-box definition to Tier 1 alone means: an attacker who terminates the NTS-KE TLS handshake (the threat the contract is designed against) cannot produce a `verified` sample, so cannot influence the truth box's location. The attacker can suppress Tier 1 entirely (triggering the `degradedTier` fallback), but they cannot move the truth box without also compromising the bundled trust store — a different and much harder threat model.
 
-### 4.4 Marzullo signature change
+### 4.4 Marzullo signature & `ConsensusResult` shape
 
-`MarzulloEngine.resolve(List<TimeSample> samples)` currently takes a flat list. The tier-aware reduction does not require a public signature change; the classification happens inside `resolve`. Callers (`SyncEngine`) continue to pass the full sample list.
+`MarzulloEngine.resolve(List<TimeSample> samples)` keeps its flat-list signature; tier classification happens inside `resolve`, which delegates each single-tier reduction to a private `_resolveCore`. Callers (`SyncEngine`) continue to pass the full sample list.
 
-What does change is `ConsensusResult`'s `participants` field — for tier-aware reductions it lists every sample that intersected the truth box, including Tier 2/3. The `authLevel` field continues to report the highest tier present in `participants`, which is now reachable from inspection alone (no separate "verified-quorum-was-reached" flag is needed).
+`ConsensusResult` gains two fields that carry the tier decision out of the engine:
+
+- `degradedTier` (`bool`, default `false`) — the plumbed signal of Section 4.2 step 1. `SyncEngine` keys its `degradedTier` integrity event off this flag rather than re-deriving it, so the engine that *made* the truth-box decision is the one that reports it. (This supersedes the earlier note here that `authLevel` alone would suffice: `authLevel == none` is ambiguous between "degraded" and a healthy NTP-only cycle only at the *type* level; the explicit flag removes the ambiguity at the call site and keeps the emission single-fire.)
+- `droppedOutsideTruthBox` (`Set<TimeSample>`, default `const {}`) — the Section 4.2 step 3 rejects, carried so `SyncEngine` reports them once at completion instead of spamming `onSourceFailed` on every per-arrival `resolve`.
+
+`participants` lists every sample that contained the published midpoint, including any admitted Tier 2/3. `authLevel` is set by the wrapper from truth-box presence (`verified` when a box formed, `none` when degraded), replacing the legacy weakest-link aggregation that `_resolveCore` still computes internally. The optional `onIntegrityEvent` sink lives on the `SyncEngine` constructor, not on `resolve`, so the public engine signature is unchanged.
 
 
 ### 4.5 Composition with upstream's `SourceQualityTracker`

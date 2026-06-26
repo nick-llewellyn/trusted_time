@@ -31,6 +31,7 @@ void main() {
           TamperReason.systemClockJumped,
           TamperReason.timezoneChanged,
           TamperReason.deviceRebooted,
+          TamperReason.degradedTier,
           TamperReason.forcedNtpSync,
           TamperReason.unknown,
         ]),
