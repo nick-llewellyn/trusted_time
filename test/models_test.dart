@@ -149,7 +149,13 @@ void main() {
         const config = TrustedTimeConfig(customRootCerts: [10, 20, 30]);
         final dump = config.toString();
         expect(dump, contains('customRootCerts: 3 bytes'));
-        expect(dump, isNot(contains('[10, 20, 30]')));
+        // Assert the field is never rendered as a list at all, rather
+        // than excluding one exact rendering of these bytes. Any
+        // regression that interpolates the List<int> — regardless of
+        // element formatting (spaces, separators) or content — opens
+        // with `customRootCerts: [`, so its absence is the
+        // format-agnostic leak guard.
+        expect(dump, isNot(contains('customRootCerts: [')));
       },
     );
   });
