@@ -59,25 +59,41 @@ final class SyncEngine {
   /// concurrent resolutions (e.g., warming overlapping with the start
   /// of a cycle) without forcing every caller to think about cap
   /// sizing.
-  late final List<TimeSource> _sources = [
-    for (final host in _config.ntpServers) NtpSource(host),
-    for (final url in _config.httpsSources) HttpsSource(url),
-    for (final host in _config.ntsServers)
-      NtsSource(
-        host,
-        port: _config.ntsPort,
-        dnsConcurrencyCap:
-            _config.ntsDnsConcurrencyCap ?? _config.ntsServers.length + 2,
-        maxLatency: _config.maxLatency,
-        trustMode: _config.effectiveTrustMode,
-        customRoots: _config.customRootCerts.isEmpty
-            ? null
-            : _config.customRootCerts,
-        onStratumObserved: (s) =>
-            _qualityTracker.setStratum('${TimeSource.prefixNts}$host', s),
-      ),
-    ..._config.additionalSources,
-  ];
+  late final List<TimeSource> _sources = _buildSources();
+
+  /// Builds the authoritative source list for this engine.
+  ///
+  /// [TrustedTimeConfig.effectiveTrustMode] is resolved once up front —
+  /// before any source is constructed — so an invalid trust
+  /// configuration (`usePlatformTrust: true` together with a non-empty
+  /// `customRootCerts`) fails closed with [ArgumentError] regardless of
+  /// whether any NTS servers are configured. Resolving it inside the
+  /// `ntsServers` comprehension would skip the check whenever that list
+  /// is empty, letting an invalid config build NTP/HTTPS/additional
+  /// sources and silently bypass the "fail closed" guarantee. The
+  /// resolved mode is then reused for every [NtsSource].
+  List<TimeSource> _buildSources() {
+    final trustMode = _config.effectiveTrustMode;
+    return [
+      for (final host in _config.ntpServers) NtpSource(host),
+      for (final url in _config.httpsSources) HttpsSource(url),
+      for (final host in _config.ntsServers)
+        NtsSource(
+          host,
+          port: _config.ntsPort,
+          dnsConcurrencyCap:
+              _config.ntsDnsConcurrencyCap ?? _config.ntsServers.length + 2,
+          maxLatency: _config.maxLatency,
+          trustMode: trustMode,
+          customRoots: _config.customRootCerts.isEmpty
+              ? null
+              : _config.customRootCerts,
+          onStratumObserved: (s) =>
+              _qualityTracker.setStratum('${TimeSource.prefixNts}$host', s),
+        ),
+      ..._config.additionalSources,
+    ];
+  }
 
   /// Tracks consecutive failures for each source to implement exponential cooldown.
   final _sourceHealth = <String, int>{};

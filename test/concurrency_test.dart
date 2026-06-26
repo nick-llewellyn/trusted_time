@@ -921,6 +921,63 @@ void main() {
     });
   });
 
+  group('SyncEngine fail-closed trust resolution', () {
+    late MockMonotonicClock clock;
+
+    setUp(() {
+      clock = MockMonotonicClock();
+    });
+
+    test(
+      'invalid trust config fails closed even when ntsServers is empty',
+      () async {
+        // Regression: effectiveTrustMode used to be resolved only inside
+        // the ntsServers comprehension, so an invalid config
+        // (usePlatformTrust: true + non-empty customRootCerts) with an
+        // empty ntsServers list skipped the ArgumentError entirely and
+        // still built NTP/HTTPS/additional sources — bypassing the
+        // "fail closed before any source is built" guarantee asserted in
+        // the Secure Time Contract. The resolver is now read once up
+        // front in _buildSources, so source construction fails closed
+        // regardless of whether any NTS server is configured.
+        final engine = SyncEngine(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            usePlatformTrust: true,
+            customRootCerts: [1, 2, 3],
+          ),
+          clock: clock,
+        );
+
+        // _sources is late-built on first access; warmAllSources is the
+        // public trigger that reaches it, surfacing the ArgumentError on
+        // the returned Future.
+        await expectLater(engine.warmAllSources(), throwsArgumentError);
+      },
+    );
+
+    test(
+      'valid config with empty ntsServers builds without over-rejecting',
+      () async {
+        // Positive control: the up-front resolution must not reject a
+        // valid config. bundledOnly (the effective default) is valid, so
+        // source construction succeeds even with no NTS servers present.
+        final engine = SyncEngine(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+          ),
+          clock: clock,
+        );
+
+        await expectLater(engine.warmAllSources(), completes);
+      },
+    );
+  });
+
   group('SyncEngine TransientSourceError handling', () {
     late MockMonotonicClock clock;
     late TrustedTimeConfig config;
