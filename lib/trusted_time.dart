@@ -299,10 +299,20 @@ abstract final class TrustedTime {
   ///   drives the singleton with custom roots.
   /// - `androidPlatformInitSucceeded`: `true` iff the Android JNI
   ///   bootstrap reported success at least once. `false` on every
-  ///   non-Android platform (no JNI bootstrap exists). A `false`
-  ///   value on Android implies subsequent handshakes will run
-  ///   against the `webpki-roots` static bundle regardless of
-  ///   [TrustedTimeConfig.effectiveTrustMode].
+  ///   non-Android platform (no JNI bootstrap exists). This is a
+  ///   process-global `package:nts` diagnostic about platform-store
+  ///   *availability*, independent of any engine's
+  ///   [TrustedTimeConfig.effectiveTrustMode]. A `false` value on
+  ///   Android means the platform trust store could not be
+  ///   initialised, so a handshake that *would consult it* — a
+  ///   `platformOnly` client, or the platform leg of
+  ///   `platformWithFallback` — cannot; `platformWithFallback`
+  ///   resolves via its `webpki-roots` fallback instead. Trust modes
+  ///   that never touch the platform store are unaffected:
+  ///   `bundledOnly` validates against the static bundle by
+  ///   definition, and `custom` validates against only the
+  ///   caller-supplied roots — neither falls back as a consequence of
+  ///   this flag.
   /// - `androidHybridFallbackCount`: cumulative count of TLS
   ///   chains the Android hybrid verifier has accepted via the
   ///   `webpki-roots` fallback path since process start. Always
