@@ -213,10 +213,10 @@ await TrustedTime.initialize(
 
 // Check whether the current anchor is NTS-authenticated
 print(TrustedTime.isSecure);     // true / false
-print(TrustedTime.authLevel);    // NtsAuthLevel.verified / advisory / none
+print(TrustedTime.authLevel);    // NtsAuthLevel.verified / none
 ```
 
-> **NTS implementation note:** This version uses a pure-Dart NTS-KE implementation. Full AEAD verification (AES-SIV-CMAC-256) requires native TLS exporter access that is not yet available in Dart's `SecureSocket` API. Samples negotiated via NTS are labelled `NtsAuthLevel.advisory` — they confirm the server is NTS-aware but do not provide full cryptographic authentication. Verified NTS is planned for v2.1.0 via an FFI path. See [ADR 0003](docs/adr/0003-nts-pure-dart-vs-rust.md) for the full rationale.
+> **NTS implementation note:** NTS uses [`package:nts`](https://pub.dev/packages/nts), a Rust-backed RFC 8915 client (TLS 1.3 with RFC 5705 keying-material exporters and AES-SIV-CMAC-256 AEAD), so authenticated samples are fully cryptographically verified — not advisory. A successful handshake is recorded as `NtsAuthLevel.verified` only when the chain was anchored by the library-controlled trust store (bundled `webpki-roots` or caller-supplied custom roots); platform-mediated paths, which may chain through a corporate-injected or MDM-installed CA, are recorded as `NtsAuthLevel.none`. See [ADR 0007](doc/adr/0007-hybrid-trust-model.md) and `doc/design/tiered-trust-implementation.md` for the full rationale.
 
 ### Observability
 
@@ -301,7 +301,7 @@ void main() {
 | Device reboot (clock reset) | ✅ Detected | Uptime comparison on warm start |
 | Single rogue NTP server | ✅ Mitigated | Marzullo consensus + quorum floor |
 | Correlated provider failure | ✅ Mitigated | Group diversity requirement |
-| On-path NTP spoofing (MITM) | ⚠️ Advisory | NTS advisory mode (full AEAD in v2.1.0) |
+| On-path NTP spoofing (MITM) | ✅ Mitigated | RFC 8915 NTS (AES-SIV-CMAC-256 AEAD) when enabled; `verified` for bundled/custom-root chains |
 | Offline drift | ⚠️ Estimated | Monotonic projection with drift factor |
 
 ---
