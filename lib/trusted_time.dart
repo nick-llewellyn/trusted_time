@@ -362,11 +362,13 @@ abstract final class TrustedTime {
       throw const TrustedTimeSecurityException(
         'Time is required to be cryptographically authenticated against '
         'a library-controlled trust store (bundled webpki-roots or '
-        'custom roots), but the current anchor was established under '
-        'platform-mediated trust. Either reduce the requirement '
-        '(requireSecure: false) or configure the engine with '
-        'usePlatformTrust: false (the default) so NTS samples can be '
-        'verified end-to-end.',
+        'custom roots), but the active anchor is not verified. This '
+        'happens when NTS was unavailable and the engine fell back to '
+        'lower-tier (NTP/HTTPS) consensus, or when NTS was validated '
+        'under platform-mediated trust rather than the library-controlled '
+        'store. Either reduce the requirement (requireSecure: false) or '
+        'configure the engine with usePlatformTrust: false (the default) '
+        'so NTS samples can be verified end-to-end.',
       );
     }
 

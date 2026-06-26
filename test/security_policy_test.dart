@@ -98,10 +98,7 @@ void main() {
     // sibling group may have left set.
     tearDown(TrustedTime.resetOverride);
 
-    Future<void> initWith(
-      List<TimeSource> sources, {
-      bool usePlatformTrust = false,
-    }) async {
+    Future<void> initWith(List<TimeSource> sources) async {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
@@ -111,7 +108,7 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 1,
           earlyExit: false,
-          usePlatformTrust: usePlatformTrust,
+          usePlatformTrust: false,
         ).copyWith(additionalSources: sources),
       );
       addTearDown(TrustedTimeImpl.instance.dispose);
@@ -175,33 +172,30 @@ void main() {
       );
     });
 
-    test(
-      'usePlatformTrust: true never yields a verified sample, so '
-      'getTime(requireSecure: true) throws consistently across cycles',
-      () async {
-        // Under platform-mediated trust the engine can never mint a verified
-        // sample, so requireSecure stays fail-closed on every sync cycle.
-        await initWith([
-          _TierSource(
-            id: 'nts:platform',
-            groupId: 'g1',
-            startMs: 1000,
-            endMs: 1020,
-            trustBackend: TrustBackend.platform,
-          ),
-          _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
-        ], usePlatformTrust: true);
+    test('unverified anchor keeps getTime(requireSecure: true) fail-closed '
+        'across resync cycles', () async {
+      // None of the injected samples are verified, so the anchor stays
+      // NtsAuthLevel.none and requireSecure fails closed on every cycle.
+      await initWith([
+        _TierSource(
+          id: 'nts:platform',
+          groupId: 'g1',
+          startMs: 1000,
+          endMs: 1020,
+          trustBackend: TrustBackend.platform,
+        ),
+        _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+      ]);
 
-        for (var cycle = 0; cycle < 3; cycle++) {
-          expect(TrustedTime.isSecure, isFalse, reason: 'cycle $cycle');
-          expect(
-            () => TrustedTime.getTime(requireSecure: true),
-            throwsA(isA<TrustedTimeSecurityException>()),
-            reason: 'cycle $cycle',
-          );
-          await TrustedTime.forceResync();
-        }
-      },
-    );
+      for (var cycle = 0; cycle < 3; cycle++) {
+        expect(TrustedTime.isSecure, isFalse, reason: 'cycle $cycle');
+        expect(
+          () => TrustedTime.getTime(requireSecure: true),
+          throwsA(isA<TrustedTimeSecurityException>()),
+          reason: 'cycle $cycle',
+        );
+        await TrustedTime.forceResync();
+      }
+    });
   });
 }
