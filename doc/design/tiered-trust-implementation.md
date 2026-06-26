@@ -275,7 +275,7 @@ Currently `NtsSource.getTime` hard-codes `authLevel: NtsAuthLevel.verified` for 
 | `platformWithHybridFallback` | `none` | Android-only; the platform verifier ran first. Even though the bundle was the authoritative anchor for this chain, the *path* runs through platform machinery; the sample is not safely classifiable as `verified`. |
 | `null` (no NTS handshake; should not occur on `NtsSource`) | `none` | Defensive fallback. |
 
-The mapping is a private function `NtsAuthLevel _authLevelFor(nts.TrustBackend?)` on `nts_source.dart`. `TimeSample.trustBackend` is retained as-is on every sample, including `none` samples — this is the mechanism that lets the engine distinguish platform-mediated NTS from plain NTP/HTTPS (which has `trustBackend == null`).
+The mapping is a top-level function `NtsAuthLevel authLevelForTrustBackend(nts.TrustBackend?)` on `nts_source.dart`. It is annotated `@visibleForTesting` rather than made library-private: `NtsSource` constructs its FFI-backed `nts.NtsClient` internally with no injection seam, so `getTime` cannot be driven from a unit test, and the five-row mapping coverage asserts the pure function directly. `TimeSample.trustBackend` is retained as-is on every sample, including `none` samples — this is the mechanism that lets the engine distinguish platform-mediated NTS from plain NTP/HTTPS (which has `trustBackend == null`).
 
 ### 3.3 `NtsSource.getTime` integration
 
@@ -289,7 +289,7 @@ return TimeSample(
   ),
   sourceId: id,
   groupId: groupId,
-  authLevel: _authLevelFor(result.trustBackend),
+  authLevel: authLevelForTrustBackend(result.trustBackend),
   trustBackend: result.trustBackend,
 );
 ```

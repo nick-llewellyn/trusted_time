@@ -219,7 +219,12 @@ final class NtsSource implements TimeSource, Warmable {
       ),
       sourceId: id,
       groupId: groupId,
-      authLevel: NtsAuthLevel.verified,
+      // Classify by the trust anchor that authenticated this handshake
+      // rather than assuming every successful NTS query is verified: a
+      // platform-mediated path (which may chain through a
+      // corporate-injected or MDM-installed CA) degrades to
+      // NtsAuthLevel.none. See [authLevelForTrustBackend].
+      authLevel: authLevelForTrustBackend(result.trustBackend),
       // Surfaced unchanged from the underlying handshake so
       // telemetry consumers can distinguish platform-store
       // authentication from the static webpki-roots fallback (and,
@@ -251,5 +256,39 @@ final class NtsSource implements TimeSource, Warmable {
       // ntsQuery handles a cold-start handshake transparently when the
       // cookie jar is empty.
     }
+  }
+}
+
+/// Maps the trust-anchor backend that authenticated an NTS handshake to
+/// the [NtsAuthLevel] recorded on the resulting [TimeSample].
+///
+/// [NtsAuthLevel.verified] is reserved for library-controlled trust
+/// stores — [nts.TrustBackend.webpkiRoots] (bundled roots) and
+/// [nts.TrustBackend.custom] (caller-supplied roots) — where a
+/// corporate-injected or MDM-installed CA cannot reach the validation
+/// path. Platform-mediated paths ([nts.TrustBackend.platform] and the
+/// Android-only [nts.TrustBackend.platformWithHybridFallback]) and the
+/// defensive `null` case map to [NtsAuthLevel.none]: the TLS handshake
+/// succeeded, but its authenticity is not end-to-end verifiable from the
+/// library, so the sample must never anchor the consensus truth box.
+///
+/// `platformWithHybridFallback` maps to `none` even though the bundle
+/// was the authoritative anchor for that particular chain — the *path*
+/// still runs through platform machinery, and the contract requires the
+/// conservative classification.
+///
+/// Exposed via [visibleForTesting] for the mapping-table coverage in
+/// `test/nts_source_test.dart`; it is not part of the public API. See
+/// `doc/design/tiered-trust-implementation.md` section 3.2.
+@visibleForTesting
+NtsAuthLevel authLevelForTrustBackend(nts.TrustBackend? backend) {
+  switch (backend) {
+    case nts.TrustBackend.webpkiRoots:
+    case nts.TrustBackend.custom:
+      return NtsAuthLevel.verified;
+    case nts.TrustBackend.platform:
+    case nts.TrustBackend.platformWithHybridFallback:
+    case null:
+      return NtsAuthLevel.none;
   }
 }
