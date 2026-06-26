@@ -50,6 +50,10 @@ final class TrustedTimeImpl {
       // surfacing as 'Null check operator used on a null value' inside
       // _performSync's catch and silently failing the bootstrap sync.
       observer: _ProxySyncObserver(() => _observers),
+      // Route engine-originated integrity events (degradedTier) onto the
+      // same monitor stream that backs onIntegrityLost, so consumers see a
+      // tier degradation through the one integrity channel.
+      onIntegrityEvent: _monitor.report,
       cache:
           _cache, // Shared cache between impl and engine for state propagation
     );

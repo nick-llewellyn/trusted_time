@@ -20,6 +20,8 @@ final class ConsensusResult {
     this.authLevel = NtsAuthLevel.none,
     this.confidence = ConfidenceLevel.low,
     this.interval,
+    this.degradedTier = false,
+    this.droppedOutsideTruthBox = const {},
   });
 
   /// The mid-point of the agreed consensus interval.
@@ -88,6 +90,52 @@ final class ConsensusResult {
 
   /// The raw [TimeInterval] representing the intersection of all quorum samples.
   final TimeInterval? interval;
+
+  /// Whether this consensus was published without a Tier 1 (verified) truth
+  /// box and therefore fell back to a legacy single-tier reduction.
+  ///
+  /// `true` implies [authLevel] is [NtsAuthLevel.none]; `SyncEngine` reads
+  /// this flag to emit a [TamperReason.degradedTier] integrity event for the
+  /// cycle. Tier-aware results that formed a truth box report `false`.
+  final bool degradedTier;
+
+  /// Lower-tier samples (platform-mediated NTS or plain NTP/HTTPS) that were
+  /// excluded because their interval did not intersect the Tier 1 truth box.
+  ///
+  /// Always empty on degraded ([degradedTier] `true`) and legacy results.
+  /// `SyncEngine` surfaces each entry via
+  /// [SyncObserver.onSourceFailed] with the reason `tier2: outside truth box`.
+  final Set<TimeSample> droppedOutsideTruthBox;
+
+  /// Returns a copy of this result with the given fields replaced.
+  ConsensusResult copyWith({
+    DateTime? utc,
+    int? uncertaintyMs,
+    int? participantCount,
+    int? quorumDepth,
+    int? groupCount,
+    Set<TimeSample>? participants,
+    NtsAuthLevel? authLevel,
+    ConfidenceLevel? confidence,
+    TimeInterval? interval,
+    bool? degradedTier,
+    Set<TimeSample>? droppedOutsideTruthBox,
+  }) {
+    return ConsensusResult(
+      utc: utc ?? this.utc,
+      uncertaintyMs: uncertaintyMs ?? this.uncertaintyMs,
+      participantCount: participantCount ?? this.participantCount,
+      quorumDepth: quorumDepth ?? this.quorumDepth,
+      groupCount: groupCount ?? this.groupCount,
+      participants: participants ?? this.participants,
+      authLevel: authLevel ?? this.authLevel,
+      confidence: confidence ?? this.confidence,
+      interval: interval ?? this.interval,
+      degradedTier: degradedTier ?? this.degradedTier,
+      droppedOutsideTruthBox:
+          droppedOutsideTruthBox ?? this.droppedOutsideTruthBox,
+    );
+  }
 }
 
 /// A high-integrity implementation of Marzullo's algorithm for time consensus.
@@ -125,12 +173,86 @@ final class MarzulloEngine {
   /// high-confidence status.
   final int minGroupCount;
 
-  /// Orchestrates the consensus resolution process across a set of samples.
+  /// Orchestrates tier-aware consensus resolution across a set of samples.
   ///
-  /// Returns a [ConsensusResult] if a quorum is achieved that satisfies
-  /// the [minQuorumRatio] and [minGroupCount] constraints. Returns `null`
-  /// if the samples are too divergent or the population is insufficient.
+  /// Implements the tiered-trust admission model (design doc section 4):
+  ///
+  /// 1. **Truth-box pass.** Only `NtsAuthLevel.verified` samples (Tier 1)
+  ///    may define the authoritative consensus interval. A Marzullo
+  ///    reduction over the verified subset alone produces the *truth box*.
+  /// 2. **Re-admission pass.** Every lower-tier sample (platform-mediated
+  ///    NTS or plain NTP/HTTPS) whose interval intersects the truth box is
+  ///    folded into a merged set; non-intersecting samples are dropped and
+  ///    surfaced on [ConsensusResult.droppedOutsideTruthBox].
+  /// 3. **Final reduction.** A Marzullo reduction over the merged set
+  ///    refines the published result, but can never move the consensus
+  ///    midpoint outside the truth box — a lower-tier cluster cannot
+  ///    relocate the anchor (design doc section 4.3). The result reports
+  ///    `authLevel == NtsAuthLevel.verified`.
+  ///
+  /// If fewer than a quorum of verified samples exist no truth box can be
+  /// formed: the cycle is *degraded*. The engine falls back to a legacy
+  /// single-tier Marzullo over all [samples], forces
+  /// `authLevel == NtsAuthLevel.none`, and sets
+  /// [ConsensusResult.degradedTier] so `SyncEngine` can emit
+  /// [TamperReason.degradedTier]. Returns `null` only when even the
+  /// fallback reduction cannot reach a quorum.
   ConsensusResult? resolve(List<TimeSample> samples) {
+    final verified = samples
+        .where((s) => _tierOf(s) == _Tier.verified)
+        .toList();
+
+    final truthBox = _resolveCore(verified);
+    if (truthBox == null || truthBox.interval == null) {
+      // No Tier 1 truth box this cycle. Fall back to a legacy single-tier
+      // reduction over every sample, flagged as degraded with the auth
+      // level pinned to none regardless of any stray verified sample that
+      // could otherwise lift the core's weakest-link computation.
+      final legacy = _resolveCore(samples);
+      if (legacy == null) return null;
+      return legacy.copyWith(authLevel: NtsAuthLevel.none, degradedTier: true);
+    }
+
+    final box = truthBox.interval!;
+    final dropped = <TimeSample>{};
+    final merged = <TimeSample>[...verified];
+    for (final s in samples) {
+      if (_tierOf(s) == _Tier.verified) continue;
+      if (_intervalsIntersect(s.interval, box)) {
+        merged.add(s);
+      } else {
+        dropped.add(s);
+      }
+    }
+
+    // Refine over the merged set, but keep the truth box authoritative: a
+    // lower-tier reduction is accepted only when its midpoint still lands
+    // inside the truth box. Otherwise (a coordinated lower-tier cluster
+    // tried to relocate the anchor, or the widened quorum floor rejected
+    // the reduction) we publish the verified truth box unchanged.
+    final refined = _resolveCore(merged);
+    final base =
+        (refined != null &&
+            refined.interval != null &&
+            _withinBox(refined.utc.millisecondsSinceEpoch, box))
+        ? refined
+        : truthBox;
+
+    return base.copyWith(
+      authLevel: NtsAuthLevel.verified,
+      degradedTier: false,
+      droppedOutsideTruthBox: dropped,
+    );
+  }
+
+  /// Single-tier Marzullo reduction over [samples].
+  ///
+  /// Returns a [ConsensusResult] if a quorum is achieved that satisfies the
+  /// [minQuorumRatio] and [minGroupCount] constraints, or `null` if the
+  /// samples are too divergent or the population is insufficient. The
+  /// `authLevel` it computes here is the legacy weakest-link value; the
+  /// tier-aware [resolve] wrapper overrides it per the truth-box policy.
+  ConsensusResult? _resolveCore(List<TimeSample> samples) {
     // Filter out invalid samples (negative uncertainty indicates clock errors)
     // and noisy sources with excessive uncertainty.
     final validSamples = samples
@@ -332,3 +454,38 @@ final class _Endpoint {
   final _EndpointType type;
   final TimeSample sample;
 }
+
+/// Trust tier of a single sample under the tiered-trust admission model
+/// (design doc section 4.1). Classification keys off the joint
+/// `(authLevel, trustBackend)` shape — no new field on [TimeSample].
+enum _Tier {
+  /// `NtsAuthLevel.verified`: bundled-roots or custom-roots NTS. Defines
+  /// the truth box.
+  verified,
+
+  /// `NtsAuthLevel.none` with a non-null `trustBackend`: platform-mediated
+  /// NTS. Admitted only if it intersects the verified truth box.
+  platformNts,
+
+  /// `NtsAuthLevel.none` with a null `trustBackend`: plain NTP / HTTPS /
+  /// additional sources. Admitted under the same intersection rule;
+  /// indistinguishable from [platformNts] at admission time.
+  best,
+}
+
+/// Classifies a sample into its trust tier. Only `NtsSource` ever sets
+/// `trustBackend`, so the joint shape uniquely separates platform-mediated
+/// NTS from plain NTP/HTTPS without a dedicated field.
+_Tier _tierOf(TimeSample s) {
+  if (s.authLevel == NtsAuthLevel.verified) return _Tier.verified;
+  if (s.trustBackend != null) return _Tier.platformNts;
+  return _Tier.best;
+}
+
+/// Whether two closed intervals share at least one instant.
+bool _intervalsIntersect(TimeInterval a, TimeInterval b) =>
+    a.startMs <= b.endMs && a.endMs >= b.startMs;
+
+/// Whether [ms] falls within the closed truth-box interval [box].
+bool _withinBox(int ms, TimeInterval box) =>
+    box.startMs <= ms && ms <= box.endMs;

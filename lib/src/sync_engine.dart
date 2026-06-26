@@ -5,9 +5,11 @@ import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
 import 'domain/time_interval.dart';
 import 'exceptions.dart' show TransientSourceError, TrustedTimeSyncException;
+import 'integrity_event.dart';
 import 'models.dart';
 import 'monotonic_clock.dart';
 import 'source_quality_tracker.dart';
+import 'sources/nts_auth_level.dart';
 import 'sources/time_sources.dart';
 import 'infra/sync_observer.dart';
 import 'infra/consensus_cache.dart';
@@ -32,9 +34,11 @@ final class SyncEngine {
     SyncObserver? observer,
     ConsensusCache? cache,
     SourceQualityTracker? qualityTracker,
+    void Function(IntegrityEvent event)? onIntegrityEvent,
   }) : _config = config,
        _clock = clock,
        _observer = observer,
+       _onIntegrityEvent = onIntegrityEvent,
        _cache = cache,
        _qualityTracker = qualityTracker ?? SourceQualityTracker(),
        _engine = MarzulloEngine(
@@ -46,6 +50,12 @@ final class SyncEngine {
   final TrustedTimeConfig _config;
   final MonotonicClock _clock;
   final SyncObserver? _observer;
+
+  /// Sink for engine-originated integrity events (currently
+  /// [TamperReason.degradedTier]). `TrustedTimeImpl` wires this to
+  /// `IntegrityMonitor.report` so the event reaches the public
+  /// `onIntegrityLost` stream; tests may pass a recorder directly.
+  final void Function(IntegrityEvent event)? _onIntegrityEvent;
   final ConsensusCache? _cache;
   final MarzulloEngine _engine;
 
@@ -535,6 +545,23 @@ final class SyncEngine {
       if (completer.isCompleted) return;
       _observer?.onConsensusReached(result);
 
+      // Tier-aware admission bookkeeping. A degraded cycle (no Tier 1 truth
+      // box) raises a degradedTier integrity event so the public
+      // onIntegrityLost stream learns the published anchor is best-effort
+      // (authLevel: none); lower-tier samples dropped for falling outside
+      // the truth box are surfaced as per-source failures for telemetry.
+      if (result.degradedTier) {
+        _onIntegrityEvent?.call(
+          IntegrityEvent(
+            reason: TamperReason.degradedTier,
+            detectedAt: DateTime.now().toUtc(),
+          ),
+        );
+      }
+      for (final dropped in result.droppedOutsideTruthBox) {
+        _observer?.onSourceFailed(dropped.sourceId, 'tier2: outside truth box');
+      }
+
       // Record one quality observation per source that returned a sample
       // this cycle, flagging whether it landed in the consensus winning
       // set. Iterating the full collected `samples` population (not just
@@ -586,6 +613,16 @@ final class SyncEngine {
             'quorumDepth': result.quorumDepth / _sources.length,
             'diversity': result.groupCount / 2.0,
             'stability': 1.0,
+            // Fraction of the configured source pool that contributed a
+            // Tier 1 (verified) sample to the published consensus. 0.0 on a
+            // degraded cycle (no truth box formed); positive when a verified
+            // truth box anchored the result.
+            'tier1Quorum': _sources.isEmpty
+                ? 0.0
+                : result.participants
+                          .where((s) => s.authLevel == NtsAuthLevel.verified)
+                          .length /
+                      _sources.length,
           },
         ),
       );
