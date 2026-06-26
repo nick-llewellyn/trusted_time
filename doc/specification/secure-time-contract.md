@@ -23,14 +23,13 @@ This contract is written in the present tense to describe the **target end state
 
 - `NtsAuthLevel` is the binary `{verified, none}` shape; the pre-2.1.0 `advisory` value is removed.
 - `requireSecure: true` fails closed: `getTime` throws `TrustedTimeSecurityException` when the current anchor is not `verified`.
-- `package:nts` is pinned at `^5.2.0` (PR #44). The trust primitives the target consumes — `TrustMode.bundledOnly`, `TrustMode.custom`, and an `NtsClient` `customRoots` parameter — were introduced in `nts 5.1.0` (PR #42) and remain available under the current pin, but they are not yet wired into `TrustedTimeConfig`.
+- `package:nts` is pinned at `^5.2.0` (PR #44). The trust primitives the target consumes — `TrustMode.bundledOnly`, `TrustMode.custom`, and an `NtsClient` `customRoots` parameter — were introduced in `nts 5.1.0` (PR #42) and are wired into `TrustedTimeConfig` as of `trusted_time-rjt`: `usePlatformTrust` and `customRootCerts` resolve through `effectiveTrustMode` to `bundledOnly` (the effective default), `platformOnly`, or `custom`.
 
 **Target — `trusted_time-m8t` (not yet on trunk):**
 
 - Per-sample `TrustBackend → NtsAuthLevel` mapping. Today `NtsSource` labels **every** successful NTS sample `verified`, regardless of which trust store authenticated the chain.
 - Tier-aware truth-box admission in `MarzulloEngine`. Today the engine uses a **weakest-link** reduction: a single `none` participant collapses the consensus `authLevel` to `none`. The truth-box model — NTS defines the box, NTP/HTTPS are admitted only when they intersect it — is the target, not current behaviour.
 - The `degradedTier` `IntegrityEvent` reason. Not yet a member of `TamperReason`.
-- The `usePlatformTrust` and `customRootCerts` fields on `TrustedTimeConfig`. Today trust mode is selected via the single `ntsTrustMode` field.
 
 ## Definitions
 
@@ -227,20 +226,11 @@ A change that alters the conditions under which `NtsAuthLevel.verified` is emitt
 
 This section adds the consumer-persona framing for the tiered trust model whose end-to-end implementation is documented in [`doc/design/tiered-trust-implementation.md`](../design/tiered-trust-implementation.md). The two personas are not separate code paths — the same library implements both — but they configure the engine differently and read its outputs with different expectations.
 
-> **[Target — `trusted_time-m8t`]** The persona *config surface* below (`usePlatformTrust`, `customRootCerts`) is the intended target state. On trunk today, trust mode is selected via the single `ntsTrustMode` field, and the tier classification, truth-box admission, and `degradedTier` event these personas reference are not yet wired. Each config block below shows both the **trunk-today** form (`ntsTrustMode`) and the **target** form (the new fields).
+> **[Partially implemented — `trusted_time-rjt` / `trusted_time-m8t`]** The persona *config surface* below (`usePlatformTrust`, `customRootCerts`) is **live on trunk** as of `trusted_time-rjt`, which also flipped the effective default to `bundledOnly` and removed the earlier single `ntsTrustMode` field. The *engine behaviour* these personas reference — tier classification, truth-box admission, and the `degradedTier` event — is **not yet wired** (tracked by `trusted_time-m8t` and downstream tickets), so those points remain marked **[Target — `trusted_time-m8t`]** inline.
 
 ### Persona: Security-Conscious (Bundled / Custom)
 
-**Configuration shape (trunk today):**
-
-```dart
-const TrustedTimeConfig(
-  ntsTrustMode: nts.TrustMode.bundledOnly,
-  ntsServers: ['time.cloudflare.com'],
-)
-```
-
-**Configuration shape (target — `trusted_time-m8t`):**
+**Configuration shape:**
 
 ```dart
 const TrustedTimeConfig(
@@ -250,10 +240,9 @@ const TrustedTimeConfig(
 )
 ```
 
-Or, for deployments with caller-controlled roots (private NTS-KE infrastructure, regulated environments that require pinned anchors) — trunk-today via `ntsTrustMode: nts.TrustMode.custom` with the roots passed through the engine's NTS-client construction, and target via the dedicated field:
+The bundled `webpki-roots` set is the default anchor; no trust field needs to be set. For deployments with caller-controlled roots (private NTS-KE infrastructure, regulated environments that require pinned anchors), supply them via `customRootCerts`:
 
 ```dart
-// target — trusted_time-m8t
 const TrustedTimeConfig(
   customRootCerts: <int>[...myRootsPem],
   ntsServers: ['time.internal.example.com'],
@@ -274,16 +263,7 @@ const TrustedTimeConfig(
 
 ### Persona: Operational-First (Platform)
 
-**Configuration shape (trunk today):**
-
-```dart
-const TrustedTimeConfig(
-  ntsTrustMode: nts.TrustMode.platformOnly,
-  ntsServers: ['time.cloudflare.com'],
-)
-```
-
-**Configuration shape (target — `trusted_time-m8t`):**
+**Configuration shape:**
 
 ```dart
 const TrustedTimeConfig(
@@ -313,11 +293,11 @@ The two personas are mutually exclusive at construction:
 | `false` (default) | `[]` (default) | Security-Conscious (bundled) | `bundledOnly` |
 | `false` | non-empty | Security-Conscious (custom) | `custom` |
 | `true` | `[]` | Operational-First | `platformOnly` |
-| `true` | non-empty | — | rejected at construction |
+| `true` | non-empty | — | rejected on resolve |
 
-`usePlatformTrust: true` + non-empty `customRootCerts` is structurally ambiguous (two trust sources, no defined precedence) and is rejected with `ArgumentError` at config construction. The combination cannot occur on a live engine.
+`usePlatformTrust: true` + non-empty `customRootCerts` is structurally ambiguous (two trust sources, no defined precedence) and is rejected with `ArgumentError`. The `const` constructor cannot reject it — list emptiness is not a const-evaluable expression — so the combination is caught when `effectiveTrustMode` is resolved. `SyncEngine._sources` is a `late final` list built on first access (via `warmAllSources()`/`sync()`), so the resolver runs — and the `ArgumentError` is raised — when the engine first builds its source list, still before any source is constructed. It therefore cannot occur on a live engine.
 
-> **[Target — `trusted_time-m8t`]** This table and the `_effectiveTrustMode` resolver it implies are the target surface. On trunk today the effective `nts.TrustMode` is set **directly** via the `ntsTrustMode` field (e.g. `nts.TrustMode.bundledOnly`); there is no `usePlatformTrust`/`customRootCerts` derivation yet.
+> **[Implemented — `trusted_time-rjt`]** This table is live on trunk via the `TrustedTimeConfig.effectiveTrustMode` resolver. The conflicting row (`usePlatformTrust: true` + non-empty `customRootCerts`) throws `ArgumentError` from `effectiveTrustMode`; because `SyncEngine` reads the resolver while building its per-source `NtsSource` list (each `NtsSource` constructs its `nts.NtsClient` lazily), an invalid config fails closed before any source is built. The `const` constructor cannot reject it directly — list emptiness is not a const-evaluable expression — so the resolver is the single enforcement point.
 
 ### What this section is *not*
 

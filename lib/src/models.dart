@@ -61,7 +61,8 @@ final class TrustedTimeConfig {
     this.ntsServers = const ['time.cloudflare.com'],
     this.ntsPort = 4460,
     this.ntsDnsConcurrencyCap,
-    this.ntsTrustMode = nts.TrustMode.platformWithFallback,
+    this.usePlatformTrust = false,
+    this.customRootCerts = const [],
     this.additionalSources = const [],
     this.minQuorumRatio = 0.6,
     this.minimumQuorum = 2,
@@ -130,37 +131,61 @@ final class TrustedTimeConfig {
   /// caller's threshold).
   final int? ntsDnsConcurrencyCap;
 
-  /// Trust-anchor policy applied to every per-source [nts.NtsClient]
-  /// constructed by the engine.
+  /// Whether to validate every NTS-KE handshake against the platform /
+  /// OS trust store instead of the bundled `webpki-roots` static set.
   ///
-  /// Defaults to [nts.TrustMode.platformWithFallback], which preserves
-  /// the behaviour of every release prior to the `package:nts` v3.0.0
-  /// migration: each NTS-KE handshake first attempts the platform
-  /// trust store, then silently falls back to the bundled
-  /// `webpki-roots` static bundle if `build_with_native_verifier`
-  /// fails at TLS-config construction.
+  /// Defaults to `false` — the engine constructs every per-source
+  /// [nts.NtsClient] in [nts.TrustMode.bundledOnly], so authenticity is
+  /// end-to-end and a TLS-inspection appliance holding a platform- or
+  /// MDM-installed inspection CA cannot complete a man-in-the-middle
+  /// NTS-KE handshake this client would accept. This is the
+  /// security-by-default posture: a consumer who never reasons about
+  /// trust still gets a library-controlled anchor set rather than one
+  /// the surrounding network can influence.
   ///
-  /// Set to [nts.TrustMode.platformOnly] when a pinned corporate CA
-  /// or an MDM-installed root is the load-bearing trust anchor and a
-  /// silent downgrade to the public-CA bundle would defeat the
-  /// deployment's TLS-inspection posture. With this mode,
-  /// `build_with_native_verifier` failure surfaces as an
-  /// `NtsError.trustBackendUnavailable` (consumed by the engine as a
-  /// per-source failure) instead of producing a successful sample
-  /// against the static bundle.
+  /// Set to `true` only as the explicit "I have a pinned corporate CA
+  /// or MDM-installed root and accept that authenticity is
+  /// platform-mediated rather than end-to-end" opt-in. The engine then
+  /// constructs each client in [nts.TrustMode.platformOnly], which
+  /// refuses `package:nts`'s Android `webpki-roots` hybrid fallback
+  /// (nts 4.0.0): a `platformOnly` caller never resolves to
+  /// [nts.TrustBackend.platformWithHybridFallback], so the bundled set
+  /// genuinely is not consulted on any platform — hence "instead of"
+  /// above, not "in preference to".
   ///
-  /// **Scope:** This governs the **build-time** hard-fallback decision
-  /// only. On Android, the platform-side `HybridVerifier` makes a
-  /// separate **per-chain** decision after the platform verifier
-  /// returns: chains the platform verifier rejects with a curated
-  /// fallback-eligible failure shape (e.g. missing-OCSP-AIA chains
-  /// such as Let's Encrypt R12) can still be accepted via the
-  /// `webpki-roots` static bundle and surface as
-  /// `TrustBackend.platformWithHybridFallback`. That path is not
-  /// affected by this field. `platformOnly` therefore means "no
-  /// silent build-time downgrade", not "the public-CA bundle is
-  /// unreachable at runtime".
-  final nts.TrustMode ntsTrustMode;
+  /// Under the Secure Time Contract, samples authenticated via the
+  /// platform store are *intended* to report [NtsAuthLevel.none] rather
+  /// than `verified`, so a platform-mediated path is never
+  /// misrepresented as cryptographically verified. That
+  /// `TrustBackend`-to-[NtsAuthLevel] mapping is not yet live:
+  /// `NtsSource` currently emits `verified` for every successful
+  /// handshake. This field selects only the trust mode today; the
+  /// auth-level downgrade is tracked separately (design Section 3.2).
+  ///
+  /// Mutually exclusive with a non-empty [customRootCerts]; the
+  /// combination throws [ArgumentError]. See [effectiveTrustMode].
+  final bool usePlatformTrust;
+
+  /// PEM- or DER-encoded root certificates supplied by the consumer.
+  ///
+  /// When non-empty, the engine constructs every per-source
+  /// [nts.NtsClient] in [nts.TrustMode.custom] with these bytes;
+  /// neither the platform store nor the bundled `webpki-roots` set is
+  /// consulted, and the engine never silently augments the custom
+  /// anchors with either. Appropriate for on-premise or private-CA
+  /// NTS-KE deployments where neither default anchor set contains the
+  /// issuing root. Like the default bundled path, the anchor set is
+  /// fully caller-controlled, so a TLS-inspection appliance without the
+  /// matching private key cannot intercept the exchange.
+  ///
+  /// Empty (the default) selects the [usePlatformTrust] / bundled path.
+  /// Mutually exclusive with `usePlatformTrust == true`; the
+  /// combination throws [ArgumentError]. See [effectiveTrustMode].
+  ///
+  /// The mutability contract documented on the other list-typed fields
+  /// applies verbatim: pass a `const` list literal or a list the caller
+  /// does not subsequently mutate.
+  final List<int> customRootCerts;
 
   /// Custom [TimeSource] implementations provided by the application developer.
   final List<TimeSource> additionalSources;
@@ -238,6 +263,41 @@ final class TrustedTimeConfig {
   /// transient failures retry indefinitely.
   final int transientStreakThreshold;
 
+  /// The [nts.TrustMode] the engine applies to every per-source
+  /// [nts.NtsClient], derived from [usePlatformTrust] and
+  /// [customRootCerts].
+  ///
+  /// | [usePlatformTrust] | [customRootCerts] | result |
+  /// |---|---|---|
+  /// | `false` (default) | empty (default) | [nts.TrustMode.bundledOnly] |
+  /// | `false` | non-empty | [nts.TrustMode.custom] |
+  /// | `true` | empty | [nts.TrustMode.platformOnly] |
+  /// | `true` | non-empty | throws [ArgumentError] |
+  ///
+  /// `usePlatformTrust: true` together with a non-empty
+  /// [customRootCerts] names two mutually exclusive trust sources with
+  /// no defined precedence and throws [ArgumentError]. This getter is
+  /// the single enforcement point: [SyncEngine] reads it while building
+  /// its per-source `NtsSource` list — each `NtsSource` forwards the
+  /// resolved mode to its own lazily-constructed [nts.NtsClient] — so an
+  /// invalid config fails closed before any source is built and the
+  /// combination cannot
+  /// reach a live engine. (The `const` constructor cannot perform this
+  /// check itself — list emptiness is not a const-evaluable
+  /// expression.) See the Secure Time Contract, "Persona selection at
+  /// construction time".
+  nts.TrustMode get effectiveTrustMode {
+    if (usePlatformTrust && customRootCerts.isNotEmpty) {
+      throw ArgumentError(
+        'usePlatformTrust and customRootCerts are mutually exclusive: '
+        'set exactly one trust source (platform vs caller-supplied roots).',
+      );
+    }
+    if (customRootCerts.isNotEmpty) return nts.TrustMode.custom;
+    if (usePlatformTrust) return nts.TrustMode.platformOnly;
+    return nts.TrustMode.bundledOnly;
+  }
+
   /// Returns a new [TrustedTimeConfig] with the supplied fields replaced.
   ///
   /// Any field omitted (or passed as `null`) keeps its current value.
@@ -249,7 +309,8 @@ final class TrustedTimeConfig {
     List<String>? ntsServers,
     int? ntsPort,
     int? ntsDnsConcurrencyCap,
-    nts.TrustMode? ntsTrustMode,
+    bool? usePlatformTrust,
+    List<int>? customRootCerts,
     List<TimeSource>? additionalSources,
     double? minQuorumRatio,
     int? minimumQuorum,
@@ -269,7 +330,8 @@ final class TrustedTimeConfig {
       ntsServers: ntsServers ?? this.ntsServers,
       ntsPort: ntsPort ?? this.ntsPort,
       ntsDnsConcurrencyCap: ntsDnsConcurrencyCap ?? this.ntsDnsConcurrencyCap,
-      ntsTrustMode: ntsTrustMode ?? this.ntsTrustMode,
+      usePlatformTrust: usePlatformTrust ?? this.usePlatformTrust,
+      customRootCerts: customRootCerts ?? this.customRootCerts,
       additionalSources: additionalSources ?? this.additionalSources,
       minQuorumRatio: minQuorumRatio ?? this.minQuorumRatio,
       minimumQuorum: minimumQuorum ?? this.minimumQuorum,
@@ -298,7 +360,8 @@ final class TrustedTimeConfig {
         listEquals(other.ntsServers, ntsServers) &&
         other.ntsPort == ntsPort &&
         other.ntsDnsConcurrencyCap == ntsDnsConcurrencyCap &&
-        other.ntsTrustMode == ntsTrustMode &&
+        other.usePlatformTrust == usePlatformTrust &&
+        listEquals(other.customRootCerts, customRootCerts) &&
         listEquals(other.additionalSources, additionalSources) &&
         other.minQuorumRatio == minQuorumRatio &&
         other.minimumQuorum == minimumQuorum &&
@@ -320,7 +383,8 @@ final class TrustedTimeConfig {
     Object.hashAll(ntsServers),
     ntsPort,
     ntsDnsConcurrencyCap,
-    ntsTrustMode,
+    usePlatformTrust,
+    Object.hashAll(customRootCerts),
     Object.hashAll(additionalSources),
     minQuorumRatio,
     minimumQuorum,
@@ -349,7 +413,13 @@ final class TrustedTimeConfig {
         '  ntsServers: $ntsServers,\n'
         '  ntsPort: $ntsPort,\n'
         '  ntsDnsConcurrencyCap: $ntsDnsConcurrencyCap,\n'
-        '  ntsTrustMode: $ntsTrustMode,\n'
+        '  usePlatformTrust: $usePlatformTrust,\n'
+        // Summarise rather than interpolate the raw bytes: dumping the
+        // list verbatim would leak consumer CA material into logs and
+        // produce a single line megabytes long for a PEM bundle. The
+        // byte count is enough to confirm whether custom roots are
+        // configured during a benchmarking session.
+        '  customRootCerts: ${customRootCerts.length} bytes,\n'
         '  additionalSources: $additionalSources,\n'
         '  minQuorumRatio: $minQuorumRatio,\n'
         '  minimumQuorum: $minimumQuorum,\n'

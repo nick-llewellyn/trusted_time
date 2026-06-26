@@ -48,67 +48,122 @@ void main() {
     });
   });
 
-  group('TrustedTimeConfig.ntsTrustMode', () {
-    test('defaults to platformWithFallback for backward compatibility', () {
-      // Default constructor must preserve the v2.x / pre-NTS-v3
-      // behaviour where every NTS-KE handshake silently falls back
-      // from the platform store to the static webpki-roots bundle on
-      // build_with_native_verifier failure. Changing this default
-      // would be a silent semantic break for enterprise / MDM
-      // deployments that currently depend on the fallback being
-      // available.
+  group('TrustedTimeConfig trust policy', () {
+    test('defaults resolve to bundledOnly (security-by-default flip)', () {
+      // The headline security posture: a consumer who never reasons
+      // about trust gets a library-controlled anchor set, not one the
+      // surrounding network (corporate MDM, TLS-inspection CA) can
+      // influence. package:nts keeps its own constructor default at
+      // platformWithFallback for broad-audience UX; trusted_time flips
+      // the *effective* default to bundledOnly on its side.
       const config = TrustedTimeConfig();
-      expect(config.ntsTrustMode, TrustMode.platformWithFallback);
+      expect(config.usePlatformTrust, isFalse);
+      expect(config.customRootCerts, isEmpty);
+      expect(config.effectiveTrustMode, TrustMode.bundledOnly);
     });
 
-    test('round-trips through copyWith', () {
+    test('usePlatformTrust: true resolves to platformOnly', () {
+      const config = TrustedTimeConfig(usePlatformTrust: true);
+      expect(config.effectiveTrustMode, TrustMode.platformOnly);
+    });
+
+    test('non-empty customRootCerts resolves to custom', () {
+      const config = TrustedTimeConfig(customRootCerts: [1, 2, 3]);
+      expect(config.effectiveTrustMode, TrustMode.custom);
+    });
+
+    test('mutually-exclusive combination throws ArgumentError on resolve', () {
+      // The const constructor cannot reject this (list emptiness is not
+      // a const-evaluable expression), so the config object constructs
+      // fine. effectiveTrustMode is the single enforcement point —
+      // SyncEngine reads it while building its per-source NtsSource list
+      // (each NtsSource constructs its nts.NtsClient lazily), so an
+      // invalid config fails closed before any source is built. This is
+      // the "both-non-default -> rejected" criterion from the ticket and
+      // the merged Secure Time Contract persona-selection table.
+      const config = TrustedTimeConfig(
+        usePlatformTrust: true,
+        customRootCerts: [1, 2, 3],
+      );
+      expect(() => config.effectiveTrustMode, throwsArgumentError);
+    });
+
+    test('round-trips the new fields through copyWith', () {
       const original = TrustedTimeConfig();
-      final updated = original.copyWith(ntsTrustMode: TrustMode.platformOnly);
-      expect(updated.ntsTrustMode, TrustMode.platformOnly);
-      // Other fields should remain at defaults — verifies the new
-      // copyWith parameter is purely additive.
-      expect(updated.ntsServers, original.ntsServers);
-      expect(updated.ntsPort, original.ntsPort);
+      final platform = original.copyWith(usePlatformTrust: true);
+      expect(platform.usePlatformTrust, isTrue);
+      expect(platform.effectiveTrustMode, TrustMode.platformOnly);
+
+      final custom = original.copyWith(customRootCerts: const [9, 9]);
+      expect(custom.customRootCerts, const [9, 9]);
+      expect(custom.effectiveTrustMode, TrustMode.custom);
+
+      // Purely additive: untouched fields keep their defaults.
+      expect(platform.ntsServers, original.ntsServers);
+      expect(platform.ntsPort, original.ntsPort);
     });
 
-    test('copyWith with omitted ntsTrustMode preserves existing value', () {
-      const original = TrustedTimeConfig(ntsTrustMode: TrustMode.platformOnly);
+    test('copyWith with omitted fields preserves existing values', () {
+      const original = TrustedTimeConfig(usePlatformTrust: true);
       final updated = original.copyWith(maxLatency: const Duration(seconds: 7));
-      expect(updated.ntsTrustMode, TrustMode.platformOnly);
+      expect(updated.usePlatformTrust, isTrue);
+      expect(updated.customRootCerts, isEmpty);
     });
 
-    test('participates in equality', () {
-      const a = TrustedTimeConfig();
-      const b = TrustedTimeConfig(ntsTrustMode: TrustMode.platformOnly);
-      expect(a == b, isFalse);
+    test('both new fields participate in equality', () {
+      const base = TrustedTimeConfig();
+      const platform = TrustedTimeConfig(usePlatformTrust: true);
+      const custom = TrustedTimeConfig(customRootCerts: [1]);
+      expect(base == platform, isFalse);
+      expect(base == custom, isFalse);
+      expect(platform == custom, isFalse);
     });
 
     test('equal configs produce equal hashCodes (positive contract)', () {
-      // Verifies the field is folded into hashCode by checking the
-      // forward direction of the Object.== / hashCode contract:
-      // equal objects MUST share a hashCode. The reverse (unequal
-      // -> unequal hashCode) is intentionally not asserted because
-      // hash collisions are permitted by the contract; asserting
-      // inequality would test a non-guarantee and could spuriously
-      // fail under a future hashAll re-tuning.
-      const a = TrustedTimeConfig(ntsTrustMode: TrustMode.platformOnly);
-      const b = TrustedTimeConfig(ntsTrustMode: TrustMode.platformOnly);
+      // Forward direction of the ==/hashCode contract: equal objects
+      // MUST share a hashCode. customRootCerts is folded via
+      // Object.hashAll, matching the other list-typed fields, so two
+      // configs with equal-by-value root lists hash equally. The
+      // reverse (unequal -> unequal hashCode) is intentionally not
+      // asserted: hash collisions are permitted by the contract.
+      const a = TrustedTimeConfig(customRootCerts: [1, 2, 3]);
+      const b = TrustedTimeConfig(customRootCerts: [1, 2, 3]);
       expect(a, equals(b));
       expect(a.hashCode, equals(b.hashCode));
     });
 
-    test('appears in toString output', () {
-      const config = TrustedTimeConfig(ntsTrustMode: TrustMode.platformOnly);
-      expect(
-        config.toString(),
-        contains('ntsTrustMode: TrustMode.platformOnly'),
-      );
+    test('both new fields appear in toString output', () {
+      const config = TrustedTimeConfig(usePlatformTrust: true);
+      final dump = config.toString();
+      expect(dump, contains('usePlatformTrust: true'));
+      expect(dump, contains('customRootCerts: 0 bytes'));
     });
+
+    test(
+      'toString summarises customRootCerts as a byte count, not raw bytes',
+      () {
+        // Guards against regressing to interpolating the raw List<int>:
+        // doing so leaks consumer CA material into logs and produces
+        // huge log lines for PEM bundles. The dump must report only the
+        // length and never the byte values themselves.
+        const config = TrustedTimeConfig(customRootCerts: [10, 20, 30]);
+        final dump = config.toString();
+        expect(dump, contains('customRootCerts: 3 bytes'));
+        // Assert the field is never rendered as a list at all, rather
+        // than excluding one exact rendering of these bytes. Any
+        // regression that interpolates the List<int> — regardless of
+        // element formatting (spaces, separators) or content — opens
+        // with `customRootCerts: [`, so its absence is the
+        // format-agnostic leak guard.
+        expect(dump, isNot(contains('customRootCerts: [')));
+      },
+    );
   });
 
   group('TimeSample.trustBackend', () {
-    // The field is the per-handshake observability counterpart to
-    // TrustedTimeConfig.ntsTrustMode: nullable, surfaced unchanged
+    // The field is the per-handshake observability counterpart to the
+    // TrustedTimeConfig trust policy (usePlatformTrust /
+    // customRootCerts): nullable, surfaced unchanged
     // from package:nts's NtsTimeSample for NTS samples and absent
     // (null) for non-NTS sources that have no equivalent concept.
     // These tests lock in the backward-compatible default and the

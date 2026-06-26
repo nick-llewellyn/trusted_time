@@ -47,15 +47,21 @@ final class TimeSample {
   ///   curated platform-failure shapes (e.g. missing-OCSP-AIA
   ///   chains such as Let's Encrypt R12).
   /// - [nts.TrustBackend.webpkiRoots] — the static bundle
-  ///   authenticated end-to-end. Loses visibility into MDM/user
-  ///   roots; this is the silent-fallback path that
-  ///   [TrustedTimeConfig.ntsTrustMode] = `platformOnly` refuses.
+  ///   authenticated end-to-end. This is the backend the default
+  ///   [nts.TrustMode.bundledOnly] posture produces; it has no
+  ///   visibility into MDM/user-installed roots by design.
+  /// - [nts.TrustBackend.custom] — a caller-supplied root from
+  ///   [TrustedTimeConfig.customRootCerts] authenticated the chain
+  ///   ([nts.TrustMode.custom]). The anchor set is fully
+  ///   caller-controlled — no platform-store or bundled-roots
+  ///   consultation — so it is the on-premise / private-CA
+  ///   counterpart to `webpkiRoots`.
   ///
-  /// Per-sample observability is the read-only counterpart to
-  /// `ntsTrustMode`: `ntsTrustMode` lets a deployment make the
-  /// silent fallback a hard error; `trustBackend` lets a deployment
-  /// see the silent fallback after the fact even when it is
-  /// permitted.
+  /// Per-sample observability is the read-only counterpart to the
+  /// [TrustedTimeConfig] trust policy: [TrustedTimeConfig.usePlatformTrust]
+  /// and [TrustedTimeConfig.customRootCerts] choose which backend the
+  /// engine is willing to use up front; `trustBackend` reports which
+  /// one each individual handshake actually resolved to.
   final nts.TrustBackend? trustBackend;
 
   /// Helper to get the UTC time (midpoint of the interval).

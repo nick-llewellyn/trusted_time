@@ -68,12 +68,20 @@ final class NtsSource implements TimeSource, Warmable {
   /// callers.
   ///
   /// [trustMode] selects the trust-anchor policy applied to the
-  /// per-source [nts.NtsClient]. Defaults to
-  /// [nts.TrustMode.platformWithFallback], matching every release
-  /// prior to the `package:nts` v3.0.0 migration. See
-  /// [TrustedTimeConfig.ntsTrustMode] for the full semantics
-  /// (build-time vs per-chain decision; Android `HybridVerifier`
-  /// scope; enterprise / MDM use case for `platformOnly`).
+  /// per-source [nts.NtsClient]. [SyncEngine] passes the mode resolved
+  /// by [TrustedTimeConfig.effectiveTrustMode] — `bundledOnly` by
+  /// default, `platformOnly` when the consumer opts into platform
+  /// trust, or `custom` when caller-supplied roots are configured. The
+  /// parameter default of [nts.TrustMode.platformWithFallback] mirrors
+  /// `package:nts`'s own constructor default and applies only to direct
+  /// (non-engine) callers.
+  ///
+  /// [customRoots] is forwarded verbatim to the [nts.NtsClient]
+  /// constructor and must be non-null and non-empty when (and only
+  /// when) [trustMode] is [nts.TrustMode.custom]; `package:nts` throws
+  /// `ArgumentError` otherwise. [SyncEngine] satisfies this by passing
+  /// [TrustedTimeConfig.customRootCerts] (or `null` when empty)
+  /// alongside the resolved mode.
   ///
   /// [onStratumObserved] is called with the NTP stratum reported by
   /// the server after each successful query. Used by [SyncEngine] to
@@ -86,11 +94,13 @@ final class NtsSource implements TimeSource, Warmable {
     int dnsConcurrencyCap = nts.kDefaultDnsConcurrencyCap,
     Duration maxLatency = const Duration(seconds: 5),
     nts.TrustMode trustMode = nts.TrustMode.platformWithFallback,
+    List<int>? customRoots,
     void Function(int)? onStratumObserved,
   }) : _spec = nts.NtsServerSpec(host: _host, port: port),
        _dnsConcurrencyCap = dnsConcurrencyCap,
        _timeoutMs = maxLatency.inMilliseconds,
        _trustMode = trustMode,
+       _customRoots = customRoots,
        _onStratumObserved = onStratumObserved;
 
   final String _host;
@@ -98,6 +108,7 @@ final class NtsSource implements TimeSource, Warmable {
   final int _dnsConcurrencyCap;
   final int _timeoutMs;
   final nts.TrustMode _trustMode;
+  final List<int>? _customRoots;
   final void Function(int)? _onStratumObserved;
 
   /// Per-source [nts.NtsClient]. Lazily constructed on first [warm]
@@ -153,7 +164,10 @@ final class NtsSource implements TimeSource, Warmable {
     //   - Query failure: `nts.NtsError` (or `TransientSourceError`
     //     for the dnsSaturation phase) thrown from `client.query`
     //     below and handled by the existing on-clauses.
-    final client = _client ??= nts.NtsClient(trustMode: _trustMode);
+    final client = _client ??= nts.NtsClient(
+      trustMode: _trustMode,
+      customRoots: _customRoots,
+    );
 
     final nts.NtsTimeSample result;
     try {
@@ -224,7 +238,10 @@ final class NtsSource implements TimeSource, Warmable {
       // swallows that case so the warm path stays lossy as
       // documented; [getTime] re-attempts construction so the
       // structural failure surfaces with a real query attempt.
-      final client = _client ??= nts.NtsClient(trustMode: _trustMode);
+      final client = _client ??= nts.NtsClient(
+        trustMode: _trustMode,
+        customRoots: _customRoots,
+      );
       await client.warmCookies(
         spec: _spec,
         dnsConcurrencyCap: _dnsConcurrencyCap,

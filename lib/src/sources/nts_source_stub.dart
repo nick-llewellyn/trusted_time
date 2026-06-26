@@ -12,6 +12,7 @@ final class NtsSource implements TimeSource {
     int dnsConcurrencyCap = nts.kDefaultDnsConcurrencyCap,
     Duration maxLatency = const Duration(seconds: 5),
     nts.TrustMode trustMode = nts.TrustMode.platformWithFallback,
+    List<int>? customRoots,
     void Function(int)? onStratumObserved,
   });
 
