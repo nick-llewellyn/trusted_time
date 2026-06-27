@@ -366,9 +366,11 @@ abstract final class TrustedTime {
         'happens when NTS was unavailable and the engine fell back to '
         'lower-tier (NTP/HTTPS) consensus, or when NTS was validated '
         'under platform-mediated trust rather than the library-controlled '
-        'store. Either reduce the requirement (requireSecure: false) or '
-        'configure the engine with usePlatformTrust: false (the default) '
-        'so NTS samples can be verified end-to-end.',
+        'store. To satisfy requireSecure: true, configure reachable NTS '
+        'servers (so a verified anchor can be established) and keep '
+        'usePlatformTrust: false (the default, so NTS is validated against '
+        'the library-controlled store). Otherwise reduce the requirement '
+        'with requireSecure: false.',
       );
     }
 

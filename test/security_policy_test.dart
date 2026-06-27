@@ -95,7 +95,9 @@ void main() {
 
   group('Secure Time Contract — requireSecure (live engine)', () {
     // Drop into the real TrustedTimeImpl singleton: clear any override a
-    // sibling group may have left set.
+    // sibling group may have left set *before* each test, otherwise
+    // initialize() short-circuits and never exercises the real engine.
+    setUp(TrustedTime.resetOverride);
     tearDown(TrustedTime.resetOverride);
 
     Future<void> initWith(List<TimeSource> sources) async {
