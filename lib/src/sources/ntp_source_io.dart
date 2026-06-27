@@ -1,37 +1,150 @@
+import 'dart:io' show InternetAddress, InternetAddressType;
+
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:ntp/ntp.dart';
+import '../data/asn_resolver.dart';
 import '../domain/time_sample.dart';
 import '../domain/time_source.dart';
 import '../domain/time_interval.dart';
 
+/// Resolves [host] to its addresses. Injectable so tests can supply a
+/// deterministic mapping without real DNS.
+typedef HostResolver = Future<List<InternetAddress>> Function(String host);
+
+/// Fetches the NTP offset (ms) for the already-chosen [lookUpAddress].
+/// Injectable so tests can assert the resolved literal IP is handed
+/// through to the exchange without real UDP traffic.
+typedef OffsetFetcher = Future<int> Function(String lookUpAddress);
+
 /// NTP time source — IO-only (uses UDP sockets via `dart:io`).
 final class NtpSource implements TimeSource {
-  /// Documented.
-  const NtpSource(this._host);
+  /// Creates an NTP source for [host].
+  ///
+  /// [asnResolver], [hostResolver] and [offsetFetcher] are injection
+  /// seams for tests; in production they default to the shared offline
+  /// ASN snapshot, real DNS resolution, and `NTP.getNtpOffset`
+  /// respectively. All default to `null` and the shared defaults are
+  /// resolved lazily via getters so the constructor stays `const` for
+  /// the common (no-override) call site.
+  const NtpSource(
+    this._host, {
+    AsnResolver? asnResolver,
+    HostResolver? hostResolver,
+    OffsetFetcher? offsetFetcher,
+  }) : _asnOverride = asnResolver,
+       _hostOverride = hostResolver,
+       _offsetOverride = offsetFetcher;
+
+  /// Shared across all NTP sources so the bundled ASN table is
+  /// decompressed and held in memory exactly once per isolate.
+  static final AsnResolver _sharedAsn = AsnResolver();
 
   final String _host;
+  final AsnResolver? _asnOverride;
+  final HostResolver? _hostOverride;
+  final OffsetFetcher? _offsetOverride;
+
+  AsnResolver get _asn => _asnOverride ?? _sharedAsn;
+  HostResolver get _resolveHost => _hostOverride ?? InternetAddress.lookup;
+  OffsetFetcher get _fetchOffset => _offsetOverride ?? _defaultFetchOffset;
+
+  static Future<int> _defaultFetchOffset(String lookUpAddress) =>
+      NTP.getNtpOffset(
+        lookUpAddress: lookUpAddress,
+        timeout: const Duration(seconds: 10),
+      );
+
+  /// Shared sentinel group id used whenever the host's ASN cannot be
+  /// determined — a DNS or ASN-table miss, or a resolution failure.
+  ///
+  /// [MarzulloEngine] counts distinct `groupId`s purely to grade
+  /// confidence, so a per-host fallback would let two servers in the same
+  /// unknown ASN look like two providers, inflating the diversity count
+  /// and over-grading confidence. Collapsing every un-attributable sample
+  /// into this one group keeps confidence honest (or conservative), never
+  /// inflated, while the sample still counts toward quorum and the
+  /// published time. See ADR 0007.
+  static const String groupIdUnknown = 'asn-unknown';
 
   @override
   String get id => '${TimeSource.prefixNtp}$_host';
 
+  /// Synchronous group fallback. The authoritative group is the
+  /// ASN-derived id resolved per query (see [resolveGroupId]); absent a
+  /// resolved IP this reports the shared [groupIdUnknown] sentinel rather
+  /// than guessing a group from the hostname.
   @override
-  String get groupId => _host
-      .split('.')
-      .reversed
-      .skip(1)
-      .take(2)
-      .toList()
-      .reversed
-      .join('.')
-      .replaceFirst('pool.ntp.org', 'ntp-pool'); // Basic group heuristic
+  String get groupId => groupIdUnknown;
+
+  /// Best-effort ASN-based group ID (`as<asn>`) derived from the host's
+  /// resolved IP, falling back to the shared [groupIdUnknown] sentinel on
+  /// any DNS/ASN miss or failure. See ADR 0007.
+  @visibleForTesting
+  Future<String> resolveGroupId() async => _groupIdFor(await _resolveFirst());
+
+  /// Resolves [_host] to a single deterministic address, or `null` when DNS
+  /// yields nothing, times out, or throws. DNS can return multiple A/AAAA
+  /// records in a platform- and run-dependent order, so we pick
+  /// deterministically — IPv4 first, then the lowest address literal — to
+  /// keep the derived ASN/groupId stable across runs for multi-record hosts.
+  /// Centralised so [getTime] pins the same address for both the ASN lookup
+  /// and the NTP exchange.
+  Future<InternetAddress?> _resolveFirst() async {
+    try {
+      final addrs = await _resolveHost(
+        _host,
+      ).timeout(const Duration(seconds: 2));
+      return addrs.isEmpty ? null : addrs.reduce(_preferred);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Deterministic tiebreak between two resolved addresses: prefer IPv4,
+  /// then the lexicographically lowest address literal.
+  static InternetAddress _preferred(InternetAddress a, InternetAddress b) {
+    final aV4 = a.type == InternetAddressType.IPv4;
+    final bV4 = b.type == InternetAddressType.IPv4;
+    if (aV4 != bV4) return aV4 ? a : b;
+    return a.address.compareTo(b.address) <= 0 ? a : b;
+  }
+
+  /// Maps an already-resolved [addr] to its ASN group (`as<asn>`), falling
+  /// back to the shared [groupIdUnknown] sentinel on a null address, an
+  /// ASN miss, or a lookup failure.
+  Future<String> _groupIdFor(InternetAddress? addr) async {
+    if (addr == null) return groupIdUnknown;
+    try {
+      final asn = await _asn.lookup(addr);
+      return asn == null ? groupIdUnknown : 'as$asn';
+    } catch (_) {
+      return groupIdUnknown;
+    }
+  }
 
   @override
   Future<TimeSample> getTime() async {
+    // Resolve the host once so the ASN-derived groupId and the NTP
+    // exchange describe the *same* server. Round-robin pools (e.g.
+    // pool.ntp.org) can hand back a different IP across two separate
+    // lookups, so we resolve once and pass the chosen literal IP to
+    // both. InternetAddress.lookup on a literal address is a no-op
+    // resolve, so handing the IP to the ntp package costs no second
+    // DNS query and pins the exact server we grouped. On a resolve
+    // miss we fall back to the bare host so time success never depends
+    // on ASN resolution succeeding. See ADR 0007.
+    final addr = await _resolveFirst();
+
     final sw = Stopwatch()..start();
-    final offset = await NTP.getNtpOffset(
-      lookUpAddress: _host,
-      timeout: const Duration(seconds: 10),
-    );
+    final offset = await _fetchOffset(addr?.address ?? _host);
     sw.stop();
+
+    // Derive the group only *after* the timed exchange. The first ASN
+    // lookup synchronously gunzips and parses the bundled table on this
+    // isolate; running it during the UDP round-trip could block the event
+    // loop and skew the measured delay/offset. groupId feeds only
+    // confidence grading, so keeping it off the timing path is free.
+    final group = await _groupIdFor(addr);
 
     final utc = DateTime.now().toUtc().add(Duration(milliseconds: offset));
     final u = sw.elapsedMilliseconds ~/ 2;
@@ -42,7 +155,7 @@ final class NtpSource implements TimeSource {
         endMs: utc.millisecondsSinceEpoch + u,
       ),
       sourceId: id,
-      groupId: groupId,
+      groupId: group,
       // Whole round-trip delay δ; the interval still uses u = δ/2.
       delayMs: sw.elapsedMilliseconds,
     );

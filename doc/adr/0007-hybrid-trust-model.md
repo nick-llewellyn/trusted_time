@@ -237,3 +237,92 @@ scope; the upstream migration test
 (`test/nts_auth_level_migration_test.dart`) already covers the
 behavioural shift for downstream callers and is shipped with the
 sync merge.
+
+## Postscript: ASN `groupId` shipped as an offline bundle, not a network lookup (2026-06-27)
+
+Decision point 4 above, and the second "Negative" consequence,
+specify the NTP-tier ASN `groupId` as a *best-effort network*
+IP-to-ASN lookup that "introduces a network dependency on a separate
+IP-to-ASN lookup" and must "cache aggressively (per-cycle is
+sufficient)". The implementation that landed (`trusted_time-c8y`)
+keeps the **decision** — derive the NTP `groupId` from the resolved
+IP's ASN, best-effort — but **changes the mechanism**: the ASN table
+is a bundled offline snapshot, not a runtime network service. A later
+refinement also replaced the original host-based heuristic fallback
+with a shared `asn-unknown` sentinel (see "Miss handling" below).
+
+### What shipped
+
+- A compact, sorted binary of `[range_start, range_end] -> asn`
+  derived from the **iptoasn.com** dataset, which is released into
+  the public domain under the PDDL (freely redistributable, no
+  attribution or account required). Two gzipped assets ship in the
+  package: `assets/asn/ip2asn-v4.bin.gz` (~2.8 MB) and
+  `assets/asn/ip2asn-v6.bin.gz` (~0.74 MB), ~3.6 MB total bundled,
+  ~8.1 MB decompressed in memory.
+- A dependency-free reader (`lib/src/data/asn_resolver.dart`) that
+  gunzips each family's table on first use, holds it in memory once
+  per isolate (shared across all `NtpSource` instances), and binary-
+  searches it. Every failure mode — missing asset, decode error,
+  unknown IP — resolves to `null`.
+- `NtpSource.getTime()` resolves the host to a single deterministic
+  address (prefer IPv4, then the lowest address literal) and derives
+  the ASN `groupId` **after** the timed NTP round-trip. The first ASN
+  lookup synchronously gunzips and parses the bundled table on this
+  isolate, so keeping it off the timing path prevents it from blocking
+  the event loop and skewing the measured delay/offset; `groupId`
+  feeds only confidence grading, so this costs nothing for time
+  correctness. On any DNS/ASN miss or failure the group resolves to
+  the shared `asn-unknown` sentinel (see "Miss handling" below).
+- The generator (`tool/generate_asn_db.dart`, dev-only, not shipped
+  at runtime) downloads and converts the snapshot reproducibly.
+
+### Why the mechanism changed
+
+The original network framing was the obvious shape at authoring time,
+but a runtime IP-to-ASN service ties the package's grouping accuracy
+to a third party that can rate-limit, change terms, or go offline,
+and — for DNS- or HTTP-based lookups — leaks the time-server IPs the
+device queries off-device. A bundled snapshot removes the runtime
+dependency entirely (the service "cannot go down"), keeps every
+lookup on-device (zero network exposure), and adds no third-party
+package dependency. ADR 0008's §"composes with ADR 0007" already
+contemplated this branch ("if it chooses a bundled offline ASN
+database … those lookups do not count against the DNS/TLS budget"):
+under the offline bundle there is no per-lookup network call to
+govern, so the unified budget interaction in ADR 0008 simplifies to
+the local DNS resolution `NtpSource` already performs.
+
+### Consequence deltas (this postscript supersedes the originals)
+
+- The "network dependency on a separate IP-to-ASN lookup" Negative
+  no longer applies; the dependency is a bundled data asset.
+- "Cache aggressively (per-cycle is sufficient)" is moot — the table
+  is decompressed once and held for the isolate's lifetime; there is
+  no per-cycle lookup cost to amortise beyond the host's own DNS
+  resolution.
+- A new, smaller cost is introduced: the snapshot is **stale-able**.
+  IP-to-ASN mappings drift as networks are reassigned, so the asset
+  is a point-in-time snapshot refreshed by re-running the generator.
+  Staleness only degrades grouping precision (a mis-grouped or
+  ungrouped NTP source), never correctness of the time estimate, and
+  the `asn-unknown` sentinel is the conservative floor.
+
+### Miss handling: a shared `asn-unknown` sentinel, not a host heuristic
+
+The original decision named the host-based heuristic as the fallback
+when ASN derivation misses. The shipped implementation instead
+collapses every miss path — no resolved IP, an ASN-table miss, or a
+lookup failure — into a single shared `groupIdUnknown = 'asn-unknown'`
+sentinel. `groupId` feeds only `MarzulloEngine`'s diversity/confidence
+grading, never quorum, per-source votes, the truth box, or the
+published time. A per-host heuristic would hand each un-attributable
+sample a *distinct* group, letting a table miss masquerade as provider
+diversity and inflate confidence. The shared sentinel makes confidence
+honest-or-conservative on a miss — never inflated — while availability
+is fully preserved: the sample still counts toward quorum and time.
+
+The best-effort contract and the graceful fallback are retained
+exactly as decided; only the lookup substrate moved from the network
+to a bundled asset, and the fallback target moved from the host
+heuristic to the shared sentinel.
