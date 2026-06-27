@@ -306,17 +306,20 @@ void main() {
       expect(result, isNull);
     });
 
-    /// Regressions for trusted_time-02x.
+    /// Regressions for trusted_time-02x, updated for trusted_time-pnf.
     ///
-    /// The Marzullo half-width was previously computed via truncating
-    /// integer division: `uncertaintyMs = (bestEnd - bestStart) ~/ 2`.
-    /// When the consensus window `[bestStart, bestEnd]` has odd width
-    /// the published interval `[midMs - uncertaintyMs, midMs + uncertaintyMs]`
-    /// missed the truncation residual on one side of the engine's
-    /// own `result.interval`. The fix ceiling-divides the width:
-    /// `uncertaintyMs = ((bestEnd - bestStart) + 1) ~/ 2`, so the
-    /// published symmetric `±U` interval always covers the engine's
-    /// reported `interval` regardless of width parity.
+    /// The published symmetric `±uncertaintyMs` envelope must always
+    /// cover the engine's own consensus `interval` (`[bestStart, bestEnd]`),
+    /// so a consumer reading `utc ± uncertaintyMs` never gets an interval
+    /// narrower than the Marzullo intersection on either side.
+    ///
+    /// Under pnf the published centre [utc] is the root-distance-weighted
+    /// estimate, which can sit off the geometric midpoint of the window.
+    /// `uncertaintyMs` is therefore the larger distance from [utc] to
+    /// either window edge (`max(utc - bestStart, bestEnd - utc)`); this
+    /// preserves coverage across both width parity and an off-centre
+    /// weighted estimate, and reduces to the old ceiling half-width when
+    /// the estimate lands on the geometric centre.
     ///
     /// These tests construct `TimeSample`s with explicit `TimeInterval`
     /// endpoints (bypassing the symmetric `±uncertaintyMs` helper) so
@@ -336,17 +339,16 @@ void main() {
         );
       }
 
-      test('odd-width window: published [mid-U, mid+U] covers the engine '
+      test('odd-width window: published [utc-U, utc+U] covers the engine '
           'consensus interval (regression)', () {
-        // A: [baseMs+100, baseMs+105]
-        // B: [baseMs+102, baseMs+107]
-        // Engine produces consensus window [baseMs+102, baseMs+107] —
-        // width 5 (odd). midMs = baseMs+104.
+        // A: [baseMs+100, baseMs+105] (mid +102), B: [baseMs+102, baseMs+107]
+        // (mid +104). Engine consensus window [baseMs+102, baseMs+107] —
+        // width 5 (odd); geometric centre +104. Both samples are best-tier
+        // with equal root distance, so the weighted centre is the mean of
+        // the sample midpoints: utc = baseMs+103.
         //
-        // Pre-fix: uncertaintyMs = 5 ~/ 2 = 2. Published
-        // [baseMs+102, baseMs+106] — missing baseMs+107 at the top.
-        // Post-fix: uncertaintyMs = (5 + 1) ~/ 2 = 3. Published
-        // [baseMs+101, baseMs+107] — covers the engine's window.
+        // uncertaintyMs = max(103-102, 107-103) = 4, so the published
+        // envelope [baseMs+99, baseMs+107] covers the engine's window.
         final result = engine.resolve([
           directSample(id: 'a', startMs: baseMs + 100, endMs: baseMs + 105),
           directSample(id: 'b', startMs: baseMs + 102, endMs: baseMs + 107),
@@ -360,38 +362,37 @@ void main() {
 
         expect(publishedLower, lessThanOrEqualTo(result.interval!.startMs));
         expect(publishedUpper, greaterThanOrEqualTo(result.interval!.endMs));
-        // Pin the post-fix value so a regression on either direction
-        // (truncating again, or over-widening) is caught.
-        expect(result.uncertaintyMs, 3);
+        // Pin the coverage-preserving half-width so a regression in either
+        // direction (under-covering, or over-widening) is caught.
+        expect(result.uncertaintyMs, 4);
       });
 
-      test('even-width window: behaviour unchanged across the fix', () {
-        // A: [baseMs+100, baseMs+106]
-        // B: [baseMs+102, baseMs+108]
-        // Engine produces consensus window [baseMs+102, baseMs+108] —
-        // width 6 (even). Both pre-fix and post-fix:
-        // uncertaintyMs = 6 ~/ 2 = 3. midMs = baseMs+105.
-        // Published [baseMs+102, baseMs+108] matches exactly.
+      test('even-width window: weighted centre and coverage half-width', () {
+        // A: [baseMs+100, baseMs+106] (mid +103), B: [baseMs+102, baseMs+108]
+        // (mid +105). Engine consensus window [baseMs+102, baseMs+108] —
+        // width 6 (even); geometric centre +105. Equal-root-distance
+        // best-tier samples, so the weighted centre is the mean of the
+        // sample midpoints: utc = baseMs+104.
+        // uncertaintyMs = max(104-102, 108-104) = 4; published envelope
+        // [baseMs+100, baseMs+108] covers the window.
         final result = engine.resolve([
           directSample(id: 'a', startMs: baseMs + 100, endMs: baseMs + 106),
           directSample(id: 'b', startMs: baseMs + 102, endMs: baseMs + 108),
         ]);
 
         expect(result, isNotNull);
-        expect(result!.utc.millisecondsSinceEpoch, baseMs + 105);
-        expect(result.uncertaintyMs, 3);
+        expect(result!.utc.millisecondsSinceEpoch, baseMs + 104);
+        expect(result.uncertaintyMs, 4);
         expect(result.interval?.startMs, baseMs + 102);
         expect(result.interval?.endMs, baseMs + 108);
       });
 
       test('odd-width with overlapping uppers preserves the 1 ms floor', () {
-        // A: [baseMs+100, baseMs+102]
-        // B: [baseMs+101, baseMs+102]
-        // Engine produces consensus window [baseMs+101, baseMs+102] —
-        // width 1 (odd, minimum non-zero).
-        // Pre-fix: uncertaintyMs = 1 ~/ 2 = 0, then max(1, 0) = 1.
-        // Post-fix: uncertaintyMs = (1 + 1) ~/ 2 = 1.
-        // Same value — floor preserved as the tight lower bound.
+        // A: [baseMs+100, baseMs+102] (mid +101), B: [baseMs+101, baseMs+102]
+        // (mid +101). Engine consensus window [baseMs+101, baseMs+102] —
+        // width 1 (odd, minimum non-zero). Weighted centre utc = baseMs+101.
+        // uncertaintyMs = max(101-101, 102-101) = 1, which also meets the
+        // 1 ms minimum floor — the tight lower bound is preserved.
         final result = engine.resolve([
           directSample(id: 'a', startMs: baseMs + 100, endMs: baseMs + 102),
           directSample(id: 'b', startMs: baseMs + 101, endMs: baseMs + 102),
@@ -399,6 +400,121 @@ void main() {
 
         expect(result, isNotNull);
         expect(result!.uncertaintyMs, 1);
+      });
+    });
+
+    /// trusted_time-pnf: the published centre is the root-distance-weighted
+    /// estimate over the survivors, not the geometric midpoint of the
+    /// consensus window. A survivor with a tighter RTT (smaller delayMs →
+    /// lower root distance) pulls the centre toward its own midpoint, while
+    /// the symmetric envelope is widened so it still covers the window.
+    group('Root-distance-weighted combine (pnf)', () {
+      test('weighted centre is pulled toward the low-root-distance cluster '
+          'and the envelope still covers the window', () {
+        // A, B: wide intervals (half 20) centred at baseMs, but tight RTT
+        //   (delayMs 4 → root distance 2).
+        // C: overlapping interval centred at baseMs+30 with a large RTT
+        //   (delayMs 200 → root distance 100).
+        // Sweep window is [baseMs, baseMs+20]; geometric centre baseMs+10.
+        // A/B dominate the weighted average (weight ~1/2 each) over C
+        // (weight ~1/100), so the centre is pulled to the A/B cluster at 0.
+        final result = engine.resolve([
+          TimeSample(
+            sourceId: 'a',
+            groupId: 'a',
+            interval: TimeInterval(startMs: baseMs - 20, endMs: baseMs + 20),
+            delayMs: 4,
+          ),
+          TimeSample(
+            sourceId: 'b',
+            groupId: 'b',
+            interval: TimeInterval(startMs: baseMs - 20, endMs: baseMs + 20),
+            delayMs: 4,
+          ),
+          TimeSample(
+            sourceId: 'c',
+            groupId: 'c',
+            interval: TimeInterval(startMs: baseMs, endMs: baseMs + 60),
+            delayMs: 200,
+          ),
+        ]);
+
+        expect(result, isNotNull);
+        final centre = result!.utc.millisecondsSinceEpoch - baseMs;
+        // Strictly below the geometric centre (+10), hugging the tight
+        // A/B cluster near 0.
+        expect(centre, lessThan(10));
+        expect(centre, inInclusiveRange(0, 3));
+
+        // Coverage invariant holds even with the off-centre estimate.
+        expect(result.interval, isNotNull);
+        final lo = result.utc.millisecondsSinceEpoch - result.uncertaintyMs;
+        final hi = result.utc.millisecondsSinceEpoch + result.uncertaintyMs;
+        expect(lo, lessThanOrEqualTo(result.interval!.startMs));
+        expect(hi, greaterThanOrEqualTo(result.interval!.endMs));
+      });
+
+      test('symmetric equal-root-distance survivors keep the geometric '
+          'centre', () {
+        // Two equal-width samples symmetric about baseMs with equal root
+        // distance: the weighted centre coincides with the geometric
+        // midpoint, so the combine is a no-op for the balanced case.
+        final result = engine.resolve([
+          createSample(
+            id: 'a',
+            utc: baseTime.subtract(const Duration(milliseconds: 10)),
+            uncertaintyMs: 20,
+          ),
+          createSample(
+            id: 'b',
+            utc: baseTime.add(const Duration(milliseconds: 10)),
+            uncertaintyMs: 20,
+          ),
+        ]);
+
+        expect(result, isNotNull);
+        expect(result!.utc.millisecondsSinceEpoch, baseMs);
+      });
+
+      test('a chatty source gets a single vote in the weighted centre', () {
+        // One vote per source: source "b" emits five identical samples but
+        // must not out-vote source "a" in the weighted combine — the sweep
+        // already counts "b" once for quorum/participants, so the published
+        // centre must treat it as one survivor too.
+        //
+        // a: midpoint baseMs-30, half-width 100 (root distance 100).
+        // b (x5): midpoint baseMs+30, half-width 100 (root distance 100).
+        // Equal root distance + tier, so per-source the weighted centre is
+        // the geometric midpoint baseMs. Without dedup, b's five votes drag
+        // the centre to (-30 + 5*30) / 6 = +20.
+        //
+        // requiredQuorum derives from the total sample count, so duplicates
+        // raise the bar; a 0.3 ratio over six samples needs a quorum of two,
+        // which the two unique sources (a, b) satisfy.
+        const chattyEngine = MarzulloEngine(minQuorumRatio: 0.3);
+        final result = chattyEngine.resolve([
+          createSample(
+            id: 'a',
+            utc: baseTime.subtract(const Duration(milliseconds: 30)),
+            uncertaintyMs: 100,
+          ),
+          for (var i = 0; i < 5; i++)
+            createSample(
+              id: 'b',
+              utc: baseTime.add(const Duration(milliseconds: 30)),
+              uncertaintyMs: 100,
+            ),
+        ]);
+
+        expect(result, isNotNull);
+        // Chatty "b" counted once: centre stays at the geometric midpoint,
+        // well clear of the +20 a non-deduped combine would produce.
+        final centre = result!.utc.millisecondsSinceEpoch - baseMs;
+        expect(centre, inInclusiveRange(-2, 2));
+        expect(centre, lessThan(10));
+        // And it is one unique participant, not five.
+        expect(result.participantCount, 2);
+        expect(result.quorumDepth, 2);
       });
     });
 

@@ -24,37 +24,45 @@ final class ConsensusResult {
     this.droppedOutsideTruthBox = const {},
   });
 
-  /// The mid-point of the agreed consensus interval.
+  /// The published UTC point estimate: the root-distance-weighted centre
+  /// of the survivors, clamped into the consensus [interval]. Lower root
+  /// distance and higher trust tier pull this toward those samples, so it
+  /// can sit off the geometric centre of [interval] (the latter remains
+  /// the structural anchor for [participantCount]).
   final DateTime utc;
 
-  /// The precision of the consensus, representing half the width of the overlap.
+  /// The precision of the consensus: the larger distance from [utc] to
+  /// either edge of the consensus window, so the symmetric envelope
+  /// `[utc - uncertaintyMs, utc + uncertaintyMs]` always covers the full
+  /// overlap interval even when [utc] sits off the geometric centre.
   final int uncertaintyMs;
 
   /// Number of unique time authorities whose interval contains the
-  /// consensus midpoint reported as [utc].
+  /// geometric centre of the consensus window.
   ///
-  /// For engine-produced results, [utc] is computed by integer-truncated
-  /// division of the consensus window endpoints
+  /// For engine-produced results, containment is checked against the
+  /// integer-truncated geometric centre of the window endpoints
   /// (`(interval!.startMs + interval!.endMs) ~/ 2`; `interval` is
   /// always non-null on engine-produced results but the type permits
-  /// `null` for tests and mocks). On odd-width windows the truncated
-  /// midpoint sits one millisecond closer to `interval!.startMs` than
-  /// the real centre would. Membership is checked against the truncated
-  /// integer midpoint exposed as [utc], not the real centre.
+  /// `null` for tests and mocks). This geometric centre is the engine's
+  /// structural anchor and is *not* the same as [utc], which is the
+  /// root-distance-weighted estimate and may sit off it. On odd-width
+  /// windows the truncated centre sits one millisecond closer to
+  /// `interval!.startMs` than the real centre would.
   ///
   /// This is a stricter measure than [quorumDepth]: a sample's interval
   /// can overlap the consensus window (`[interval!.startMs,
   /// interval!.endMs]` for engine-produced results) and so contribute
-  /// to [groupCount] without containing the midpoint, in which case it
-  /// is excluded from this count. The two values diverge when the
-  /// consensus window is wide and the sample distribution is asymmetric
-  /// — for example, when one source's response latency is consistently
-  /// bimodal and its late samples shift the window boundaries past
-  /// where the other sources' midpoints sit.
+  /// to [groupCount] without containing the geometric centre, in which
+  /// case it is excluded from this count. The two values diverge when
+  /// the consensus window is wide and the sample distribution is
+  /// asymmetric — for example, when one source's response latency is
+  /// consistently bimodal and its late samples shift the window
+  /// boundaries past where the other sources' midpoints sit.
   ///
   /// Use [quorumDepth] for quorum-floor reasoning and confidence-grading
   /// reasoning; use this field for "which authorities agreed at the
-  /// midpoint" reasoning.
+  /// consensus window centre" reasoning.
   final int participantCount;
 
   /// Number of unique sources active at the densest overlap point during
@@ -79,7 +87,9 @@ final class ConsensusResult {
   final int groupCount;
 
   /// The set of samples that participated in the consensus.
-  /// A sample is considered a participant if its interval contains the consensus midpoint.
+  /// A sample is a participant if its interval contains the geometric
+  /// centre of the consensus window (see [participantCount]); this is the
+  /// engine's structural anchor, not the weighted estimate [utc].
   final Set<TimeSample> participants;
 
   /// The highest common authentication level achieved across the consensus group.
@@ -396,20 +406,58 @@ final class MarzulloEngine {
       }
     }
 
-    // Marzullo midpoint and half-width. `~/` truncates toward zero, so
-    // when the consensus window has odd width the published interval
-    // `[midMs - uncertaintyMs, midMs + uncertaintyMs]` would miss the
-    // truncation residual on one side of the true window
-    // `[bestStart, bestEnd]`. Worst case for `bestStart=0, bestEnd=3`:
-    // truncating gives `midMs=1, uncertaintyMs=1`, publishing `[0, 2]`
-    // while the true window is `[0, 3]` — 1 ms uncovered at the top.
-    //
-    // Ceiling-divide the half-width so the published interval always
-    // covers the true window. Worst-case overstatement is 1 ms; the
-    // 1 ms minimum floor below remains the tight lower bound.
+    // Geometric centre of the Marzullo window. Retained as the structural
+    // anchor for participant containment below (the quorumDepth vs
+    // participantCount divergence is defined against this geometric
+    // centre, not the published estimate). `~/` truncates toward zero, so
+    // on odd-width windows it sits one millisecond closer to bestStart.
     final midMs = (bestStart + bestEnd) ~/ 2;
-    final width = bestEnd - bestStart;
-    final uncertaintyMs = (width + 1) ~/ 2;
+
+    // One source, one vote: collapse the survivors to a single
+    // representative per sourceId before weighting. A "chatty" source is
+    // already counted once for quorum/participants (the sweep tracks
+    // unique sourceIds), so it must not get one weighted vote per sample —
+    // otherwise a single source emitting many samples could dominate the
+    // published estimate. The representative is the source's
+    // lowest-root-distance sample (its tightest measurement), with the
+    // higher trust tier breaking ties.
+    final representatives = <String, TimeSample>{};
+    for (final s in bestSamples) {
+      final existing = representatives[s.sourceId];
+      if (existing == null ||
+          s.rootDistanceMs < existing.rootDistanceMs ||
+          (s.rootDistanceMs == existing.rootDistanceMs &&
+              _tierWeight(_tierOf(s)) > _tierWeight(_tierOf(existing)))) {
+        representatives[s.sourceId] = s;
+      }
+    }
+
+    // Root-distance-weighted centre (Mills-style) over the per-source
+    // representatives: each contributes its interval midpoint weighted by
+    // `tierWeight(tier) / max(1, rootDistance)`, so a lower root distance
+    // (tighter RTT + dispersion) or a higher trust tier pulls the
+    // published estimate toward that sample. Clamped into
+    // `[bestStart, bestEnd]` so a weighted estimate — including a
+    // coordinated lower-tier cluster in the merged pass — can never
+    // escape the Marzullo intersection.
+    var weightSum = 0.0;
+    var weightedMidSum = 0.0;
+    for (final s in representatives.values) {
+      final w = _tierWeight(_tierOf(s)) / max(1, s.rootDistanceMs);
+      weightSum += w;
+      weightedMidSum += w * s.interval.midpoint;
+    }
+    final combinedMs = weightSum > 0
+        ? (weightedMidSum / weightSum).round().clamp(bestStart, bestEnd)
+        : midMs;
+
+    // Symmetric half-width that always covers the Marzullo window. Because
+    // the weighted centre can sit off the geometric midpoint, the half-
+    // width is the larger distance from the centre to either window edge,
+    // so the published `[utc - U, utc + U]` never under-covers
+    // `[bestStart, bestEnd]` (regression: trusted_time-02x). When the
+    // centre is geometric this reduces to the ceiling half-width.
+    final uncertaintyMs = max(combinedMs - bestStart, bestEnd - combinedMs);
 
     // The consensus authentication level is determined by the "weakest link."
     // If even one source in the quorum is unauthenticated, the entire
@@ -421,8 +469,10 @@ final class MarzulloEngine {
       }
     }
 
-    // Participants are samples whose intervals contain the consensus midpoint
-    // Keep only one sample per unique source ID
+    // Participants are samples whose interval contains the geometric
+    // centre of the consensus window (midMs), the engine's structural
+    // anchor — not the weighted estimate published as utc. Keep only one
+    // sample per unique source ID.
     final participantsMap = <String, TimeSample>{};
     for (final s in bestSamples) {
       if (s.interval.startMs <= midMs && midMs <= s.interval.endMs) {
@@ -435,7 +485,7 @@ final class MarzulloEngine {
     final participantCount = participants.length;
 
     return ConsensusResult(
-      utc: DateTime.fromMillisecondsSinceEpoch(midMs, isUtc: true),
+      utc: DateTime.fromMillisecondsSinceEpoch(combinedMs, isUtc: true),
       uncertaintyMs: max(1, uncertaintyMs),
       participantCount: participantCount,
       quorumDepth: bestUniqueOverlap,
@@ -483,6 +533,18 @@ _Tier _tierOf(TimeSample s) {
   if (s.trustBackend != null) return _Tier.platformNts;
   return _Tier.best;
 }
+
+/// Relative trust-tier weight for the root-distance-weighted combine
+/// (design doc section 4.x). Root distance is the dominant term; this
+/// weight only breaks ties between survivors with comparable root
+/// distances, favouring verified samples over platform-mediated NTS over
+/// plain best-effort sources. The truth-box `_withinBox` guard in
+/// [MarzulloEngine.resolve] remains the hard anchor-protection mechanism.
+double _tierWeight(_Tier tier) => switch (tier) {
+  _Tier.verified => 4.0,
+  _Tier.platformNts => 2.0,
+  _Tier.best => 1.0,
+};
 
 /// Whether two closed intervals share at least one instant.
 bool _intervalsIntersect(TimeInterval a, TimeInterval b) =>
