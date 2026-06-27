@@ -91,4 +91,42 @@ void main() {
       expect(await source.resolveGroupId(), 'pool.ntp');
     });
   });
+
+  group('NtpSource.getTime IP/ASN consistency', () {
+    test('hands the resolved literal IP to the NTP exchange', () async {
+      String? seen;
+      final source = NtpSource(
+        '0.pool.ntp.org',
+        asnResolver: resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335)),
+        hostResolver: (host) async => [InternetAddress('1.2.3.4')],
+        offsetFetcher: (lookUpAddress) async {
+          seen = lookUpAddress;
+          return 0;
+        },
+      );
+      final sample = await source.getTime();
+      // The exchange measures the same IP the ASN was derived from,
+      // not the round-robin hostname.
+      expect(seen, '1.2.3.4');
+      expect(sample.groupId, 'as13335');
+    });
+
+    test('falls back to the bare host when resolution fails', () async {
+      String? seen;
+      final source = NtpSource(
+        '0.pool.ntp.org',
+        asnResolver: resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335)),
+        hostResolver: (host) async => throw Exception('no DNS'),
+        offsetFetcher: (lookUpAddress) async {
+          seen = lookUpAddress;
+          return 0;
+        },
+      );
+      final sample = await source.getTime();
+      // Time success must not depend on ASN resolution: the ntp
+      // package still gets the host to resolve itself.
+      expect(seen, '0.pool.ntp.org');
+      expect(sample.groupId, 'pool.ntp');
+    });
+  });
 }
