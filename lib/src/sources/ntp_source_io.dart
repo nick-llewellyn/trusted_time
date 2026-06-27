@@ -43,6 +43,8 @@ final class NtpSource implements TimeSource {
       ),
       sourceId: id,
       groupId: groupId,
+      // Whole round-trip delay δ; the interval still uses u = δ/2.
+      delayMs: sw.elapsedMilliseconds,
     );
   }
 }

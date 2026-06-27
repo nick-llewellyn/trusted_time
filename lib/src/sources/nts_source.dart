@@ -219,6 +219,10 @@ final class NtsSource implements TimeSource, Warmable {
       ),
       sourceId: id,
       groupId: groupId,
+      // Whole round-trip delay δ (RTT), kept separate from the interval
+      // half-width so root distance (Λ = E + δ/2) is computable. The
+      // interval math above is unchanged.
+      delayMs: result.roundTripMicros ~/ 1000,
       // Classify by the trust anchor that authenticated this handshake
       // rather than assuming every successful NTS query is verified: a
       // platform-mediated path (which may chain through a

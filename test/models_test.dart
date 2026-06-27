@@ -229,6 +229,97 @@ void main() {
     );
   });
 
+  group('TimeSample.rootDistanceMs', () {
+    // Root distance Λ = E + δ/2 (NTPv4). delayMs carries the whole
+    // round-trip δ; dispersionMs carries E (default 0). The getter
+    // falls back to the interval half-width for the δ/2 term when
+    // delayMs is unset, so every sample — including interval-only
+    // fixtures — has a defined metric. This is pure data plumbing: no
+    // consensus path reads it yet (the weighted-combine sibling ticket
+    // does), so these are constructor/getter-level assertions.
+
+    const interval = TimeInterval(startMs: 1000, endMs: 1100); // width 100
+
+    test('fields default to delay-unset and zero dispersion', () {
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'ntp:time.example',
+        groupId: 'g',
+      );
+      expect(sample.delayMs, isNull);
+      expect(sample.dispersionMs, 0);
+    });
+
+    test('falls back to interval half-width when delayMs is null', () {
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'ntp:time.example',
+        groupId: 'g',
+      );
+      // E=0, δ unset → Λ = interval.width ~/ 2 = 50.
+      expect(sample.rootDistanceMs, 50);
+    });
+
+    test('uses δ/2 from delayMs when set, independent of interval width', () {
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'ntp:time.example',
+        groupId: 'g',
+        delayMs: 80,
+      );
+      // E=0, δ=80 → Λ = 0 + 80 ~/ 2 = 40 (not the 50 half-width).
+      expect(sample.rootDistanceMs, 40);
+    });
+
+    test('adds dispersion E to the half round-trip', () {
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'nts:time.example',
+        groupId: 'g',
+        delayMs: 80,
+        dispersionMs: 15,
+      );
+      // Λ = E + δ/2 = 15 + 40 = 55.
+      expect(sample.rootDistanceMs, 55);
+    });
+
+    test('dispersion applies on the half-width fallback too', () {
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'nts:time.example',
+        groupId: 'g',
+        dispersionMs: 15,
+      );
+      // δ unset → Λ = 15 + (100 ~/ 2) = 65.
+      expect(sample.rootDistanceMs, 65);
+    });
+
+    test('asserts on negative delayMs', () {
+      // A negative δ would yield a nonsensical Λ; guard at construction.
+      expect(
+        () => TimeSample(
+          interval: interval,
+          sourceId: 'ntp:time.example',
+          groupId: 'g',
+          delayMs: -1,
+        ),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('asserts on negative dispersionMs', () {
+      expect(
+        () => TimeSample(
+          interval: interval,
+          sourceId: 'ntp:time.example',
+          groupId: 'g',
+          dispersionMs: -1,
+        ),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+  });
+
   group('TrustedTime.ntsTrustStatus pass-through', () {
     // The bd's acceptance criterion says the regression test must
     // confirm the wrapper returns whatever `nts.ntsTrustStatus()`
