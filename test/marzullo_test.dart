@@ -475,6 +475,47 @@ void main() {
         expect(result, isNotNull);
         expect(result!.utc.millisecondsSinceEpoch, baseMs);
       });
+
+      test('a chatty source gets a single vote in the weighted centre', () {
+        // One vote per source: source "b" emits five identical samples but
+        // must not out-vote source "a" in the weighted combine — the sweep
+        // already counts "b" once for quorum/participants, so the published
+        // centre must treat it as one survivor too.
+        //
+        // a: midpoint baseMs-30, half-width 100 (root distance 100).
+        // b (x5): midpoint baseMs+30, half-width 100 (root distance 100).
+        // Equal root distance + tier, so per-source the weighted centre is
+        // the geometric midpoint baseMs. Without dedup, b's five votes drag
+        // the centre to (-30 + 5*30) / 6 = +20.
+        //
+        // requiredQuorum derives from the total sample count, so duplicates
+        // raise the bar; a 0.3 ratio over six samples needs a quorum of two,
+        // which the two unique sources (a, b) satisfy.
+        const chattyEngine = MarzulloEngine(minQuorumRatio: 0.3);
+        final result = chattyEngine.resolve([
+          createSample(
+            id: 'a',
+            utc: baseTime.subtract(const Duration(milliseconds: 30)),
+            uncertaintyMs: 100,
+          ),
+          for (var i = 0; i < 5; i++)
+            createSample(
+              id: 'b',
+              utc: baseTime.add(const Duration(milliseconds: 30)),
+              uncertaintyMs: 100,
+            ),
+        ]);
+
+        expect(result, isNotNull);
+        // Chatty "b" counted once: centre stays at the geometric midpoint,
+        // well clear of the +20 a non-deduped combine would produce.
+        final centre = result!.utc.millisecondsSinceEpoch - baseMs;
+        expect(centre, inInclusiveRange(-2, 2));
+        expect(centre, lessThan(10));
+        // And it is one unique participant, not five.
+        expect(result.participantCount, 2);
+        expect(result.quorumDepth, 2);
+      });
     });
 
     /// Regression for trusted_time-2vl.

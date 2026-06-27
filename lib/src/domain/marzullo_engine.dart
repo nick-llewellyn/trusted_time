@@ -413,8 +413,27 @@ final class MarzulloEngine {
     // on odd-width windows it sits one millisecond closer to bestStart.
     final midMs = (bestStart + bestEnd) ~/ 2;
 
-    // Root-distance-weighted centre (Mills-style) over the survivors:
-    // each contributes its interval midpoint weighted by
+    // One source, one vote: collapse the survivors to a single
+    // representative per sourceId before weighting. A "chatty" source is
+    // already counted once for quorum/participants (the sweep tracks
+    // unique sourceIds), so it must not get one weighted vote per sample —
+    // otherwise a single source emitting many samples could dominate the
+    // published estimate. The representative is the source's
+    // lowest-root-distance sample (its tightest measurement), with the
+    // higher trust tier breaking ties.
+    final representatives = <String, TimeSample>{};
+    for (final s in bestSamples) {
+      final existing = representatives[s.sourceId];
+      if (existing == null ||
+          s.rootDistanceMs < existing.rootDistanceMs ||
+          (s.rootDistanceMs == existing.rootDistanceMs &&
+              _tierWeight(_tierOf(s)) > _tierWeight(_tierOf(existing)))) {
+        representatives[s.sourceId] = s;
+      }
+    }
+
+    // Root-distance-weighted centre (Mills-style) over the per-source
+    // representatives: each contributes its interval midpoint weighted by
     // `tierWeight(tier) / max(1, rootDistance)`, so a lower root distance
     // (tighter RTT + dispersion) or a higher trust tier pulls the
     // published estimate toward that sample. Clamped into
@@ -423,7 +442,7 @@ final class MarzulloEngine {
     // escape the Marzullo intersection.
     var weightSum = 0.0;
     var weightedMidSum = 0.0;
-    for (final s in bestSamples) {
+    for (final s in representatives.values) {
       final w = _tierWeight(_tierOf(s)) / max(1, s.rootDistanceMs);
       weightSum += w;
       weightedMidSum += w * s.interval.midpoint;
