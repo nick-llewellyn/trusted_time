@@ -1,4 +1,4 @@
-import 'dart:io' show InternetAddress;
+import 'dart:io' show InternetAddress, InternetAddressType;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:ntp/ntp.dart';
@@ -82,18 +82,31 @@ final class NtpSource implements TimeSource {
   @visibleForTesting
   Future<String> resolveGroupId() async => _groupIdFor(await _resolveFirst());
 
-  /// Resolves [_host] to its first address, or `null` when DNS yields
-  /// nothing, times out, or throws. Centralised so [getTime] can pin
-  /// the same address for both the ASN lookup and the NTP exchange.
+  /// Resolves [_host] to a single deterministic address, or `null` when DNS
+  /// yields nothing, times out, or throws. DNS can return multiple A/AAAA
+  /// records in a platform- and run-dependent order, so we pick
+  /// deterministically — IPv4 first, then the lowest address literal — to
+  /// keep the derived ASN/groupId stable across runs for multi-record hosts.
+  /// Centralised so [getTime] pins the same address for both the ASN lookup
+  /// and the NTP exchange.
   Future<InternetAddress?> _resolveFirst() async {
     try {
       final addrs = await _resolveHost(
         _host,
       ).timeout(const Duration(seconds: 2));
-      return addrs.isEmpty ? null : addrs.first;
+      return addrs.isEmpty ? null : addrs.reduce(_preferred);
     } catch (_) {
       return null;
     }
+  }
+
+  /// Deterministic tiebreak between two resolved addresses: prefer IPv4,
+  /// then the lexicographically lowest address literal.
+  static InternetAddress _preferred(InternetAddress a, InternetAddress b) {
+    final aV4 = a.type == InternetAddressType.IPv4;
+    final bV4 = b.type == InternetAddressType.IPv4;
+    if (aV4 != bV4) return aV4 ? a : b;
+    return a.address.compareTo(b.address) <= 0 ? a : b;
   }
 
   /// Maps an already-resolved [addr] to its ASN group (`as<asn>`), falling
@@ -121,13 +134,17 @@ final class NtpSource implements TimeSource {
     // miss we fall back to the bare host so time success never depends
     // on ASN resolution succeeding. See ADR 0007.
     final addr = await _resolveFirst();
-    // ASN binary-search runs concurrently with the round-trip; the
-    // single DNS resolve above is the only part on the critical path.
-    final groupFuture = _groupIdFor(addr);
 
     final sw = Stopwatch()..start();
     final offset = await _fetchOffset(addr?.address ?? _host);
     sw.stop();
+
+    // Derive the group only *after* the timed exchange. The first ASN
+    // lookup synchronously gunzips and parses the bundled table on this
+    // isolate; running it during the UDP round-trip could block the event
+    // loop and skew the measured delay/offset. groupId feeds only
+    // confidence grading, so keeping it off the timing path is free.
+    final group = await _groupIdFor(addr);
 
     final utc = DateTime.now().toUtc().add(Duration(milliseconds: offset));
     final u = sw.elapsedMilliseconds ~/ 2;
@@ -138,7 +155,7 @@ final class NtpSource implements TimeSource {
         endMs: utc.millisecondsSinceEpoch + u,
       ),
       sourceId: id,
-      groupId: await groupFuture,
+      groupId: group,
       // Whole round-trip delay δ; the interval still uses u = δ/2.
       delayMs: sw.elapsedMilliseconds,
     );

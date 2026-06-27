@@ -84,6 +84,34 @@ void main() {
       expect(await source.resolveGroupId(), 'asn-unknown');
     });
 
+    test('picks a deterministic address for multi-record hosts', () async {
+      AsnResolver table() =>
+          resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335));
+      // Same records in different orders (with an IPv6 mixed in) must yield
+      // the same group: IPv4 is preferred and the choice is order-independent,
+      // so the derived ASN stays stable across DNS record orderings.
+      final forward = NtpSource(
+        'time.cloudflare.com',
+        asnResolver: table(),
+        hostResolver: (host) async => [
+          InternetAddress('2606:4700::1'),
+          InternetAddress('1.2.3.9'),
+          InternetAddress('1.2.3.4'),
+        ],
+      );
+      final reversed = NtpSource(
+        'time.cloudflare.com',
+        asnResolver: table(),
+        hostResolver: (host) async => [
+          InternetAddress('1.2.3.4'),
+          InternetAddress('1.2.3.9'),
+          InternetAddress('2606:4700::1'),
+        ],
+      );
+      expect(await forward.resolveGroupId(), 'as13335');
+      expect(await reversed.resolveGroupId(), 'as13335');
+    });
+
     test('collapses two unknown hosts into the shared sentinel', () async {
       final pool = NtpSource(
         '0.pool.ntp.org',
