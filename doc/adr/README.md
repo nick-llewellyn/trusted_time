@@ -74,7 +74,7 @@ of the implementation on the current `integration/bleeding-edge` tree.
 The contribution-mode pivot (which reset `main` to mirror
 `upstream/main`) reverted any fork-side reductions of the upstream
 surface that had not yet been re-introduced as feat/* PRs. As of this
-PR, four Accepted ADRs are known to diverge from current code:
+PR, three Accepted ADRs are known to diverge from current code:
 
 - **ADR 0001** describes `TrustedTimeConfig.ntsServers` as "opt-in,
   empty by default". Current code defaults it to
@@ -83,10 +83,6 @@ PR, four Accepted ADRs are known to diverge from current code:
 - **ADR 0002** decides on real headless background anchor refresh.
   Implementation is still in-progress (`trusted_time-e0v`) — the
   current native code performs only an HTTPS HEAD connectivity check.
-- **ADR 0007** decides on tier-aware Marzullo admission with an
-  NTS-defined truth box, NTP-as-precision-contributor, and a
-  `degradedTier` `IntegrityEvent` reason. Implementation is pending
-  (filed as a follow-up at PR #35 landing).
 - **ADR 0008** decides on a SyncEngine-level
   `maxConcurrentDnsLookups` semaphore governing all source kinds, a
   one-version deprecation of `ntsDnsConcurrencyCap`, and
@@ -109,6 +105,15 @@ Notes on previously-listed divergences:
   NTP-removal claim is no longer a divergence for the same reason
   (the underlying decision has been superseded). The row's text is
   left verbatim per the append-only policy.
+- **ADR 0007** is no longer listed as a code divergence. Its three
+  implementation pieces have landed: tier-aware Marzullo admission
+  and the `degradedTier` `IntegrityEvent` reason via `trusted_time-q1n`
+  (PR #48), and the ASN-based NTP `groupId` derivation via
+  `trusted_time-c8y`. The latter shipped as a bundled offline
+  iptoasn.com (PDDL) snapshot rather than the network IP-to-ASN
+  lookup the ADR originally framed; that mechanism change is recorded
+  in ADR 0007's 2026-06-27 postscript (the decision itself is
+  unchanged) rather than by editing the original Accepted text.
 
 Each divergence will be reconciled by either a follow-up implementing
 PR (closing the gap) or a timestamped postscript on the affected ADR
