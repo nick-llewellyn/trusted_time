@@ -54,22 +54,30 @@ final class NtpSource implements TimeSource {
         timeout: const Duration(seconds: 10),
       );
 
+  /// Shared sentinel group id used whenever the host's ASN cannot be
+  /// determined — a DNS or ASN-table miss, or a resolution failure.
+  ///
+  /// [MarzulloEngine] counts distinct `groupId`s purely to grade
+  /// confidence, so a per-host fallback would let two servers in the same
+  /// unknown ASN look like two providers, inflating the diversity count
+  /// and over-grading confidence. Collapsing every un-attributable sample
+  /// into this one group keeps confidence honest (or conservative), never
+  /// inflated, while the sample still counts toward quorum and the
+  /// published time. See ADR 0007.
+  static const String groupIdUnknown = 'asn-unknown';
+
   @override
   String get id => '${TimeSource.prefixNtp}$_host';
 
+  /// Synchronous group fallback. The authoritative group is the
+  /// ASN-derived id resolved per query (see [resolveGroupId]); absent a
+  /// resolved IP this reports the shared [groupIdUnknown] sentinel rather
+  /// than guessing a group from the hostname.
   @override
-  String get groupId => _host
-      .split('.')
-      .reversed
-      .skip(1)
-      .take(2)
-      .toList()
-      .reversed
-      .join('.')
-      .replaceFirst('pool.ntp.org', 'ntp-pool'); // Basic group heuristic
+  String get groupId => groupIdUnknown;
 
   /// Best-effort ASN-based group ID (`as<asn>`) derived from the host's
-  /// resolved IP, falling back to the host-based [groupId] heuristic on
+  /// resolved IP, falling back to the shared [groupIdUnknown] sentinel on
   /// any DNS/ASN miss or failure. See ADR 0007.
   @visibleForTesting
   Future<String> resolveGroupId() async => _groupIdFor(await _resolveFirst());
@@ -88,15 +96,16 @@ final class NtpSource implements TimeSource {
     }
   }
 
-  /// Maps an already-resolved [addr] to its ASN group, falling back to
-  /// the host heuristic on a null address, an ASN miss, or a failure.
+  /// Maps an already-resolved [addr] to its ASN group (`as<asn>`), falling
+  /// back to the shared [groupIdUnknown] sentinel on a null address, an
+  /// ASN miss, or a lookup failure.
   Future<String> _groupIdFor(InternetAddress? addr) async {
-    if (addr == null) return groupId;
+    if (addr == null) return groupIdUnknown;
     try {
       final asn = await _asn.lookup(addr);
-      return asn == null ? groupId : 'as$asn';
+      return asn == null ? groupIdUnknown : 'as$asn';
     } catch (_) {
-      return groupId;
+      return groupIdUnknown;
     }
   }
 

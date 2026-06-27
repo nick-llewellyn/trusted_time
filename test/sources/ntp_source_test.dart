@@ -27,15 +27,16 @@ AsnResolver resolverFor(Uint8List table) =>
     AsnResolver(loader: (key) async => table);
 
 void main() {
-  group('NtpSource.groupId host heuristic (fallback)', () {
-    // Documents the existing (untouched) heuristic: drop the TLD and keep
-    // the two labels below it.
-    test('keeps the two labels below the TLD for a pool host', () {
-      expect(NtpSource('0.pool.ntp.org').groupId, 'pool.ntp');
+  group('NtpSource.groupId sentinel', () {
+    // The synchronous getter no longer guesses a group from the hostname:
+    // absent a resolved IP it reports the shared asn-unknown sentinel so a
+    // missing ASN attribution can never be mistaken for provider diversity.
+    test('is the asn-unknown sentinel for a pool host', () {
+      expect(NtpSource('0.pool.ntp.org').groupId, 'asn-unknown');
     });
 
-    test('keeps the two labels below the TLD otherwise', () {
-      expect(NtpSource('time.google.com').groupId, 'time.google');
+    test('is the asn-unknown sentinel for any host', () {
+      expect(NtpSource('time.google.com').groupId, 'asn-unknown');
     });
 
     test('default constructor is const', () {
@@ -55,40 +56,49 @@ void main() {
       expect(await source.resolveGroupId(), 'as13335');
     });
 
-    test('falls back to the heuristic when DNS throws', () async {
+    test('falls back to the sentinel when DNS throws', () async {
       final source = NtpSource(
         'time.cloudflare.com',
         asnResolver: resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335)),
         hostResolver: (host) async => throw Exception('no DNS'),
       );
-      expect(await source.resolveGroupId(), 'time.cloudflare');
+      expect(await source.resolveGroupId(), 'asn-unknown');
     });
 
-    test('falls back when DNS returns no addresses', () async {
+    test('falls back to the sentinel when DNS returns no addresses', () async {
       final source = NtpSource(
         'time.cloudflare.com',
         asnResolver: resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335)),
         hostResolver: (host) async => const [],
       );
-      expect(await source.resolveGroupId(), 'time.cloudflare');
+      expect(await source.resolveGroupId(), 'asn-unknown');
     });
 
-    test('falls back when the IP is outside every known range', () async {
+    test('falls back to the sentinel when the IP is outside every '
+        'known range', () async {
       final source = NtpSource(
         'time.cloudflare.com',
         asnResolver: resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335)),
         hostResolver: (host) async => [InternetAddress('9.9.9.9')],
       );
-      expect(await source.resolveGroupId(), 'time.cloudflare');
+      expect(await source.resolveGroupId(), 'asn-unknown');
     });
 
-    test('falls back to the host heuristic for an unknown pool IP', () async {
-      final source = NtpSource(
+    test('collapses two unknown hosts into the shared sentinel', () async {
+      final pool = NtpSource(
         '0.pool.ntp.org',
         asnResolver: resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335)),
         hostResolver: (host) async => [InternetAddress('9.9.9.9')],
       );
-      expect(await source.resolveGroupId(), 'pool.ntp');
+      final other = NtpSource(
+        'time.cloudflare.com',
+        asnResolver: resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335)),
+        hostResolver: (host) async => [InternetAddress('8.8.8.8')],
+      );
+      // Two distinct hosts that both miss the ASN table land in one group,
+      // so a table miss can never inflate the consensus diversity count.
+      expect(await pool.resolveGroupId(), 'asn-unknown');
+      expect(await other.resolveGroupId(), 'asn-unknown');
     });
   });
 
@@ -126,7 +136,7 @@ void main() {
       // Time success must not depend on ASN resolution: the ntp
       // package still gets the host to resolve itself.
       expect(seen, '0.pool.ntp.org');
-      expect(sample.groupId, 'pool.ntp');
+      expect(sample.groupId, 'asn-unknown');
     });
   });
 }
