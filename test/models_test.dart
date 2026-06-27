@@ -293,6 +293,31 @@ void main() {
       // δ unset → Λ = 15 + (100 ~/ 2) = 65.
       expect(sample.rootDistanceMs, 65);
     });
+
+    test('asserts on negative delayMs', () {
+      // A negative δ would yield a nonsensical Λ; guard at construction.
+      expect(
+        () => TimeSample(
+          interval: interval,
+          sourceId: 'ntp:time.example',
+          groupId: 'g',
+          delayMs: -1,
+        ),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('asserts on negative dispersionMs', () {
+      expect(
+        () => TimeSample(
+          interval: interval,
+          sourceId: 'ntp:time.example',
+          groupId: 'g',
+          dispersionMs: -1,
+        ),
+        throwsA(isA<AssertionError>()),
+      );
+    });
   });
 
   group('TrustedTime.ntsTrustStatus pass-through', () {

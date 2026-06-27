@@ -15,7 +15,11 @@ final class TimeSample {
     this.trustBackend,
     this.delayMs,
     this.dispersionMs = 0,
-  });
+  }) : assert(
+         delayMs == null || delayMs >= 0,
+         'delayMs (δ) must be non-negative',
+       ),
+       assert(dispersionMs >= 0, 'dispersionMs (E) must be non-negative');
 
   /// The mathematical time interval.
   final TimeInterval interval;
@@ -88,11 +92,11 @@ final class TimeSample {
   /// NTPv4 root distance: `Λ = E + δ/2` (dispersion plus half the
   /// round-trip delay). Lower is better.
   ///
-  /// Falls back to the interval half-width for the `δ/2` term when
-  /// [delayMs] is unset, so the metric is always defined — including
-  /// for fixtures that only specify an interval.
+  /// Falls back to [uncertaintyMs] (the interval half-width) for the
+  /// `δ/2` term when [delayMs] is unset, so the metric is always
+  /// defined — including for fixtures that only specify an interval.
   int get rootDistanceMs =>
-      dispersionMs + (delayMs == null ? interval.width ~/ 2 : delayMs! ~/ 2);
+      dispersionMs + (delayMs == null ? uncertaintyMs : delayMs! ~/ 2);
 
   @override
   String toString() {
