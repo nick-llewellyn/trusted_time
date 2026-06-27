@@ -105,6 +105,8 @@ final class HttpsSource implements TimeSource {
       interval: TimeInterval(startMs: startMs, endMs: endMs),
       sourceId: id,
       groupId: groupId,
+      // Whole round-trip delay δ; the interval still uses δ/2.
+      delayMs: sw.elapsedMilliseconds,
     );
   }
 

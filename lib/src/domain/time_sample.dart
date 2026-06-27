@@ -13,6 +13,8 @@ final class TimeSample {
     required this.groupId,
     this.authLevel = NtsAuthLevel.none,
     this.trustBackend,
+    this.delayMs,
+    this.dispersionMs = 0,
   });
 
   /// The mathematical time interval.
@@ -64,12 +66,33 @@ final class TimeSample {
   /// one each individual handshake actually resolved to.
   final nts.TrustBackend? trustBackend;
 
+  /// The round-trip delay `δ` for this sample, in milliseconds — the
+  /// whole measured RTT, not the half-width. Null when the source did
+  /// not measure a round trip, in which case [rootDistanceMs] falls
+  /// back to the interval half-width for the `δ/2` term.
+  final int? delayMs;
+
+  /// The dispersion `E` for this sample, in milliseconds — accumulated
+  /// or estimated error contributed independently of the round trip.
+  /// Defaults to `0` when a source has no dispersion estimate, so
+  /// legacy callers and test fixtures are unaffected.
+  final int dispersionMs;
+
   /// Helper to get the UTC time (midpoint of the interval).
   DateTime get utc =>
       DateTime.fromMillisecondsSinceEpoch(interval.midpoint, isUtc: true);
 
   /// Helper to get the uncertainty in milliseconds.
   int get uncertaintyMs => interval.width ~/ 2;
+
+  /// NTPv4 root distance: `Λ = E + δ/2` (dispersion plus half the
+  /// round-trip delay). Lower is better.
+  ///
+  /// Falls back to the interval half-width for the `δ/2` term when
+  /// [delayMs] is unset, so the metric is always defined — including
+  /// for fixtures that only specify an interval.
+  int get rootDistanceMs =>
+      dispersionMs + (delayMs == null ? interval.width ~/ 2 : delayMs! ~/ 2);
 
   @override
   String toString() {
