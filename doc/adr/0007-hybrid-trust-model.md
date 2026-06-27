@@ -246,9 +246,10 @@ IP-to-ASN lookup that "introduces a network dependency on a separate
 IP-to-ASN lookup" and must "cache aggressively (per-cycle is
 sufficient)". The implementation that landed (`trusted_time-c8y`)
 keeps the **decision** — derive the NTP `groupId` from the resolved
-IP's ASN, best-effort, falling back to the host-based heuristic — but
-**changes the mechanism**: the ASN table is a bundled offline
-snapshot, not a runtime network service.
+IP's ASN, best-effort — but **changes the mechanism**: the ASN table
+is a bundled offline snapshot, not a runtime network service. A later
+refinement also replaced the original host-based heuristic fallback
+with a shared `asn-unknown` sentinel (see "Miss handling" below).
 
 ### What shipped
 
@@ -264,10 +265,15 @@ snapshot, not a runtime network service.
   per isolate (shared across all `NtpSource` instances), and binary-
   searches it. Every failure mode — missing asset, decode error,
   unknown IP — resolves to `null`.
-- `NtpSource.getTime()` resolves the host to an IP and looks up the
-  ASN **concurrently with the NTP round-trip** (off the critical
-  latency path); on any DNS/ASN miss or failure it falls back to the
-  existing host heuristic at `ntp_source_io.dart`.
+- `NtpSource.getTime()` resolves the host to a single deterministic
+  address (prefer IPv4, then the lowest address literal) and derives
+  the ASN `groupId` **after** the timed NTP round-trip. The first ASN
+  lookup synchronously gunzips and parses the bundled table on this
+  isolate, so keeping it off the timing path prevents it from blocking
+  the event loop and skewing the measured delay/offset; `groupId`
+  feeds only confidence grading, so this costs nothing for time
+  correctness. On any DNS/ASN miss or failure the group resolves to
+  the shared `asn-unknown` sentinel (see "Miss handling" below).
 - The generator (`tool/generate_asn_db.dart`, dev-only, not shipped
   at runtime) downloads and converts the snapshot reproducibly.
 
@@ -300,8 +306,23 @@ the local DNS resolution `NtpSource` already performs.
   is a point-in-time snapshot refreshed by re-running the generator.
   Staleness only degrades grouping precision (a mis-grouped or
   ungrouped NTP source), never correctness of the time estimate, and
-  the host heuristic remains the floor.
+  the `asn-unknown` sentinel is the conservative floor.
 
-The best-effort contract and the graceful fallback to the host
-heuristic are retained exactly as decided; only the lookup substrate
-moved from the network to a bundled asset.
+### Miss handling: a shared `asn-unknown` sentinel, not a host heuristic
+
+The original decision named the host-based heuristic as the fallback
+when ASN derivation misses. The shipped implementation instead
+collapses every miss path — no resolved IP, an ASN-table miss, or a
+lookup failure — into a single shared `groupIdUnknown = 'asn-unknown'`
+sentinel. `groupId` feeds only `MarzulloEngine`'s diversity/confidence
+grading, never quorum, per-source votes, the truth box, or the
+published time. A per-host heuristic would hand each un-attributable
+sample a *distinct* group, letting a table miss masquerade as provider
+diversity and inflate confidence. The shared sentinel makes confidence
+honest-or-conservative on a miss — never inflated — while availability
+is fully preserved: the sample still counts toward quorum and time.
+
+The best-effort contract and the graceful fallback are retained
+exactly as decided; only the lookup substrate moved from the network
+to a bundled asset, and the fallback target moved from the host
+heuristic to the shared sentinel.
