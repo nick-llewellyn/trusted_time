@@ -37,6 +37,12 @@ void main() {
     test('keeps the two labels below the TLD otherwise', () {
       expect(NtpSource('time.google.com').groupId, 'time.google');
     });
+
+    test('default constructor is const', () {
+      const a = NtpSource('time.google.com');
+      const b = NtpSource('time.google.com');
+      expect(identical(a, b), isTrue);
+    });
   });
 
   group('NtpSource.resolveGroupId ASN derivation', () {

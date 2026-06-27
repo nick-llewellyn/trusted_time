@@ -17,18 +17,26 @@ final class NtpSource implements TimeSource {
   ///
   /// [asnResolver] and [hostResolver] are injection seams for tests; in
   /// production they default to the shared offline ASN snapshot and real
-  /// DNS resolution respectively.
-  NtpSource(this._host, {AsnResolver? asnResolver, HostResolver? hostResolver})
-    : _asn = asnResolver ?? _sharedAsn,
-      _resolveHost = hostResolver ?? InternetAddress.lookup;
+  /// DNS resolution respectively. Both default to `null` and the shared
+  /// defaults are resolved lazily via getters so the constructor stays
+  /// `const` for the common (no-override) call site.
+  const NtpSource(
+    this._host, {
+    AsnResolver? asnResolver,
+    HostResolver? hostResolver,
+  }) : _asnOverride = asnResolver,
+       _hostOverride = hostResolver;
 
   /// Shared across all NTP sources so the bundled ASN table is
   /// decompressed and held in memory exactly once per isolate.
   static final AsnResolver _sharedAsn = AsnResolver();
 
   final String _host;
-  final AsnResolver _asn;
-  final HostResolver _resolveHost;
+  final AsnResolver? _asnOverride;
+  final HostResolver? _hostOverride;
+
+  AsnResolver get _asn => _asnOverride ?? _sharedAsn;
+  HostResolver get _resolveHost => _hostOverride ?? InternetAddress.lookup;
 
   @override
   String get id => '${TimeSource.prefixNtp}$_host';

@@ -110,4 +110,24 @@ void main() {
       expect(calls, 1);
     });
   });
+
+  group('AsnResolver concurrency', () {
+    test('concurrent first-use lookups load the table only once', () async {
+      var calls = 0;
+      final table = buildTable(4, const [('1.2.3.0', '1.2.3.255', 13335)]);
+      final resolver = AsnResolver(
+        loader: (key) async {
+          calls++;
+          return table;
+        },
+      );
+      final results = await Future.wait([
+        resolver.lookup(InternetAddress('1.2.3.4')),
+        resolver.lookup(InternetAddress('1.2.3.4')),
+        resolver.lookup(InternetAddress('1.2.3.4')),
+      ]);
+      expect(results, [13335, 13335, 13335]);
+      expect(calls, 1);
+    });
+  });
 }

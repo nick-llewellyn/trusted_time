@@ -30,10 +30,11 @@ final class AsnResolver {
 
   final AssetByteLoader _load;
 
-  _Table? _v4;
-  _Table? _v6;
-  bool _v4Failed = false;
-  bool _v6Failed = false;
+  // Memoise the in-flight load per family so concurrent first-use
+  // lookups share a single decompress + parse. A failed build resolves
+  // to a cached `null`-completing future, so failures are not retried.
+  Future<_Table?>? _v4;
+  Future<_Table?>? _v6;
 
   static Future<Uint8List> _bundleLoad(String key) async {
     final data = await rootBundle.load(key);
@@ -49,17 +50,9 @@ final class AsnResolver {
     return table.search(Uint8List.fromList(ip.rawAddress));
   }
 
-  Future<_Table?> _table(bool isV6) async {
-    if (isV6) {
-      if (_v6 != null || _v6Failed) return _v6;
-      _v6 = await _build(keyV6, 6);
-      _v6Failed = _v6 == null;
-      return _v6;
-    }
-    if (_v4 != null || _v4Failed) return _v4;
-    _v4 = await _build(keyV4, 4);
-    _v4Failed = _v4 == null;
-    return _v4;
+  Future<_Table?> _table(bool isV6) {
+    if (isV6) return _v6 ??= _build(keyV6, 6);
+    return _v4 ??= _build(keyV4, 4);
   }
 
   Future<_Table?> _build(String key, int kind) async {
