@@ -45,26 +45,38 @@ void main() {
   // The live-engine group drives the real TrustedTimeImpl singleton; stub the
   // platform channels it touches during initialize() so the harness stays
   // fully offline and deterministic.
+  //
+  // Flutter tests share one process, so install these handlers in setUpAll and
+  // clear them (set to null) in tearDownAll. Leaving them installed past this
+  // file would leak into — and race with — other test files that set handlers
+  // on the same channels, causing order-dependent flakiness.
   const storageChannel = MethodChannel(
     'plugins.it_nomads.com/flutter_secure_storage',
   );
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(storageChannel, (call) async => null);
-
   const monotonicChannel = MethodChannel('trusted_time/monotonic');
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(monotonicChannel, (call) async {
-        if (call.method == 'getUptimeMs') return 1000;
-        return null;
-      });
-
   const backgroundChannel = MethodChannel('trusted_time/background');
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(backgroundChannel, (call) async => null);
-
   const integrityChannel = MethodChannel('trusted_time/integrity');
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(integrityChannel, (call) async => null);
+
+  setUpAll(() {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(storageChannel, (call) async => null);
+    messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+      if (call.method == 'getUptimeMs') return 1000;
+      return null;
+    });
+    messenger.setMockMethodCallHandler(backgroundChannel, (call) async => null);
+    messenger.setMockMethodCallHandler(integrityChannel, (call) async => null);
+  });
+
+  tearDownAll(() {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(storageChannel, null);
+    messenger.setMockMethodCallHandler(monotonicChannel, null);
+    messenger.setMockMethodCallHandler(backgroundChannel, null);
+    messenger.setMockMethodCallHandler(integrityChannel, null);
+  });
 
   group('Security Policy Enforcement (CRITICAL-4, 5)', () {
     test('getTime(requireSecure: true) fails when authLevel is none', () async {
