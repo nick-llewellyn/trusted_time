@@ -337,23 +337,40 @@ abstract final class TrustedTime {
   // even though both names refer to the same class.
   static NtsTrustStatus ntsTrustStatus() => nts.ntsTrustStatus();
 
-  /// Advanced retrieval that enforces specific security and integrity constraints.
+  /// Advanced retrieval that enforces the Secure Time Contract's security
+  /// and integrity constraints.
   ///
   /// Use this when your application logic requires higher guarantees than
   /// standard consensus.
   ///
-  /// * Set [requireSecure] to `true` to force a fail-fast error if NTS
-  ///   cryptographic authentication is unavailable.
+  /// * Set [requireSecure] to `true` to fail closed unless the active anchor
+  ///   is [NtsAuthLevel.verified] — established from a Tier 1 truth box of NTS
+  ///   samples authenticated against a library-controlled trust store
+  ///   (bundled webpki-roots or custom roots). Anchors established under
+  ///   platform-mediated trust, or degraded to lower-tier (NTP/HTTPS)
+  ///   consensus, are [NtsAuthLevel.none] and throw.
   /// * Set [minConfidence] to enforce a minimum qualitative trust level.
   ///
-  /// Throws [TrustedTimeSecurityException] if requirements are not met.
+  /// Throws [TrustedTimeSecurityException] if requirements are not met. See the
+  /// Secure Time Contract (`doc/specification/secure-time-contract.md`) for the
+  /// full `requireSecure` semantics and trust-tiering rules.
   static DateTime getTime({
     bool requireSecure = false,
     ConfidenceLevel minConfidence = ConfidenceLevel.low,
   }) {
     if (requireSecure && !isSecure) {
       throw const TrustedTimeSecurityException(
-        'NTS-authenticated time is required but unavailable in the current session.',
+        'Time is required to be cryptographically authenticated against '
+        'a library-controlled trust store (bundled webpki-roots or '
+        'custom roots), but the active anchor is not verified. This '
+        'happens when NTS was unavailable and the engine fell back to '
+        'lower-tier (NTP/HTTPS) consensus, or when NTS was validated '
+        'under platform-mediated trust rather than the library-controlled '
+        'store. To satisfy requireSecure: true, configure reachable NTS '
+        'servers (so a verified anchor can be established) and keep '
+        'usePlatformTrust: false (the default, so NTS is validated against '
+        'the library-controlled store). Otherwise reduce the requirement '
+        'with requireSecure: false.',
       );
     }
 
@@ -385,14 +402,25 @@ abstract final class TrustedTime {
     return TrustedTimeImpl.instance.onIntegrityLost;
   }
 
-  /// Indicates if the current trust anchor is backed by cryptographic
-  /// authentication (NTS/RFC 8915).
+  /// Whether the active trust anchor is [NtsAuthLevel.verified] under the
+  /// Secure Time Contract — backed by a Tier 1 NTS truth box authenticated
+  /// against a library-controlled trust store (RFC 8915).
+  ///
+  /// Equivalent to `authLevel == NtsAuthLevel.verified`. Returns `false` for
+  /// platform-mediated NTS and for lower-tier (NTP/HTTPS) or degraded
+  /// consensus. This is the boundary [getTime] enforces under
+  /// `requireSecure: true`.
   static bool get isSecure {
     if (_override != null) return false;
     return TrustedTimeImpl.instance.isSecure;
   }
 
-  /// Exposes the specific cryptographic authentication level achieved during sync.
+  /// The cryptographic authentication level of the active trust anchor.
+  ///
+  /// Binary under the Secure Time Contract: [NtsAuthLevel.verified] only when
+  /// the anchor was established from a Tier 1 NTS truth box (library-controlled
+  /// trust store), otherwise [NtsAuthLevel.none]. Mirrors [isSecure]
+  /// (`verified` ⟺ `isSecure == true`).
   static NtsAuthLevel get authLevel {
     if (_override != null) return NtsAuthLevel.none;
     return TrustedTimeImpl.instance.authLevel;
