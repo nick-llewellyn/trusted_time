@@ -290,6 +290,10 @@ void main() {
 | `persistState` | `bool` | `true` | Persist anchor to secure storage across launches |
 | `earlyExit` | `bool` | `true` | Return as soon as a stable quorum is reached |
 | `oscillatorDriftFactor` | `double` | `0.001` | Used for offline time estimation error calculation |
+| `cadenceMode` | `CadenceMode` | `singleTier30m` | Sync schedule: the legacy single uniform loop, or the tiered establish/validate model (mobile) — see [Tiered sync cadence](#tiered-sync-cadence-mobile) |
+| `validateInterval` | `Duration` | `1h` | Tiered mode only: how often the lightweight validate probe runs in the foreground |
+| `foregroundValidateThreshold` | `Duration` | `15m` | Tiered mode only: minimum time backgrounded before a foreground resume triggers a validate probe |
+| `validateBurstCount` | `int` | `4` | Tiered mode only: NTS queries issued per validate probe; the lowest-RTT sample is kept |
 
 ---
 
@@ -317,6 +321,50 @@ When `initialize()` is called:
 After initialization, `TrustedTime.now()` is a pure arithmetic operation it adds the elapsed monotonic time since the anchor was captured to the anchor's UTC value. There is no I/O and no platform channel call per invocation.
 
 The integrity monitor runs continuously. On Android and iOS it listens for system broadcast events (`TIME_SET`, `TIMEZONE_CHANGED`, `NSSystemClockDidChange`). On Windows it subclasses a message window for `WM_TIMECHANGE`. On Linux it uses a `timerfd` with `TFD_TIMER_CANCEL_ON_SET` to detect kernel clock changes with zero idle CPU cost. When a jump is detected the anchor is invalidated and an immediate resync begins.
+
+---
+
+## Tiered sync cadence (mobile)
+
+By default `TrustedTime` runs a single uniform refresh loop
+(`CadenceMode.singleTier30m`): every `refreshInterval` it re-races all
+sources through full Marzullo consensus. This is unchanged from 1.x.
+
+Mobile apps can opt into a two-tier schedule that is far cheaper on
+battery and radio while keeping the anchor fresh:
+
+- **Establish** — the full consensus cycle, run infrequently (24h via
+  `mobileDefaults()`). This is the only tier that builds a new anchor.
+- **Validate** — a lightweight freshness probe run frequently
+  (`validateInterval`, 1h default): a short authenticated NTS burst
+  against one source, keeping the lowest-RTT sample, with no consensus
+  rebuild. If the probe disagrees with the anchor beyond
+  `maxAllowedUncertaintyMs`, an establish cycle is triggered to recover.
+
+In tiered mode the library also installs a `WidgetsBindingObserver` and
+runs a validate probe when the app returns to the foreground after being
+backgrounded for at least `foregroundValidateThreshold` (15m default) —
+the moment the anchor is most likely to have drifted.
+
+```dart
+// Opt in to the tiered mobile schedule.
+await TrustedTime.initialize(config: TrustedTimeConfig.mobileDefaults());
+
+// Or compose it onto an existing config.
+await TrustedTime.initialize(
+  config: myConfig.copyWith(cadenceMode: CadenceMode.tieredMobile),
+);
+
+// Cheaply confirm the anchor on demand (e.g. before a sensitive action)
+// without forcing a full resync. Returns false if the anchor disagrees
+// with network time; throws TrustedTimeFreshnessProbeException if the
+// probe could not run (no anchor yet, or no NTS source configured).
+final fresh = await TrustedTime.validateFreshness();
+```
+
+`WidgetsFlutterBinding.ensureInitialized()` must have run before
+`initialize()` for the foreground trigger to attach; in a headless
+isolate the periodic validate timer still drives cadence on its own.
 
 ---
 

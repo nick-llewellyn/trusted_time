@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
@@ -617,6 +618,143 @@ void main() {
       box.midpointMs += 10000;
       expect(await TrustedTime.validateFreshness(), isFalse);
     });
+  });
+
+  group('TrustedTime tiered cadence scheduler (ADR 0006)', () {
+    // Live-engine tests; clear any override left by earlier groups so the
+    // static surface drops into the real TrustedTimeImpl singleton.
+    tearDown(TrustedTime.resetOverride);
+
+    Future<void> initTiered(_MidpointBox box) async {
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          persistState: false,
+          earlyExit: false,
+          cadenceMode: CadenceMode.tieredMobile,
+          additionalSources: [
+            _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
+            _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+    }
+
+    Future<void> initSingleTier() async {
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+    }
+
+    _MidpointBox freshBox() =>
+        _MidpointBox(DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch);
+
+    test('singleTier30m arms neither the validate timer nor the '
+        'lifecycle observer', () async {
+      await initSingleTier();
+      final impl = TrustedTimeImpl.instance;
+      expect(impl.debugValidateTimerActive, isFalse);
+      expect(impl.debugLifecycleObserverInstalled, isFalse);
+    });
+
+    test('tieredMobile arms the validate timer and installs the '
+        'lifecycle observer', () async {
+      await initTiered(freshBox());
+      final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.isTrusted, isTrue);
+      expect(impl.debugValidateTimerActive, isTrue);
+      expect(impl.debugLifecycleObserverInstalled, isTrue);
+    });
+
+    test(
+      'a foreground resume after the threshold runs a validate cycle',
+      () async {
+        await initTiered(freshBox());
+        final impl = TrustedTimeImpl.instance;
+        expect(impl.debugValidateCycleCount, 0);
+
+        final t0 = DateTime.utc(2024, 6, 15, 12);
+        impl.debugHandleAppLifecycleState(AppLifecycleState.paused, at: t0);
+        impl.debugHandleAppLifecycleState(
+          AppLifecycleState.resumed,
+          at: t0.add(const Duration(minutes: 20)),
+        );
+        // The cycle is fire-and-forget; let its probe settle.
+        await Future.delayed(const Duration(milliseconds: 20));
+
+        expect(impl.debugValidateCycleCount, 1);
+        // The probe agreed with the anchor, so trust is intact.
+        expect(TrustedTime.isTrusted, isTrue);
+      },
+    );
+
+    test('a brief background excursion below the threshold does not '
+        'run a validate cycle', () async {
+      await initTiered(freshBox());
+      final impl = TrustedTimeImpl.instance;
+
+      final t0 = DateTime.utc(2024, 6, 15, 12);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, at: t0);
+      impl.debugHandleAppLifecycleState(
+        AppLifecycleState.resumed,
+        at: t0.add(const Duration(minutes: 5)),
+      );
+      await Future.delayed(const Duration(milliseconds: 20));
+
+      expect(impl.debugValidateCycleCount, 0);
+    });
+
+    test('a resume with no prior background transition is a no-op', () async {
+      await initTiered(freshBox());
+      final impl = TrustedTimeImpl.instance;
+
+      impl.debugHandleAppLifecycleState(
+        AppLifecycleState.resumed,
+        at: DateTime.utc(2024, 6, 15, 12),
+      );
+      await Future.delayed(const Duration(milliseconds: 20));
+
+      expect(impl.debugValidateCycleCount, 0);
+    });
+
+    test('singleTier30m ignores lifecycle transitions entirely', () async {
+      await initSingleTier();
+      final impl = TrustedTimeImpl.instance;
+
+      final t0 = DateTime.utc(2024, 6, 15, 12);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, at: t0);
+      impl.debugHandleAppLifecycleState(
+        AppLifecycleState.resumed,
+        at: t0.add(const Duration(hours: 1)),
+      );
+      await Future.delayed(const Duration(milliseconds: 20));
+
+      expect(impl.debugValidateCycleCount, 0);
+    });
+
+    test(
+      'dispose cancels the validate timer and detaches the observer',
+      () async {
+        await initTiered(freshBox());
+        final impl = TrustedTimeImpl.instance;
+        expect(impl.debugValidateTimerActive, isTrue);
+        expect(impl.debugLifecycleObserverInstalled, isTrue);
+
+        impl.dispose();
+
+        expect(impl.debugValidateTimerActive, isFalse);
+        expect(impl.debugLifecycleObserverInstalled, isFalse);
+      },
+    );
   });
 }
 
