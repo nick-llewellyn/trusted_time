@@ -29,16 +29,17 @@ enum ConfidenceLevel {
 /// Selects the engine's refresh-scheduling strategy.
 ///
 /// See ADR 0006 (Mobile-optimized sync cadence) for the full rationale.
-/// The default ([singleTier30m]) preserves the upstream desktop/server
-/// behaviour bit-for-bit; [tieredMobile] is the opt-in mobile model and
-/// is what [TrustedTimeConfig.mobileDefaults] selects.
+/// The default ([CadenceMode.singleTier30m]) preserves the upstream
+/// desktop/server behaviour bit-for-bit; [CadenceMode.tieredMobile] is
+/// the opt-in mobile model and is what [TrustedTimeConfig.mobileDefaults]
+/// selects.
 enum CadenceMode {
   /// Legacy single-tier model: one uniform refresh loop driven by
   /// [TrustedTimeConfig.refreshInterval] (default 30 minutes).
   ///
   /// This is the default. Existing 1.x integrators keep exactly the
   /// behaviour they have today; nothing in the scheduler changes unless
-  /// a caller explicitly opts into [tieredMobile].
+  /// a caller explicitly opts into [CadenceMode.tieredMobile].
   singleTier30m,
 
   /// Mobile-optimized two-tier model that separates establishing a fresh
