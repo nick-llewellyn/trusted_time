@@ -682,11 +682,14 @@ void main() {
         final impl = TrustedTimeImpl.instance;
         expect(impl.debugValidateCycleCount, 0);
 
-        final t0 = DateTime.utc(2024, 6, 15, 12);
-        impl.debugHandleAppLifecycleState(AppLifecycleState.paused, at: t0);
+        const bg = Duration(hours: 5);
+        impl.debugHandleAppLifecycleState(
+          AppLifecycleState.paused,
+          elapsed: bg,
+        );
         impl.debugHandleAppLifecycleState(
           AppLifecycleState.resumed,
-          at: t0.add(const Duration(minutes: 20)),
+          elapsed: bg + const Duration(minutes: 20),
         );
         // The cycle is fire-and-forget; let its probe settle.
         await Future.delayed(const Duration(milliseconds: 20));
@@ -702,11 +705,11 @@ void main() {
       await initTiered(freshBox());
       final impl = TrustedTimeImpl.instance;
 
-      final t0 = DateTime.utc(2024, 6, 15, 12);
-      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, at: t0);
+      const bg = Duration(hours: 5);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
       impl.debugHandleAppLifecycleState(
         AppLifecycleState.resumed,
-        at: t0.add(const Duration(minutes: 5)),
+        elapsed: bg + const Duration(minutes: 5),
       );
       await Future.delayed(const Duration(milliseconds: 20));
 
@@ -719,8 +722,25 @@ void main() {
 
       impl.debugHandleAppLifecycleState(
         AppLifecycleState.resumed,
-        at: DateTime.utc(2024, 6, 15, 12),
+        elapsed: const Duration(hours: 5),
       );
+      await Future.delayed(const Duration(milliseconds: 20));
+
+      expect(impl.debugValidateCycleCount, 0);
+    });
+
+    test('a non-advancing monotonic reading on resume does not run a '
+        'cycle (guards the wall-clock-regression case)', () async {
+      await initTiered(freshBox());
+      final impl = TrustedTimeImpl.instance;
+
+      const bg = Duration(hours: 5);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
+      // Under wall-clock time a backward jump while backgrounded would
+      // make the delta negative and silently skip the probe. A monotonic
+      // source can never regress, so a non-advancing reading is simply a
+      // sub-threshold (here zero) duration and runs no cycle.
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed, elapsed: bg);
       await Future.delayed(const Duration(milliseconds: 20));
 
       expect(impl.debugValidateCycleCount, 0);
@@ -730,11 +750,11 @@ void main() {
       await initSingleTier();
       final impl = TrustedTimeImpl.instance;
 
-      final t0 = DateTime.utc(2024, 6, 15, 12);
-      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, at: t0);
+      const bg = Duration(hours: 5);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
       impl.debugHandleAppLifecycleState(
         AppLifecycleState.resumed,
-        at: t0.add(const Duration(hours: 1)),
+        elapsed: bg + const Duration(hours: 1),
       );
       await Future.delayed(const Duration(milliseconds: 20));
 

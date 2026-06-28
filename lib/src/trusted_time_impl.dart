@@ -106,8 +106,16 @@ final class TrustedTimeImpl {
   // unchanged.
   Timer? _validateTimer;
   WidgetsBindingObserver? _lifecycleObserver;
-  DateTime? _backgroundedAt;
+  Duration? _backgroundedElapsed;
   int _validateCycleCount = 0;
+
+  /// Monotonic clock used to measure how long the app spent backgrounded.
+  /// Deliberately *not* wall-clock time: a trusted-time library must not
+  /// trust [DateTime.now] to gate its own freshness checks, since a
+  /// backward clock jump would yield a negative duration and skip the
+  /// validate cycle precisely when drift is most likely. [Stopwatch] is
+  /// backed by a monotonic platform clock and is immune to such jumps.
+  final Stopwatch _monotonic = Stopwatch()..start();
 
   /// Synchronous re-entry guard for [_performSync], paired with
   /// [_syncInProgress]. The Completer-based check is the canonical
@@ -613,7 +621,7 @@ final class TrustedTimeImpl {
     _scheduleValidate();
     if (kIsWeb) return;
     final observer = _AppLifecycleObserver(
-      (state) => _handleAppLifecycleState(state, DateTime.now()),
+      (state) => _handleAppLifecycleState(state, _monotonic.elapsed),
     );
     try {
       WidgetsBinding.instance.addObserver(observer);
@@ -676,28 +684,30 @@ final class TrustedTimeImpl {
   }
 
   /// Foreground-resume validate trigger (ADR 0006). Records the first
-  /// non-resumed lifecycle transition as the background-entry time, and
-  /// on the next [AppLifecycleState.resumed] runs a validate cycle iff
-  /// the app was backgrounded for at least
-  /// [TrustedTimeConfig.foregroundValidateThreshold]. Gated on
-  /// [CadenceMode.tieredMobile] so the legacy mode never reacts to
-  /// lifecycle events.
-  void _handleAppLifecycleState(AppLifecycleState state, DateTime now) {
+  /// non-resumed lifecycle transition as the background-entry reading on
+  /// a monotonic clock, and on the next [AppLifecycleState.resumed] runs
+  /// a validate cycle iff the app was backgrounded for at least
+  /// [TrustedTimeConfig.foregroundValidateThreshold]. [now] is a
+  /// monotonic elapsed reading (see [_monotonic]), never wall-clock time,
+  /// so a backward clock jump can neither produce a negative duration nor
+  /// suppress the probe. Gated on [CadenceMode.tieredMobile] so the
+  /// legacy mode never reacts to lifecycle events.
+  void _handleAppLifecycleState(AppLifecycleState state, Duration now) {
     if (_disposed) return;
     if (_config.cadenceMode != CadenceMode.tieredMobile) return;
     if (state == AppLifecycleState.resumed) {
-      final since = _backgroundedAt;
-      _backgroundedAt = null;
+      final since = _backgroundedElapsed;
+      _backgroundedElapsed = null;
       if (since == null) return;
-      if (now.difference(since) >= _config.foregroundValidateThreshold) {
+      if (now - since >= _config.foregroundValidateThreshold) {
         unawaited(_runValidateCycle());
       }
       return;
     }
     // Any non-resumed state means the app left the foreground. Keep the
-    // first such timestamp (??=) so a burst of inactive/paused/hidden
+    // first such reading (??=) so a burst of inactive/paused/hidden
     // callbacks does not reset the measured background duration.
-    _backgroundedAt ??= now;
+    _backgroundedElapsed ??= now;
   }
 
   /// Whether the tiered-cadence validate timer is currently armed.
@@ -713,11 +723,13 @@ final class TrustedTimeImpl {
   int get debugValidateCycleCount => _validateCycleCount;
 
   /// Drives the foreground-resume validate path deterministically in
-  /// tests without a real [WidgetsBinding] lifecycle dispatch. [at]
-  /// overrides the timestamp used to measure background duration.
+  /// tests without a real [WidgetsBinding] lifecycle dispatch. [elapsed]
+  /// overrides the monotonic reading used to measure background duration.
   @visibleForTesting
-  void debugHandleAppLifecycleState(AppLifecycleState state, {DateTime? at}) =>
-      _handleAppLifecycleState(state, at ?? DateTime.now());
+  void debugHandleAppLifecycleState(
+    AppLifecycleState state, {
+    Duration? elapsed,
+  }) => _handleAppLifecycleState(state, elapsed ?? _monotonic.elapsed);
 
   static const _bgChannel = MethodChannel('trusted_time/background');
 
