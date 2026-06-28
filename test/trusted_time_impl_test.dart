@@ -600,6 +600,9 @@ void main() {
           ntsServers: const [],
           persistState: false,
           earlyExit: false,
+          // Pin the uncertainty window so this test's pass/fail boundary
+          // does not depend on the library default staying at 5s.
+          maxAllowedUncertaintyMs: 5000,
           additionalSources: [
             _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
             _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
@@ -609,8 +612,8 @@ void main() {
       addTearDown(TrustedTimeImpl.instance.dispose);
       expect(TrustedTime.isTrusted, isTrue);
 
-      // Move the probe far outside the 5s default uncertainty window;
-      // the anchor stays at the establish-time midpoint.
+      // Move the probe (10s) far outside the configured 5s uncertainty
+      // window; the anchor stays at the establish-time midpoint.
       box.midpointMs += 10000;
       expect(await TrustedTime.validateFreshness(), isFalse);
     });

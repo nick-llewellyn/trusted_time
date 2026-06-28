@@ -244,8 +244,12 @@ final class SyncEngine {
     if (source is Warmable) {
       try {
         await Future.sync(() => (source as Warmable).warm());
-      } catch (_) {
-        // Best-effort, mirroring sync()'s warm-phase handling.
+      } catch (e) {
+        // Best-effort, mirroring sync()'s warm-phase handling: surface
+        // the failure to the observer so a Warmable that violates the
+        // "must not throw" contract is diagnosable, then proceed to the
+        // cold getTime() burst regardless.
+        _observer?.onSourceFailed(source.id, 'warm: $e');
       }
     }
 
@@ -264,22 +268,34 @@ final class SyncEngine {
         : _config.validateBurstCount;
     TimeSample? best;
     Object? lastError;
+    StackTrace? lastStackTrace;
     for (var attempt = 0; attempt < burst; attempt++) {
       try {
         final sample = await source.getTime().timeout(_config.maxLatency);
         if (best == null || _rttKey(sample) < _rttKey(best)) {
           best = sample;
         }
-      } catch (e) {
+      } catch (e, st) {
         lastError = e;
-        _observer?.onSourceFailed(source.id, 'validate: $e');
+        lastStackTrace = st;
+        // Mirror sync()'s _querySafe and hand the observer the raw error
+        // object (not a pre-stringified message) so consumers can inspect
+        // the error type — e.g. TimeoutException vs other failures.
+        _observer?.onSourceFailed(source.id, e);
       }
     }
     if (best != null) return best;
-    throw TrustedTimeFreshnessProbeException(
+    // Every attempt in the burst failed. Wrap the outcome as "freshness
+    // unknown", but preserve the originating stack trace so callers
+    // retain debugging context for the underlying error.
+    final probeFailure = TrustedTimeFreshnessProbeException(
       'Freshness probe against ${source.id} failed across all $burst '
       'attempt(s): $lastError',
     );
+    if (lastStackTrace != null) {
+      Error.throwWithStackTrace(probeFailure, lastStackTrace);
+    }
+    throw probeFailure;
   }
 
   /// Lowest-RTT sort key for the [validate] burst. Prefers the whole
