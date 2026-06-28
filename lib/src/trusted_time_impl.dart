@@ -699,7 +699,14 @@ final class TrustedTimeImpl {
       final since = _backgroundedElapsed;
       _backgroundedElapsed = null;
       if (since == null) return;
-      if (now - since >= _config.foregroundValidateThreshold) {
+      // A negative threshold is nonsensical but cannot be rejected in the
+      // `const` config constructor; normalize it to zero here so it means
+      // "probe on every resume" rather than relying on the always-true
+      // comparison against a negative bound.
+      final threshold = _config.foregroundValidateThreshold.isNegative
+          ? Duration.zero
+          : _config.foregroundValidateThreshold;
+      if (now - since >= threshold) {
         unawaited(_runValidateCycle());
       }
       return;

@@ -625,7 +625,10 @@ void main() {
     // static surface drops into the real TrustedTimeImpl singleton.
     tearDown(TrustedTime.resetOverride);
 
-    Future<void> initTiered(_MidpointBox box) async {
+    Future<void> initTiered(
+      _MidpointBox box, {
+      Duration foregroundValidateThreshold = const Duration(minutes: 15),
+    }) async {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
@@ -634,6 +637,7 @@ void main() {
           persistState: false,
           earlyExit: false,
           cadenceMode: CadenceMode.tieredMobile,
+          foregroundValidateThreshold: foregroundValidateThreshold,
           additionalSources: [
             _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
             _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
@@ -727,6 +731,25 @@ void main() {
       await Future.delayed(const Duration(milliseconds: 20));
 
       expect(impl.debugValidateCycleCount, 0);
+    });
+
+    test('a negative foreground threshold is normalized to zero and probes '
+        'on every resume', () async {
+      await initTiered(
+        freshBox(),
+        foregroundValidateThreshold: const Duration(minutes: -1),
+      );
+      final impl = TrustedTimeImpl.instance;
+
+      // Same monotonic reading on background and resume: a zero-length
+      // excursion. With the negative threshold normalized to zero, the
+      // delta (0) still meets the bound, so a cycle runs.
+      const bg = Duration(hours: 5);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed, elapsed: bg);
+      await Future.delayed(const Duration(milliseconds: 20));
+
+      expect(impl.debugValidateCycleCount, 1);
     });
 
     test('a non-advancing monotonic reading on resume does not run a '

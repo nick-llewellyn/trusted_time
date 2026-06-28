@@ -382,6 +382,11 @@ final class TrustedTimeConfig {
   /// notification) is below this threshold and does not spend a probe;
   /// returning after a longer absence — where the anchor is most likely
   /// to have drifted — does. Defaults to fifteen minutes.
+  ///
+  /// Expected to be non-negative. The constructor is `const`, so this is
+  /// not enforced by assertion (`Duration` comparison is not a constant
+  /// expression); instead a negative value is normalized to
+  /// [Duration.zero] at the point of use, i.e. it probes on every resume.
   final Duration foregroundValidateThreshold;
 
   /// The [nts.TrustMode] the engine applies to every per-source

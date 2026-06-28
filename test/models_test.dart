@@ -324,6 +324,21 @@ void main() {
       expect(dump, contains('validateInterval: 0:45:00.000000'));
       expect(dump, contains('foregroundValidateThreshold: 0:03:00.000000'));
     });
+
+    test('allows a zero foreground threshold (probe on every resume)', () {
+      const config = TrustedTimeConfig(
+        foregroundValidateThreshold: Duration.zero,
+      );
+      expect(config.foregroundValidateThreshold, Duration.zero);
+    });
+
+    test('const-constructs a negative foreground threshold (normalized to '
+        'zero at the point of use, not by the const constructor)', () {
+      const config = TrustedTimeConfig(
+        foregroundValidateThreshold: Duration(minutes: -1),
+      );
+      expect(config.foregroundValidateThreshold, const Duration(minutes: -1));
+    });
   });
 
   group('TimeSample.trustBackend', () {
