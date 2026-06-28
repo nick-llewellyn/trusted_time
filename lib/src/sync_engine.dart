@@ -298,14 +298,15 @@ final class SyncEngine {
     throw probeFailure;
   }
 
-  /// Lowest-RTT sort key for the [validate] burst. Prefers the whole
-  /// measured round-trip delay [TimeSample.delayMs] (δ) and falls back
-  /// to the interval half-width [TimeSample.uncertaintyMs] when a source
-  /// did not time the round trip, so the comparison is always defined.
-  /// All samples in a burst come from one source, so the key is
-  /// internally consistent even when δ is unmeasured.
+  /// Lowest-RTT sort key for the [validate] burst, in milliseconds of
+  /// round-trip delay. Prefers the whole measured RTT [TimeSample.delayMs]
+  /// (δ) and falls back to `2 * `[TimeSample.uncertaintyMs] when a source
+  /// did not time the round trip — the interval half-width is ≈ δ/2, so
+  /// doubling it keeps the key in RTT units and avoids mixing δ with δ/2
+  /// across samples. All samples in a burst come from one source, so the
+  /// key is internally consistent even when δ is unmeasured.
   static int _rttKey(TimeSample sample) =>
-      sample.delayMs ?? sample.uncertaintyMs;
+      sample.delayMs ?? (2 * sample.uncertaintyMs);
 
   /// Executes a full synchronization cycle across all healthy sources.
   ///

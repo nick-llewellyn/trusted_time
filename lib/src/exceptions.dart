@@ -107,8 +107,8 @@ final class TransientSourceError implements Exception {
 /// ran and found the anchor has drifted (which returns `false`).
 ///
 /// The validate tier (ADR 0006) confirms an already-established anchor
-/// with a single authenticated NTS query. This exception means that
-/// query could not be made or evaluated, which happens when:
+/// with a short burst of authenticated NTS queries. This exception means
+/// that probe could not be made or evaluated, which happens when:
 ///
 ///  * no anchor has been established yet (await [TrustedTime.initialize]
 ///    or [TrustedTime.forceResync] first);
@@ -116,7 +116,7 @@ final class TransientSourceError implements Exception {
 ///    cryptographic authenticity, so NTP/HTTPS sources are not eligible;
 ///  * every configured NTS source is currently in exponential cooldown;
 ///    or
-///  * the single probe query itself failed or timed out.
+///  * every query in the probe burst failed or timed out.
 ///
 /// Treat it as "freshness unknown" and keep it distinct from a `false`
 /// return, which is a positive observation that the anchor disagrees
