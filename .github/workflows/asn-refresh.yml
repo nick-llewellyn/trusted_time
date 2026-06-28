@@ -44,18 +44,22 @@ jobs:
       - name: Detect snapshot changes
         id: diff
         run: |
-          if git diff --quiet -- assets/asn; then
+          # --porcelain catches modified, untracked, and deleted files, so a
+          # generator that adds or recreates a file is not mistaken for a no-op.
+          if [ -z "$(git status --porcelain -- assets/asn)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "Snapshot unchanged; no PR will be opened."
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "Snapshot changed:"
-            git diff --stat -- assets/asn
+            git status --short -- assets/asn
           fi
 
       # Self-validation: GITHUB_TOKEN-opened PRs do NOT auto-trigger CI (anti-
       # recursion), so the refreshed data is validated here, in-job, before the
-      # PR is opened. Mirrors the CI matrix steps for a single runner.
+      # PR is opened. This is an intentional subset of CI (format, analyze,
+      # test) — full CI parity (coverage, publish dry-run, example app) runs
+      # once the refresh PR is merged to the trunk.
       - name: Verify formatting
         if: steps.diff.outputs.changed == 'true'
         run: dart format --output=none --set-exit-if-changed .
@@ -84,7 +88,9 @@ jobs:
             --fatal-infos`, `flutter test`) because GITHUB_TOKEN-opened PRs do
             not auto-trigger CI checks.
         run: |
-          BRANCH="automated/asn-refresh-$(date -u +%Y%m%d)"
+          # Run ID keeps same-day reruns (e.g. workflow_dispatch retries) from
+          # colliding on an existing branch.
+          BRANCH="automated/asn-refresh-$(date -u +%Y%m%d)-${GITHUB_RUN_ID}"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch -c "$BRANCH"
