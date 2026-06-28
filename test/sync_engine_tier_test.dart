@@ -60,6 +60,41 @@ class _FailingNtsSource implements TimeSource {
   Future<TimeSample> getTime() async => throw StateError('probe boom');
 }
 
+/// An NTS [TimeSource] that returns a scripted sequence of round-trip
+/// delays across successive [getTime] calls, so the validate-tier
+/// burst's lowest-RTT selection can be exercised deterministically. A
+/// `null` entry makes that call throw, exercising partial-failure
+/// tolerance.
+class _BurstNtsSource implements TimeSource {
+  _BurstNtsSource(this._delaysMs);
+
+  final List<int?> _delaysMs;
+  static const int midpointMs = 1000;
+  int calls = 0;
+
+  @override
+  final String id = 'nts:burst';
+  @override
+  final String groupId = 'gburst';
+
+  @override
+  Future<TimeSample> getTime() async {
+    final i = calls++;
+    final d = i < _delaysMs.length ? _delaysMs[i] : _delaysMs.last;
+    if (d == null) throw StateError('burst attempt $i failed');
+    final half = d ~/ 2;
+    return TimeSample(
+      interval: TimeInterval(
+        startMs: midpointMs - half,
+        endMs: midpointMs + half,
+      ),
+      sourceId: id,
+      groupId: groupId,
+      delayMs: d,
+    );
+  }
+}
+
 class _RecordingObserver implements SyncObserver {
   final List<ConsensusResult> consensus = [];
   final List<({String sourceId, Object error})> failures = [];
@@ -83,18 +118,23 @@ SyncEngine _engineFor(
   List<TimeSource> sources, {
   required _RecordingObserver observer,
   required List<IntegrityEvent> events,
+  int? validateBurstCount,
 }) {
   return SyncEngine(
-    config: const TrustedTimeConfig(
-      minimumQuorum: 2,
-      minGroupCount: 1,
-      // Wait for every source each cycle so admission is deterministic and
-      // does not depend on which sample wins the early-exit race.
-      earlyExit: false,
-      ntpServers: [],
-      httpsSources: [],
-      ntsServers: [],
-    ).copyWith(additionalSources: sources),
+    config:
+        const TrustedTimeConfig(
+          minimumQuorum: 2,
+          minGroupCount: 1,
+          // Wait for every source each cycle so admission is deterministic and
+          // does not depend on which sample wins the early-exit race.
+          earlyExit: false,
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+        ).copyWith(
+          additionalSources: sources,
+          validateBurstCount: validateBurstCount,
+        ),
     clock: _MockClock(),
     observer: observer,
     onIntegrityEvent: events.add,
@@ -325,6 +365,56 @@ void main() {
         throwsA(isA<TrustedTimeFreshnessProbeException>()),
       );
       expect(observer.failures.any((f) => f.sourceId == 'nts:fail'), isTrue);
+    });
+
+    test('bursts the source and returns the lowest-RTT sample', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      // Default burst is 4; the second attempt has the smallest delay.
+      final source = _BurstNtsSource([80, 20, 50, 60]);
+      final engine = _engineFor([source], observer: observer, events: events);
+
+      final sample = await engine.validate();
+
+      expect(source.calls, 4);
+      expect(sample.delayMs, 20);
+      expect(sample.uncertaintyMs, 10);
+    });
+
+    test('tolerates partial failures and returns the best success', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      // Two of four attempts fail; the best successful delay is 10.
+      final source = _BurstNtsSource([null, 30, null, 10]);
+      final engine = _engineFor([source], observer: observer, events: events);
+
+      final sample = await engine.validate();
+
+      expect(source.calls, 4);
+      expect(sample.delayMs, 10);
+      // Each failed attempt is reported to the observer.
+      expect(
+        observer.failures.where((f) => f.sourceId == 'nts:burst').length,
+        2,
+      );
+    });
+
+    test('honors a configured validateBurstCount', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      final source = _BurstNtsSource([50, 10, 5, 1]);
+      final engine = _engineFor(
+        [source],
+        observer: observer,
+        events: events,
+        validateBurstCount: 2,
+      );
+
+      final sample = await engine.validate();
+
+      // Only the first two attempts run; min(50, 10) = 10.
+      expect(source.calls, 2);
+      expect(sample.delayMs, 10);
     });
   });
 }

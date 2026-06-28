@@ -176,11 +176,16 @@ final class SyncEngine {
   /// (ADR 0006) and returns the resulting [TimeSample].
   ///
   /// Unlike [sync], this runs no Marzullo consensus and builds no truth
-  /// box: it issues one authenticated NTS query against the
-  /// highest-quality healthy NTS source and returns that source's
-  /// sample unchanged. The caller (`TrustedTimeImpl.validateFreshness`)
-  /// compares the sample against the live anchor to decide whether the
-  /// anchor is still fresh.
+  /// box: it bursts a short series of authenticated NTS queries against
+  /// the highest-quality healthy NTS source and returns the single
+  /// sample with the smallest round-trip delay. The burst size is
+  /// [TrustedTimeConfig.validateBurstCount]; each query past the first
+  /// spends one in-band-refilled cookie (a single UDP round-trip, no
+  /// new NTS-KE handshake), and the lowest-RTT sample is the tightest,
+  /// least path-asymmetric estimate (the burst-and-pick-min strategy
+  /// package:nts documents). The caller
+  /// (`TrustedTimeImpl.validateFreshness`) compares that sample against
+  /// the live anchor to decide whether the anchor is still fresh.
   ///
   /// Source selection mirrors [sync]'s cooldown + quality-ranking
   /// composition, restricted to NTS sources — those whose id carries
@@ -191,8 +196,8 @@ final class SyncEngine {
   /// establish-pool source or perturb its ranking.
   ///
   /// Throws [TrustedTimeFreshnessProbeException] when no NTS source is
-  /// configured, every NTS source is in cooldown, or the probe query
-  /// fails or times out.
+  /// configured, every NTS source is in cooldown, or every query in the
+  /// burst fails or times out.
   Future<TimeSample> validate() async {
     final now = DateTime.now();
     final ntsSources = _sources
@@ -244,15 +249,47 @@ final class SyncEngine {
       }
     }
 
-    try {
-      return await source.getTime().timeout(_config.maxLatency);
-    } catch (e) {
-      _observer?.onSourceFailed(source.id, 'validate: $e');
-      throw TrustedTimeFreshnessProbeException(
-        'Freshness probe against ${source.id} failed: $e',
-      );
+    // Phase B (burst): query the selected source up to
+    // [TrustedTimeConfig.validateBurstCount] times and keep the
+    // lowest-RTT sample. After warming, each query spends one
+    // in-band-refilled cookie — a single UDP round-trip, no new NTS-KE
+    // handshake — so the marginal cost of extra samples is small, and
+    // the minimum measured delay is the tightest, least path-asymmetric
+    // estimate (the burst-and-pick-min strategy package:nts documents).
+    // Queries run sequentially so each cookie is refilled before the
+    // next is spent. Individual failures are tolerated: a probe surfaces
+    // as failed only when every attempt in the burst fails.
+    final burst = _config.validateBurstCount < 1
+        ? 1
+        : _config.validateBurstCount;
+    TimeSample? best;
+    Object? lastError;
+    for (var attempt = 0; attempt < burst; attempt++) {
+      try {
+        final sample = await source.getTime().timeout(_config.maxLatency);
+        if (best == null || _rttKey(sample) < _rttKey(best)) {
+          best = sample;
+        }
+      } catch (e) {
+        lastError = e;
+        _observer?.onSourceFailed(source.id, 'validate: $e');
+      }
     }
+    if (best != null) return best;
+    throw TrustedTimeFreshnessProbeException(
+      'Freshness probe against ${source.id} failed across all $burst '
+      'attempt(s): $lastError',
+    );
   }
+
+  /// Lowest-RTT sort key for the [validate] burst. Prefers the whole
+  /// measured round-trip delay [TimeSample.delayMs] (δ) and falls back
+  /// to the interval half-width [TimeSample.uncertaintyMs] when a source
+  /// did not time the round trip, so the comparison is always defined.
+  /// All samples in a burst come from one source, so the key is
+  /// internally consistent even when δ is unmeasured.
+  static int _rttKey(TimeSample sample) =>
+      sample.delayMs ?? sample.uncertaintyMs;
 
   /// Executes a full synchronization cycle across all healthy sources.
   ///

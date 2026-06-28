@@ -248,8 +248,9 @@ final class TrustedTimeImpl {
   }
 
   /// Confirms the live trust anchor is still fresh using the validate
-  /// tier (ADR 0006): a single authenticated NTS query, with no
-  /// consensus rebuild.
+  /// tier (ADR 0006): a short burst of authenticated NTS queries against
+  /// one source, keeping the lowest-RTT sample, with no consensus
+  /// rebuild.
   ///
   /// Returns `true` when the probe agrees with the projected anchor to
   /// within [TrustedTimeConfig.maxAllowedUncertaintyMs], and `false`
@@ -260,7 +261,8 @@ final class TrustedTimeImpl {
   ///
   /// Throws [TrustedTimeFreshnessProbeException] when the probe cannot
   /// be performed at all: no anchor has been established, no NTS source
-  /// is available, or the query failed (see [SyncEngine.validate]).
+  /// is available, or every query in the burst failed (see
+  /// [SyncEngine.validate]).
   Future<bool> validateFreshness() async {
     // If a full establish cycle is already running, a separate probe
     // would only contend with it for the same NTS client. Defer to the
