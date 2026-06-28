@@ -798,6 +798,63 @@ void main() {
         expect(impl.debugLifecycleObserverInstalled, isFalse);
       },
     );
+
+    test('a foreground resume does not start a probe that overlaps an '
+        'in-flight validate cycle (shared in-flight guard)', () async {
+      // burst of 1 keeps the probe to a single getTime() so the query
+      // tally is exactly "one burst == one query"; the two sources share
+      // one counter so the assertion holds regardless of which ranked
+      // source the validate tier selects.
+      final counter = _ProbeCounter();
+      final box = freshBox();
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          persistState: false,
+          earlyExit: false,
+          cadenceMode: CadenceMode.tieredMobile,
+          validateBurstCount: 1,
+          additionalSources: [
+            _CountingSource(box, id: 'nts:a', groupId: 'g1', counter: counter),
+            _CountingSource(box, id: 'nts:b', groupId: 'g2', counter: counter),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      final impl = TrustedTimeImpl.instance;
+
+      // The bootstrap establish cycle queried the sources; only
+      // post-init probe queries are relevant to the guard.
+      counter.count = 0;
+
+      // Two foreground resumes dispatched in the same synchronous turn.
+      // The first drives _runValidateCycle to its first await — setting
+      // the in-flight flag before yielding — so the second must observe
+      // the flag and return before issuing any probe query.
+      const bg1 = Duration(hours: 5);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg1);
+      impl.debugHandleAppLifecycleState(
+        AppLifecycleState.resumed,
+        elapsed: bg1 + const Duration(minutes: 20),
+      );
+      const bg2 = Duration(hours: 10);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg2);
+      impl.debugHandleAppLifecycleState(
+        AppLifecycleState.resumed,
+        elapsed: bg2 + const Duration(minutes: 20),
+      );
+
+      await Future.delayed(const Duration(milliseconds: 30));
+
+      // Both resumes register as attempts, but the guard let only one
+      // burst reach a source: a single probe query, not two overlapping
+      // bursts contending on shared per-source state.
+      expect(impl.debugValidateCycleCount, 2);
+      expect(counter.count, 1);
+      expect(TrustedTime.isTrusted, isTrue);
+    });
   });
 }
 
@@ -830,6 +887,46 @@ class _SyncStartedProbe implements SyncObserver {
 class _MidpointBox {
   _MidpointBox(this.midpointMs);
   int midpointMs;
+}
+
+/// Shared getTime() tally so an overlap test can count how many probe
+/// queries actually executed independently of which ranked source the
+/// validate tier selected.
+class _ProbeCounter {
+  int count = 0;
+}
+
+/// A [_BoxedSource] variant that tallies every getTime() call into a
+/// shared [_ProbeCounter], used to prove the validate-in-flight guard
+/// stops a second overlapping probe burst from reaching a source.
+class _CountingSource implements TimeSource {
+  _CountingSource(
+    this._box, {
+    required this.id,
+    required this.groupId,
+    required this.counter,
+  });
+
+  final _MidpointBox _box;
+  @override
+  final String id;
+  @override
+  final String groupId;
+  final _ProbeCounter counter;
+  static const int halfWidthMs = 10;
+
+  @override
+  Future<TimeSample> getTime() async {
+    counter.count++;
+    return TimeSample(
+      interval: TimeInterval(
+        startMs: _box.midpointMs - halfWidthMs,
+        endMs: _box.midpointMs + halfWidthMs,
+      ),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
 }
 
 /// A [TimeSource] that reports an interval centred on a [_MidpointBox]

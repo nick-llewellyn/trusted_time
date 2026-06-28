@@ -369,8 +369,12 @@ final class TrustedTimeConfig {
   /// on [refreshInterval] (24h via [mobileDefaults]) plus this frequent
   /// *validate* cycle, which confirms the existing anchor with a single
   /// cookie-warm NTS burst rather than a full Marzullo pass. Defaults to
-  /// one hour. A non-positive value disables the periodic validate timer
-  /// (the foreground trigger still fires).
+  /// one hour. A non-positive value disables the periodic validate timer;
+  /// the foreground-resume trigger is independent of this value, but it
+  /// is itself only active where a [WidgetsBindingObserver] can be
+  /// installed (a non-web platform with a live binding), so disabling the
+  /// timer does not guarantee a foreground trigger in every environment —
+  /// e.g. on web or in a headless background isolate neither fires.
   final Duration validateInterval;
 
   /// Minimum time the app must have spent backgrounded before a return

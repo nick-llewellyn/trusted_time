@@ -109,6 +109,12 @@ final class TrustedTimeImpl {
   Duration? _backgroundedElapsed;
   int _validateCycleCount = 0;
 
+  // Validate-cycle in-flight guard (ADR 0006). Held for the duration of
+  // a single [_runValidateCycle] so the periodic validate timer and the
+  // foreground-resume trigger can never run overlapping validate bursts
+  // against the same source.
+  bool _validateInProgress = false;
+
   /// Monotonic clock used to measure how long the app spent backgrounded.
   /// Deliberately *not* wall-clock time: a trusted-time library must not
   /// trust [DateTime.now] to gate its own freshness checks, since a
@@ -664,11 +670,24 @@ final class TrustedTimeImpl {
   /// not a verdict — it is swallowed and the anchor and schedule are left
   /// intact, mirroring [validateFreshness]'s contract. A probe is also
   /// skipped while a full sync is already in flight, since an establish
-  /// cycle supersedes a cheap probe.
+  /// cycle supersedes a cheap probe, and while another validate cycle is
+  /// already running, so the timer and foreground-resume entry points
+  /// never issue overlapping bursts.
   Future<void> _runValidateCycle() async {
     if (_disposed) return;
     _validateCycleCount++;
     if (_syncInProgress != null) return;
+    // Validate-in-flight guard. The periodic timer self-rearms only
+    // after its cycle completes, so the timer path never overlaps
+    // itself — but the foreground-resume trigger calls in independently
+    // and can land while a timer-driven probe is still awaiting its NTS
+    // burst. Without this guard the two entry points would issue
+    // concurrent SyncEngine.validate() bursts, doubling radio/battery
+    // use and contending on shared per-source state (e.g. NTS cookie
+    // jars); the flag gives both paths the same non-overlap guarantee
+    // the self-rearming timer already had on its own.
+    if (_validateInProgress) return;
+    _validateInProgress = true;
     bool fresh;
     try {
       fresh = await validateFreshness();
@@ -677,6 +696,8 @@ final class TrustedTimeImpl {
     } catch (e) {
       if (kDebugMode) debugPrint('[TrustedTime] Validate probe error: $e');
       return;
+    } finally {
+      _validateInProgress = false;
     }
     if (!fresh && !_disposed && _syncInProgress == null) {
       unawaited(_performSync());
