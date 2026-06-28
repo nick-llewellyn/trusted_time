@@ -655,10 +655,12 @@ final class TrustedTimeImpl {
     if (_config.cadenceMode != CadenceMode.tieredMobile) return;
     final interval = _config.validateInterval;
     if (interval <= Duration.zero) return;
-    _validateTimer = Timer(
-      interval,
-      () => _runValidateCycle().whenComplete(_scheduleValidate),
-    );
+    _validateTimer = Timer(interval, () {
+      // Fire-and-forget: the cycle re-arms the timer via whenComplete, so
+      // the returned Future is intentionally not awaited. unawaited makes
+      // that explicit and matches the other validate/sync call sites.
+      unawaited(_runValidateCycle().whenComplete(_scheduleValidate));
+    });
   }
 
   /// Runs one validate-tier freshness probe and escalates to a full
