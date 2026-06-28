@@ -502,6 +502,18 @@ void main() {
   group('TrustedTime.validateFreshness (ADR 0006)', () {
     tearDown(TrustedTime.resetOverride);
 
+    test('under a test override reflects the mock trust state', () async {
+      final mock = TrustedTimeMock(initial: DateTime.utc(2024, 6, 15, 12));
+      addTearDown(mock.dispose);
+      TrustedTime.overrideForTesting(mock);
+
+      expect(await TrustedTime.validateFreshness(), isTrue);
+
+      mock.simulateTampering(TamperReason.systemClockJumped);
+      expect(TrustedTime.isTrusted, isFalse);
+      expect(await TrustedTime.validateFreshness(), isFalse);
+    });
+
     test('throws TrustedTimeFreshnessProbeException when no anchor is '
         'established', () async {
       await TrustedTime.initialize(

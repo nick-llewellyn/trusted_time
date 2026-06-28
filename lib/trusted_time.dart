@@ -491,10 +491,12 @@ abstract final class TrustedTime {
   /// the query failed. This "freshness unknown" outcome is deliberately
   /// distinct from the `false` "anchor drifted" observation.
   ///
-  /// Under a test override this returns `true` without touching the
-  /// engine.
+  /// Under a test override this returns the mock's [TrustedTimeMock.isTrusted]
+  /// state without touching the engine, so a mock placed in an untrusted
+  /// state (e.g. via [TrustedTimeMock.simulateTampering]) reports a failed
+  /// freshness check consistently with [isTrusted].
   static Future<bool> validateFreshness() {
-    if (_override != null) return Future.value(true);
+    if (_override != null) return Future.value(_override!.isTrusted);
     return TrustedTimeImpl.instance.validateFreshness();
   }
 
