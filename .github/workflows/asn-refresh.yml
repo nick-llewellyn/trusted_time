@@ -28,6 +28,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # Pin to the PR base so a workflow_dispatch from any other branch
+          # (e.g. main) cannot branch off the wrong history and open a huge,
+          # diffuse PR. schedule: already runs from the default branch.
+          ref: integration/bleeding-edge
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
