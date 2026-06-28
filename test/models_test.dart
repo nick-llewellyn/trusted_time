@@ -225,6 +225,50 @@ void main() {
     });
   });
 
+  group('TrustedTimeConfig validateBurstCount (ADR 0006)', () {
+    test('defaults to 4', () {
+      expect(const TrustedTimeConfig().validateBurstCount, 4);
+    });
+
+    test('mobileDefaults() pins a 4-sample validate burst', () {
+      expect(TrustedTimeConfig.mobileDefaults().validateBurstCount, 4);
+    });
+
+    test('asserts the burst is at least 1', () {
+      expect(
+        () => TrustedTimeConfig(validateBurstCount: 0),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('round-trips through copyWith', () {
+      const original = TrustedTimeConfig();
+      final updated = original.copyWith(validateBurstCount: 7);
+      expect(updated.validateBurstCount, 7);
+      // Purely additive: an omitted value preserves the existing one.
+      final untouched = updated.copyWith(
+        maxLatency: const Duration(seconds: 7),
+      );
+      expect(untouched.validateBurstCount, 7);
+    });
+
+    test('participates in equality and hashCode', () {
+      const base = TrustedTimeConfig();
+      const bursty = TrustedTimeConfig(validateBurstCount: 8);
+      expect(base == bursty, isFalse);
+
+      const a = TrustedTimeConfig(validateBurstCount: 8);
+      const b = TrustedTimeConfig(validateBurstCount: 8);
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
+    });
+
+    test('appears in toString output', () {
+      const config = TrustedTimeConfig(validateBurstCount: 6);
+      expect(config.toString(), contains('validateBurstCount: 6'));
+    });
+  });
+
   group('TimeSample.trustBackend', () {
     // The field is the per-handshake observability counterpart to the
     // TrustedTimeConfig trust policy (usePlatformTrust /

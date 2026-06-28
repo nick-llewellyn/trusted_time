@@ -498,6 +498,126 @@ void main() {
       expect(text, contains('refreshInterval: 0:02:00.000000'));
     });
   });
+
+  group('TrustedTime.validateFreshness (ADR 0006)', () {
+    tearDown(TrustedTime.resetOverride);
+
+    test('under a test override reflects the mock trust state', () async {
+      final mock = TrustedTimeMock(initial: DateTime.utc(2024, 6, 15, 12));
+      addTearDown(mock.dispose);
+      TrustedTime.overrideForTesting(mock);
+
+      expect(await TrustedTime.validateFreshness(), isTrue);
+
+      mock.simulateTampering(TamperReason.systemClockJumped);
+      expect(TrustedTime.isTrusted, isFalse);
+      expect(await TrustedTime.validateFreshness(), isFalse);
+    });
+
+    test('throws TrustedTimeFreshnessProbeException when no anchor is '
+        'established', () async {
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      addTearDown(TrustedTimeImpl.instance.dispose);
+
+      expect(TrustedTime.isTrusted, isFalse);
+      await expectLater(
+        TrustedTime.validateFreshness(),
+        throwsA(isA<TrustedTimeFreshnessProbeException>()),
+      );
+    });
+
+    test(
+      'throws when an anchor exists but no NTS source is configured',
+      () async {
+        final box = _MidpointBox(
+          DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
+        );
+        await TrustedTime.initialize(
+          config: TrustedTimeConfig(
+            ntpServers: const [],
+            httpsSources: const [],
+            ntsServers: const [],
+            persistState: false,
+            earlyExit: false,
+            additionalSources: [
+              _BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
+              _BoxedSource(box, id: 'https:b', groupId: 'g2'),
+            ],
+          ),
+        );
+        addTearDown(TrustedTimeImpl.instance.dispose);
+
+        expect(TrustedTime.isTrusted, isTrue);
+        await expectLater(
+          TrustedTime.validateFreshness(),
+          throwsA(isA<TrustedTimeFreshnessProbeException>()),
+        );
+      },
+    );
+
+    test(
+      'returns true when a fresh NTS probe agrees with the anchor',
+      () async {
+        final box = _MidpointBox(
+          DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
+        );
+        await TrustedTime.initialize(
+          config: TrustedTimeConfig(
+            ntpServers: const [],
+            httpsSources: const [],
+            ntsServers: const [],
+            persistState: false,
+            earlyExit: false,
+            additionalSources: [
+              _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
+              _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
+            ],
+          ),
+        );
+        addTearDown(TrustedTimeImpl.instance.dispose);
+
+        expect(TrustedTime.isTrusted, isTrue);
+        expect(await TrustedTime.validateFreshness(), isTrue);
+      },
+    );
+
+    test('returns false when the NTS probe disagrees beyond the '
+        'uncertainty window', () async {
+      final box = _MidpointBox(
+        DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
+      );
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          persistState: false,
+          earlyExit: false,
+          // Pin the uncertainty window so this test's pass/fail boundary
+          // does not depend on the library default staying at 5s.
+          maxAllowedUncertaintyMs: 5000,
+          additionalSources: [
+            _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
+            _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
+          ],
+        ),
+      );
+      addTearDown(TrustedTimeImpl.instance.dispose);
+      expect(TrustedTime.isTrusted, isTrue);
+
+      // Move the probe (10s) far outside the configured 5s uncertainty
+      // window; the anchor stays at the establish-time midpoint.
+      box.midpointMs += 10000;
+      expect(await TrustedTime.validateFreshness(), isFalse);
+    });
+  });
 }
 
 /// Minimal [SyncObserver] that just counts onSyncStarted invocations,
@@ -522,4 +642,35 @@ class _SyncStartedProbe implements SyncObserver {
 
   @override
   void onSyncFailed(Object error) {}
+}
+
+/// Mutable midpoint shared by establish and probe queries so a test can
+/// move "network time" between the two phases.
+class _MidpointBox {
+  _MidpointBox(this.midpointMs);
+  int midpointMs;
+}
+
+/// A [TimeSource] that reports an interval centred on a [_MidpointBox]
+/// so the validate-tier offset comparison can be driven
+/// deterministically.
+class _BoxedSource implements TimeSource {
+  _BoxedSource(this._box, {required this.id, required this.groupId});
+
+  final _MidpointBox _box;
+  @override
+  final String id;
+  @override
+  final String groupId;
+  static const int halfWidthMs = 10;
+
+  @override
+  Future<TimeSample> getTime() async => TimeSample(
+    interval: TimeInterval(
+      startMs: _box.midpointMs - halfWidthMs,
+      endMs: _box.midpointMs + halfWidthMs,
+    ),
+    sourceId: id,
+    groupId: groupId,
+  );
 }

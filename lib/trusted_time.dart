@@ -467,6 +467,42 @@ abstract final class TrustedTime {
     return TrustedTimeImpl.instance.forceResync();
   }
 
+  /// Confirms the active trust anchor is still fresh with a short burst
+  /// of lightweight, authenticated NTS queries — the validate tier of
+  /// the tiered sync cadence (ADR 0006).
+  ///
+  /// This is far cheaper than [forceResync]: it bursts a few NTS queries
+  /// against a single source (typically ~50–200 ms in total), keeps the
+  /// lowest round-trip sample, and compares that against the existing
+  /// anchor instead of tearing the anchor down and rebuilding consensus
+  /// from every source. The burst size is
+  /// [TrustedTimeConfig.validateBurstCount]. Use it on a frequent
+  /// cadence (or when the app returns to the foreground) to catch drift
+  /// between the infrequent full establish ([forceResync]) cycles.
+  ///
+  /// Returns:
+  ///  * `true` — the probe agrees with the anchor within
+  ///    [TrustedTimeConfig.maxAllowedUncertaintyMs];
+  ///  * `false` — the probe ran but the anchor disagrees; consider
+  ///    calling [forceResync]. The anchor is *not* invalidated by a
+  ///    `false` result on its own.
+  ///
+  /// Throws [TrustedTimeFreshnessProbeException] when the probe cannot
+  /// run at all — no anchor established yet, no NTS source configured
+  /// (the validate tier requires NTS), all NTS sources in cooldown, or
+  /// every query in the burst failed. This "freshness unknown" outcome
+  /// is deliberately distinct from the `false` "anchor drifted"
+  /// observation.
+  ///
+  /// Under a test override this returns the mock's [TrustedTimeMock.isTrusted]
+  /// state without touching the engine, so a mock placed in an untrusted
+  /// state (e.g. via [TrustedTimeMock.simulateTampering]) reports a failed
+  /// freshness check consistently with [isTrusted].
+  static Future<bool> validateFreshness() {
+    if (_override != null) return Future.value(_override!.isTrusted);
+    return TrustedTimeImpl.instance.validateFreshness();
+  }
+
   /// Schedules OS-level background tasks to keep the trust anchor fresh.
   ///
   /// Leverages platform-native schedulers (WorkManager on Android,

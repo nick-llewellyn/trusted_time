@@ -104,7 +104,12 @@ final class TrustedTimeConfig {
     this.backgroundSyncInterval,
     this.transientStreakThreshold = 5,
     this.cadenceMode = CadenceMode.singleTier30m,
-  });
+    this.validateBurstCount = 4,
+  }) : assert(
+         validateBurstCount >= 1,
+         'validateBurstCount must be at least 1: the validate tier must '
+         'issue at least one NTS query per probe.',
+       );
 
   /// Creates a Web-compatible configuration that only uses HTTPS sources.
   ///
@@ -153,6 +158,10 @@ final class TrustedTimeConfig {
   ///   on battery-conscious devices.
   /// * [backgroundSyncInterval] is 24h, aligning the background
   ///   maintenance cadence with the establish tier.
+  /// * [validateBurstCount] is `4`: each validate probe bursts the
+  ///   selected NTS source four times and keeps the lowest-RTT sample,
+  ///   trading three extra post-warm UDP round-trips for a tighter
+  ///   freshness measurement.
   ///
   /// The cheap ~1h validate cadence is owned by the tiered scheduler
   /// rather than this factory; this factory selects the mode and the
@@ -163,6 +172,7 @@ final class TrustedTimeConfig {
       oscillatorDriftFactor: 0.000015,
       refreshInterval: Duration(hours: 24),
       backgroundSyncInterval: Duration(hours: 24),
+      validateBurstCount: 4,
     );
   }
 
@@ -335,6 +345,17 @@ final class TrustedTimeConfig {
   /// platform-tuned drift and interval constants.
   final CadenceMode cadenceMode;
 
+  /// The number of authenticated NTS queries the validate tier issues
+  /// per freshness probe (ADR 0006). After warming the selected source,
+  /// [TrustedTime.validateFreshness] bursts it this many times and keeps
+  /// the sample with the smallest round-trip delay — the tightest, least
+  /// path-asymmetric measurement, following the burst-and-pick-min
+  /// strategy `package:nts` documents. Each query past the first spends
+  /// one in-band-refilled cookie (a single UDP round-trip, no new
+  /// NTS-KE handshake), so the marginal cost is small. Defaults to `4`;
+  /// must be at least `1`. Has no effect outside the validate tier.
+  final int validateBurstCount;
+
   /// The [nts.TrustMode] the engine applies to every per-source
   /// [nts.NtsClient], derived from [usePlatformTrust] and
   /// [customRootCerts].
@@ -396,6 +417,7 @@ final class TrustedTimeConfig {
     Duration? backgroundSyncInterval,
     int? transientStreakThreshold,
     CadenceMode? cadenceMode,
+    int? validateBurstCount,
   }) {
     return TrustedTimeConfig(
       ntpServers: ntpServers ?? this.ntpServers,
@@ -422,6 +444,7 @@ final class TrustedTimeConfig {
       transientStreakThreshold:
           transientStreakThreshold ?? this.transientStreakThreshold,
       cadenceMode: cadenceMode ?? this.cadenceMode,
+      validateBurstCount: validateBurstCount ?? this.validateBurstCount,
     );
   }
 
@@ -448,7 +471,8 @@ final class TrustedTimeConfig {
         other.oscillatorDriftFactor == oscillatorDriftFactor &&
         other.backgroundSyncInterval == backgroundSyncInterval &&
         other.transientStreakThreshold == transientStreakThreshold &&
-        other.cadenceMode == cadenceMode;
+        other.cadenceMode == cadenceMode &&
+        other.validateBurstCount == validateBurstCount;
   }
 
   @override
@@ -473,6 +497,7 @@ final class TrustedTimeConfig {
     backgroundSyncInterval,
     transientStreakThreshold,
     cadenceMode,
+    validateBurstCount,
   ]);
 
   @override
@@ -509,6 +534,7 @@ final class TrustedTimeConfig {
         '  backgroundSyncInterval: $backgroundSyncInterval,\n'
         '  transientStreakThreshold: $transientStreakThreshold,\n'
         '  cadenceMode: $cadenceMode,\n'
+        '  validateBurstCount: $validateBurstCount,\n'
         ')';
   }
 }
