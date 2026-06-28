@@ -247,6 +247,56 @@ final class TrustedTimeImpl {
     await _performSync();
   }
 
+  /// Confirms the live trust anchor is still fresh using the validate
+  /// tier (ADR 0006): a single authenticated NTS query, with no
+  /// consensus rebuild.
+  ///
+  /// Returns `true` when the probe agrees with the projected anchor to
+  /// within [TrustedTimeConfig.maxAllowedUncertaintyMs], and `false`
+  /// when the probe ran successfully but the anchor disagrees (the
+  /// caller may then [forceResync]). A `false` return does **not**
+  /// invalidate the anchor — a single disagreeing probe is a hint, not
+  /// a verdict.
+  ///
+  /// Throws [TrustedTimeFreshnessProbeException] when the probe cannot
+  /// be performed at all: no anchor has been established, no NTS source
+  /// is available, or the query failed (see [SyncEngine.validate]).
+  Future<bool> validateFreshness() async {
+    // If a full establish cycle is already running, a separate probe
+    // would only contend with it for the same NTS client. Defer to the
+    // cycle: an anchor it establishes is, by definition, fresher than
+    // any probe could prove.
+    final inFlight = _syncInProgress;
+    if (inFlight != null) {
+      await inFlight.future;
+      if (_trusted && _anchor != null) return true;
+      throw const TrustedTimeFreshnessProbeException(
+        'Freshness probe deferred to an in-flight sync that did not '
+        'establish a trust anchor.',
+      );
+    }
+
+    if (!_trusted || _anchor == null) {
+      throw const TrustedTimeFreshnessProbeException(
+        'No established trust anchor to validate. Await initialize() '
+        '(or forceResync()) so an establish cycle can build an anchor '
+        'before probing freshness.',
+      );
+    }
+
+    final sample = await _syncEngine.validate();
+
+    // Project the anchor to "now" using the same monotonic arithmetic
+    // as now(), then compare against the probe's midpoint. The few ms
+    // between the probe returning and this projection are bounded by
+    // post-query processing and are negligible against
+    // maxAllowedUncertaintyMs.
+    final projectedNowMs =
+        _anchor!.networkUtcMs + _syncClock.elapsedSinceAnchorMs();
+    final offsetMs = (projectedNowMs - sample.interval.midpoint).abs();
+    return offsetMs <= _config.maxAllowedUncertaintyMs;
+  }
+
   /// Enables background synchronization to keep trust anchors fresh.
   ///
   /// **Android Limitation**: Due to platform constraints, Android background sync

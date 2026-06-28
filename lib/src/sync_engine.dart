@@ -4,7 +4,11 @@ import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
 import 'domain/time_interval.dart';
-import 'exceptions.dart' show TransientSourceError, TrustedTimeSyncException;
+import 'exceptions.dart'
+    show
+        TransientSourceError,
+        TrustedTimeFreshnessProbeException,
+        TrustedTimeSyncException;
 import 'integrity_event.dart';
 import 'models.dart';
 import 'monotonic_clock.dart';
@@ -166,6 +170,88 @@ final class SyncEngine {
         }
       }),
     );
+  }
+
+  /// Performs a single-source freshness probe for the validate tier
+  /// (ADR 0006) and returns the resulting [TimeSample].
+  ///
+  /// Unlike [sync], this runs no Marzullo consensus and builds no truth
+  /// box: it issues one authenticated NTS query against the
+  /// highest-quality healthy NTS source and returns that source's
+  /// sample unchanged. The caller (`TrustedTimeImpl.validateFreshness`)
+  /// compares the sample against the live anchor to decide whether the
+  /// anchor is still fresh.
+  ///
+  /// Source selection mirrors [sync]'s cooldown + quality-ranking
+  /// composition, restricted to NTS sources — those whose id carries
+  /// the [TimeSource.prefixNts] prefix, so fakes injected via
+  /// [TrustedTimeConfig.additionalSources] remain eligible in tests.
+  /// The probe is read-only with respect to cooldown and quality state:
+  /// a single lightweight freshness check must not blacklist an
+  /// establish-pool source or perturb its ranking.
+  ///
+  /// Throws [TrustedTimeFreshnessProbeException] when no NTS source is
+  /// configured, every NTS source is in cooldown, or the probe query
+  /// fails or times out.
+  Future<TimeSample> validate() async {
+    final now = DateTime.now();
+    final ntsSources = _sources
+        .where((s) => s.id.startsWith(TimeSource.prefixNts))
+        .toList(growable: false);
+    if (ntsSources.isEmpty) {
+      throw const TrustedTimeFreshnessProbeException(
+        'The validate tier requires an NTS source, but none is '
+        'configured (ntsServers is empty and no nts: additionalSources '
+        'were supplied). Configure NTS to use validateFreshness().',
+      );
+    }
+
+    final healthy = ntsSources
+        .where((s) {
+          final until = _blacklistUntil[s.id];
+          return until == null || now.isAfter(until);
+        })
+        .toList(growable: false);
+    if (healthy.isEmpty) {
+      throw const TrustedTimeFreshnessProbeException(
+        'All configured NTS sources are currently in exponential '
+        'cooldown due to persistent failures; cannot run a freshness '
+        'probe this cycle.',
+      );
+    }
+
+    // Reuse sync()'s quality ordering (read-only): index the healthy
+    // pool by id, rank the ids, and pick the top survivor. putIfAbsent
+    // keeps the first-seen source for a colliding id, matching
+    // ranked()'s first-seen dedup.
+    final healthyById = <String, TimeSource>{};
+    for (final s in healthy) {
+      healthyById.putIfAbsent(s.id, () => s);
+    }
+    final rankedIds = _qualityTracker.ranked(healthy.map((s) => s.id));
+    final source = rankedIds.isNotEmpty
+        ? (healthyById[rankedIds.first] ?? healthy.first)
+        : healthy.first;
+
+    // Phase A (warm) runs outside the query budget, exactly as in
+    // sync(); a warm failure is non-fatal and the cold getTime() still
+    // runs under the maxLatency budget in Phase B.
+    if (source is Warmable) {
+      try {
+        await Future.sync(() => (source as Warmable).warm());
+      } catch (_) {
+        // Best-effort, mirroring sync()'s warm-phase handling.
+      }
+    }
+
+    try {
+      return await source.getTime().timeout(_config.maxLatency);
+    } catch (e) {
+      _observer?.onSourceFailed(source.id, 'validate: $e');
+      throw TrustedTimeFreshnessProbeException(
+        'Freshness probe against ${source.id} failed: $e',
+      );
+    }
   }
 
   /// Executes a full synchronization cycle across all healthy sources.

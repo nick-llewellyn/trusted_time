@@ -3,6 +3,7 @@ import 'package:nts/nts.dart' as nts;
 import 'package:trusted_time/src/domain/marzullo_engine.dart';
 import 'package:trusted_time/src/domain/time_interval.dart';
 import 'package:trusted_time/src/domain/time_sample.dart';
+import 'package:trusted_time/src/exceptions.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
 import 'package:trusted_time/src/infra/sync_observer.dart';
 import 'package:trusted_time/src/integrity_event.dart';
@@ -45,6 +46,18 @@ class _TierSource implements TimeSource {
     authLevel: authLevel,
     trustBackend: trustBackend,
   );
+}
+
+/// A [TimeSource] whose [getTime] always throws, to exercise the
+/// freshness-probe query-failure path.
+class _FailingNtsSource implements TimeSource {
+  @override
+  final String id = 'nts:fail';
+  @override
+  final String groupId = 'gfail';
+
+  @override
+  Future<TimeSample> getTime() async => throw StateError('probe boom');
 }
 
 class _RecordingObserver implements SyncObserver {
@@ -250,6 +263,68 @@ void main() {
         containsAll(<String>['nts:x', 'ntp:y', 'ntp:z']),
       );
       expect(events, isEmpty);
+    });
+  });
+
+  group('SyncEngine.validate() freshness probe (ADR 0006)', () {
+    test('returns the sample from the top-ranked NTS source', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      final engine = _engineFor(
+        [
+          _TierSource(
+            id: 'nts:probe',
+            groupId: 'g1',
+            startMs: 1000,
+            endMs: 1020,
+            authLevel: NtsAuthLevel.verified,
+            trustBackend: nts.TrustBackend.webpkiRoots,
+          ),
+        ],
+        observer: observer,
+        events: events,
+      );
+
+      final sample = await engine.validate();
+
+      expect(sample.sourceId, 'nts:probe');
+      expect(sample.interval.midpoint, 1010);
+    });
+
+    test('throws TrustedTimeFreshnessProbeException when no NTS source '
+        'is configured', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      final engine = _engineFor(
+        [
+          _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+          _TierSource(id: 'https:b', groupId: 'g2', startMs: 1000, endMs: 1020),
+        ],
+        observer: observer,
+        events: events,
+      );
+
+      await expectLater(
+        engine.validate(),
+        throwsA(isA<TrustedTimeFreshnessProbeException>()),
+      );
+    });
+
+    test('throws TrustedTimeFreshnessProbeException when the probe query '
+        'fails', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      final engine = _engineFor(
+        [_FailingNtsSource()],
+        observer: observer,
+        events: events,
+      );
+
+      await expectLater(
+        engine.validate(),
+        throwsA(isA<TrustedTimeFreshnessProbeException>()),
+      );
+      expect(observer.failures.any((f) => f.sourceId == 'nts:fail'), isTrue);
     });
   });
 }

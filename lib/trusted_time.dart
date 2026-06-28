@@ -467,6 +467,37 @@ abstract final class TrustedTime {
     return TrustedTimeImpl.instance.forceResync();
   }
 
+  /// Confirms the active trust anchor is still fresh with a single
+  /// lightweight, authenticated NTS query — the validate tier of the
+  /// tiered sync cadence (ADR 0006).
+  ///
+  /// This is far cheaper than [forceResync]: it issues one NTS query
+  /// (~50–200 ms) and compares the result against the existing anchor
+  /// instead of tearing the anchor down and rebuilding consensus from
+  /// every source. Use it on a frequent cadence (or when the app
+  /// returns to the foreground) to catch drift between the infrequent
+  /// full establish ([forceResync]) cycles.
+  ///
+  /// Returns:
+  ///  * `true` — the probe agrees with the anchor within
+  ///    [TrustedTimeConfig.maxAllowedUncertaintyMs];
+  ///  * `false` — the probe ran but the anchor disagrees; consider
+  ///    calling [forceResync]. The anchor is *not* invalidated by a
+  ///    `false` result on its own.
+  ///
+  /// Throws [TrustedTimeFreshnessProbeException] when the probe cannot
+  /// run at all — no anchor established yet, no NTS source configured
+  /// (the validate tier requires NTS), all NTS sources in cooldown, or
+  /// the query failed. This "freshness unknown" outcome is deliberately
+  /// distinct from the `false` "anchor drifted" observation.
+  ///
+  /// Under a test override this returns `true` without touching the
+  /// engine.
+  static Future<bool> validateFreshness() {
+    if (_override != null) return Future.value(true);
+    return TrustedTimeImpl.instance.validateFreshness();
+  }
+
   /// Schedules OS-level background tasks to keep the trust anchor fresh.
   ///
   /// Leverages platform-native schedulers (WorkManager on Android,
