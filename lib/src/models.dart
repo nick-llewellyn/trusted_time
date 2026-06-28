@@ -26,6 +26,33 @@ enum ConfidenceLevel {
   high,
 }
 
+/// Selects the engine's refresh-scheduling strategy.
+///
+/// See ADR 0006 (Mobile-optimized sync cadence) for the full rationale.
+/// The default ([singleTier30m]) preserves the upstream desktop/server
+/// behaviour bit-for-bit; [tieredMobile] is the opt-in mobile model and
+/// is what [TrustedTimeConfig.mobileDefaults] selects.
+enum CadenceMode {
+  /// Legacy single-tier model: one uniform refresh loop driven by
+  /// [TrustedTimeConfig.refreshInterval] (default 30 minutes).
+  ///
+  /// This is the default. Existing 1.x integrators keep exactly the
+  /// behaviour they have today; nothing in the scheduler changes unless
+  /// a caller explicitly opts into [tieredMobile].
+  singleTier30m,
+
+  /// Mobile-optimized two-tier model that separates establishing a fresh
+  /// truth anchor from validating that the existing anchor is still good.
+  ///
+  /// An infrequent *establish* cycle (full Marzullo consensus across the
+  /// whole pool, ~24h) builds the high-confidence anchor, while a
+  /// frequent *validate* cycle (a single cookie-warm NTS query, ~1h, and
+  /// on app foreground after a long background) cheaply confirms the
+  /// anchor has not drifted without paying for a full consensus pass.
+  /// Selected by [TrustedTimeConfig.mobileDefaults].
+  tieredMobile,
+}
+
 @immutable
 /// Configuration parameters for the [TrustedTime] engine.
 ///
@@ -75,6 +102,7 @@ final class TrustedTimeConfig {
     this.oscillatorDriftFactor = 0.00005,
     this.backgroundSyncInterval,
     this.transientStreakThreshold = 5,
+    this.cadenceMode = CadenceMode.singleTier30m,
   });
 
   /// Creates a Web-compatible configuration that only uses HTTPS sources.
@@ -100,6 +128,40 @@ final class TrustedTimeConfig {
       minGroupCount: 2,
       maxLatency: Duration(seconds: 5),
       refreshInterval: Duration(hours: 1),
+    );
+  }
+
+  /// Creates a mobile-tuned configuration implementing the tiered
+  /// establish/validate sync cadence (ADR 0006).
+  ///
+  /// Peer of [TrustedTimeConfig.web]; selects platform-tuned defaults
+  /// explicitly rather than changing any global default:
+  ///
+  /// * [cadenceMode] is [CadenceMode.tieredMobile], so the engine runs
+  ///   an infrequent full *establish* cycle plus a cheap *validate*
+  ///   cycle instead of a single uniform refresh loop.
+  /// * [oscillatorDriftFactor] is `0.000015` (15 ppm), matching the
+  ///   measured drift envelope of modern ARM SoCs (Pixel Tablet
+  ///   generation, A14+ iPhones) in pocket conditions, which is roughly
+  ///   3–10× tighter than the conservative 50 ppm global default. The
+  ///   global default is deliberately left unchanged so desktop callers
+  ///   whose hardware really does drift at 30–50 ppm keep the wider
+  ///   worst-case `estimatedError` band.
+  /// * [refreshInterval] is 24h — the establish cadence, the value iOS
+  ///   `BGTaskScheduler` and Android `WorkManager` will actually honour
+  ///   on battery-conscious devices.
+  /// * [backgroundSyncInterval] is 24h, aligning the background
+  ///   maintenance cadence with the establish tier.
+  ///
+  /// The cheap ~1h validate cadence is owned by the tiered scheduler
+  /// rather than this factory; this factory selects the mode and the
+  /// platform-tuned constants the scheduler reads.
+  factory TrustedTimeConfig.mobileDefaults() {
+    return const TrustedTimeConfig(
+      cadenceMode: CadenceMode.tieredMobile,
+      oscillatorDriftFactor: 0.000015,
+      refreshInterval: Duration(hours: 24),
+      backgroundSyncInterval: Duration(hours: 24),
     );
   }
 
@@ -263,6 +325,15 @@ final class TrustedTimeConfig {
   /// transient failures retry indefinitely.
   final int transientStreakThreshold;
 
+  /// Selects the engine's refresh-scheduling strategy.
+  ///
+  /// Defaults to [CadenceMode.singleTier30m], preserving the legacy
+  /// single uniform refresh loop bit-for-bit. [CadenceMode.tieredMobile]
+  /// opts into the establish/validate two-tier model (ADR 0006);
+  /// [TrustedTimeConfig.mobileDefaults] selects it alongside the
+  /// platform-tuned drift and interval constants.
+  final CadenceMode cadenceMode;
+
   /// The [nts.TrustMode] the engine applies to every per-source
   /// [nts.NtsClient], derived from [usePlatformTrust] and
   /// [customRootCerts].
@@ -323,6 +394,7 @@ final class TrustedTimeConfig {
     double? oscillatorDriftFactor,
     Duration? backgroundSyncInterval,
     int? transientStreakThreshold,
+    CadenceMode? cadenceMode,
   }) {
     return TrustedTimeConfig(
       ntpServers: ntpServers ?? this.ntpServers,
@@ -348,6 +420,7 @@ final class TrustedTimeConfig {
           backgroundSyncInterval ?? this.backgroundSyncInterval,
       transientStreakThreshold:
           transientStreakThreshold ?? this.transientStreakThreshold,
+      cadenceMode: cadenceMode ?? this.cadenceMode,
     );
   }
 
@@ -373,7 +446,8 @@ final class TrustedTimeConfig {
         other.earlyExit == earlyExit &&
         other.oscillatorDriftFactor == oscillatorDriftFactor &&
         other.backgroundSyncInterval == backgroundSyncInterval &&
-        other.transientStreakThreshold == transientStreakThreshold;
+        other.transientStreakThreshold == transientStreakThreshold &&
+        other.cadenceMode == cadenceMode;
   }
 
   @override
@@ -397,6 +471,7 @@ final class TrustedTimeConfig {
     oscillatorDriftFactor,
     backgroundSyncInterval,
     transientStreakThreshold,
+    cadenceMode,
   ]);
 
   @override
@@ -432,6 +507,7 @@ final class TrustedTimeConfig {
         '  oscillatorDriftFactor: $oscillatorDriftFactor,\n'
         '  backgroundSyncInterval: $backgroundSyncInterval,\n'
         '  transientStreakThreshold: $transientStreakThreshold,\n'
+        '  cadenceMode: $cadenceMode,\n'
         ')';
   }
 }

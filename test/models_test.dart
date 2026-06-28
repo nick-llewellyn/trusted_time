@@ -160,6 +160,71 @@ void main() {
     );
   });
 
+  group('TrustedTimeConfig cadence mode (ADR 0006)', () {
+    test('defaults to singleTier30m with legacy timing untouched', () {
+      // The migration contract: existing 1.x integrators who never name
+      // cadenceMode keep the single uniform refresh loop bit-for-bit.
+      // Assert both the mode and the legacy timing constants the
+      // single-tier scheduler reads, so a future accidental flip of any
+      // default surfaces here.
+      const config = TrustedTimeConfig();
+      expect(config.cadenceMode, CadenceMode.singleTier30m);
+      expect(config.refreshInterval, const Duration(minutes: 30));
+      expect(config.oscillatorDriftFactor, 0.00005);
+    });
+
+    test('mobileDefaults() selects tieredMobile with platform-tuned knobs', () {
+      // Pins every value ADR 0006 fixes for the factory: the mode, the
+      // 15 ppm drift envelope, and the 24h establish cadence on both the
+      // foreground refresh and background maintenance timers.
+      final config = TrustedTimeConfig.mobileDefaults();
+      expect(config.cadenceMode, CadenceMode.tieredMobile);
+      expect(config.oscillatorDriftFactor, 0.000015);
+      expect(config.refreshInterval, const Duration(hours: 24));
+      expect(config.backgroundSyncInterval, const Duration(hours: 24));
+    });
+
+    test('mobileDefaults() leaves the global drift default unchanged', () {
+      // ADR 0006 open question 2: the platform factory tightens drift
+      // for mobile callers without silently shrinking the conservative
+      // worst-case band for desktop callers on the global default.
+      expect(
+        const TrustedTimeConfig().oscillatorDriftFactor,
+        isNot(TrustedTimeConfig.mobileDefaults().oscillatorDriftFactor),
+      );
+    });
+
+    test('round-trips cadenceMode through copyWith', () {
+      const original = TrustedTimeConfig();
+      final tiered = original.copyWith(cadenceMode: CadenceMode.tieredMobile);
+      expect(tiered.cadenceMode, CadenceMode.tieredMobile);
+      // Purely additive: an omitted cadenceMode preserves the existing
+      // value, and untouched fields keep their defaults.
+      final untouched = tiered.copyWith(maxLatency: const Duration(seconds: 7));
+      expect(untouched.cadenceMode, CadenceMode.tieredMobile);
+      expect(untouched.refreshInterval, original.refreshInterval);
+    });
+
+    test('cadenceMode participates in equality and hashCode', () {
+      const base = TrustedTimeConfig();
+      const tiered = TrustedTimeConfig(cadenceMode: CadenceMode.tieredMobile);
+      expect(base == tiered, isFalse);
+
+      const a = TrustedTimeConfig(cadenceMode: CadenceMode.tieredMobile);
+      const b = TrustedTimeConfig(cadenceMode: CadenceMode.tieredMobile);
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
+    });
+
+    test('cadenceMode appears in toString output', () {
+      const config = TrustedTimeConfig(cadenceMode: CadenceMode.tieredMobile);
+      expect(
+        config.toString(),
+        contains('cadenceMode: CadenceMode.tieredMobile'),
+      );
+    });
+  });
+
   group('TimeSample.trustBackend', () {
     // The field is the per-handshake observability counterpart to the
     // TrustedTimeConfig trust policy (usePlatformTrust /

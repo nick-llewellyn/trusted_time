@@ -49,7 +49,12 @@ import 'src/sources/nts_auth_level.dart';
 export 'src/exceptions.dart';
 export 'src/integrity_event.dart';
 export 'src/models.dart'
-    show TrustedTimeConfig, TrustAnchor, ConfidenceLevel, SyncMetrics;
+    show
+        TrustedTimeConfig,
+        TrustAnchor,
+        ConfidenceLevel,
+        SyncMetrics,
+        CadenceMode;
 // TrustMode, TrustBackend, and NtsTrustStatus are part of
 // `package:nts`'s public surface and are exposed by this package's
 // API:
