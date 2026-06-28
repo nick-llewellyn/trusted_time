@@ -276,20 +276,20 @@ void main() {
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `ntpServers` | `List<String>` | Cloudflare, Google, pool.ntp.org | NTP server hostnames |
-| `httpsSources` | `List<String>` | Several HTTPS endpoints | HTTPS `Date` header sources |
-| `ntsServers` | `List<String>` | `[]` | NTS server hostnames (opt-in) |
+| `ntpServers` | `List<String>` | `pool.ntp.org`, `time.google.com` | NTP server hostnames |
+| `httpsSources` | `List<String>` | Google, Cloudflare, Apple, Microsoft | HTTPS `Date` header sources |
+| `ntsServers` | `List<String>` | `['time.cloudflare.com']` | NTS server hostnames (opt-in) |
 | `ntsPort` | `int` | `4460` | NTS-KE port |
-| `refreshInterval` | `Duration` | `12h` | How often to re-sync in the foreground |
+| `refreshInterval` | `Duration` | `30m` | How often to re-sync in the foreground |
 | `backgroundSyncInterval` | `Duration?` | `null` | If set, enables background sync at this interval |
-| `maxLatency` | `Duration` | `3s` | Per-source query timeout |
+| `maxLatency` | `Duration` | `4s` | Per-source query timeout |
 | `minimumQuorum` | `int` | `2` | Minimum sources required for consensus |
 | `minQuorumRatio` | `double` | `0.6` | Fraction of responding sources required |
 | `minGroupCount` | `int` | `2` | Minimum distinct provider groups required |
-| `maxAllowedUncertaintyMs` | `int` | `10000` | Sources above this uncertainty are excluded |
+| `maxAllowedUncertaintyMs` | `int` | `5000` | Sources above this uncertainty are excluded |
 | `persistState` | `bool` | `true` | Persist anchor to secure storage across launches |
 | `earlyExit` | `bool` | `true` | Return as soon as a stable quorum is reached |
-| `oscillatorDriftFactor` | `double` | `0.001` | Used for offline time estimation error calculation |
+| `oscillatorDriftFactor` | `double` | `0.00005` | Used for offline time estimation error calculation |
 | `cadenceMode` | `CadenceMode` | `singleTier30m` | Sync schedule: the legacy single uniform loop, or the tiered establish/validate model (mobile) — see [Tiered sync cadence](#tiered-sync-cadence-mobile) |
 | `validateInterval` | `Duration` | `1h` | Tiered mode only: how often the lightweight validate probe runs in the foreground |
 | `foregroundValidateThreshold` | `Duration` | `15m` | Tiered mode only: minimum time backgrounded before a foreground resume triggers a validate probe |
