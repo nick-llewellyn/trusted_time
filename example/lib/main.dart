@@ -164,7 +164,7 @@ class _HomePageState extends State<HomePage> {
   // Investigative knob for diagnosing DNS-pool starvation observed
   // via [_DnsPoolStatsBar] (rising `refused`) versus genuine
   // server-side timeouts.
-  int? _maxDnsLookupsOverride;
+  int? _maxConcurrentDnsLookupsOverride;
 
   final BenchmarkLogger _benchmarkLogger = BenchmarkLogger();
 
@@ -483,7 +483,7 @@ class _HomePageState extends State<HomePage> {
           ntpServers: const [],
           httpsSources: const [],
           ntsServers: shuffled,
-          maxConcurrentDnsLookups: _maxDnsLookupsOverride,
+          maxConcurrentDnsLookups: _maxConcurrentDnsLookupsOverride,
           minimumQuorum: 2,
           minQuorumRatio: 0.4,
           refreshInterval: const Duration(seconds: 30),
@@ -732,18 +732,19 @@ class _HomePageState extends State<HomePage> {
                 continuousEnabled: _continuousSyncEnabled,
                 reconfiguring: _reconfiguring,
                 interCycleDelaySeconds: _interCycleDelaySeconds,
-                maxDnsLookupsOverride: _maxDnsLookupsOverride,
+                maxConcurrentDnsLookupsOverride:
+                    _maxConcurrentDnsLookupsOverride,
                 // The unified DNS budget (ADR 0008) defaults to a fixed
                 // TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups
                 // rather than the former NTS-only `ntsServers.length + 2`
                 // auto-size, so the displayed default is stable across
                 // the chip selection and rotation slices.
-                autoSizedDnsCap:
+                defaultMaxConcurrentDnsLookups:
                     TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups,
                 logFilePath: _benchmarkLogger.filePath,
                 onRunWorldwide: _runWorldwideBenchmark,
                 onDnsCapOverrideChanged: (val) {
-                  setState(() => _maxDnsLookupsOverride = val);
+                  setState(() => _maxConcurrentDnsLookupsOverride = val);
                 },
                 onToggleServer: (host, picked) {
                   setState(() {
@@ -1111,8 +1112,8 @@ class _BenchmarkingPanel extends StatelessWidget {
     required this.continuousEnabled,
     required this.reconfiguring,
     required this.interCycleDelaySeconds,
-    required this.maxDnsLookupsOverride,
-    required this.autoSizedDnsCap,
+    required this.maxConcurrentDnsLookupsOverride,
+    required this.defaultMaxConcurrentDnsLookups,
     required this.logFilePath,
     required this.onRunWorldwide,
     required this.onDnsCapOverrideChanged,
@@ -1131,8 +1132,8 @@ class _BenchmarkingPanel extends StatelessWidget {
   final bool continuousEnabled;
   final bool reconfiguring;
   final int interCycleDelaySeconds;
-  final int? maxDnsLookupsOverride;
-  final int autoSizedDnsCap;
+  final int? maxConcurrentDnsLookupsOverride;
+  final int defaultMaxConcurrentDnsLookups;
   final String? logFilePath;
   final Future<void> Function() onRunWorldwide;
   final ValueChanged<int?> onDnsCapOverrideChanged;
@@ -1228,12 +1229,13 @@ class _BenchmarkingPanel extends StatelessWidget {
         // diagnosing whether `NtsError.timeout` failures are caused
         // by the engine's DNS budget throttling lookups (rising
         // `refused` in the Section 6 stats bar) versus real
-        // server-side timeouts. Default is the unified budget (null),
-        // which forwards TrustedTimeConfig.maxConcurrentDnsLookups
-        // (default kDefaultMaxConcurrentDnsLookups). See ADR 0008.
+        // server-side timeouts. Default leaves the override null, so the
+        // engine applies its own unified budget
+        // (TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups). See
+        // ADR 0008.
         _DnsCapOverridePanel(
-          capOverride: maxDnsLookupsOverride,
-          autoSized: autoSizedDnsCap,
+          capOverride: maxConcurrentDnsLookupsOverride,
+          defaultBudget: defaultMaxConcurrentDnsLookups,
           onChanged: onDnsCapOverrideChanged,
         ),
         const SizedBox(height: 12),
@@ -1475,12 +1477,12 @@ class _TrustStatusBar extends StatelessWidget {
 class _DnsCapOverridePanel extends StatelessWidget {
   const _DnsCapOverridePanel({
     required this.capOverride,
-    required this.autoSized,
+    required this.defaultBudget,
     required this.onChanged,
   });
 
   final int? capOverride;
-  final int autoSized;
+  final int defaultBudget;
   final ValueChanged<int?> onChanged;
 
   static const int _minCap = 4;
@@ -1490,12 +1492,12 @@ class _DnsCapOverridePanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final autoOn = capOverride == null;
     // Seed slider value when toggling auto off for the first time:
-    // start at the engine's auto-sized value (clamped to slider range)
-    // so the manual mode begins from the same effective cap the
+    // start at the engine's default budget (clamped to slider range)
+    // so the manual mode begins from the same effective budget the
     // engine was already using. Subsequent toggles preserve the
     // operator's chosen value.
     final sliderValue =
-        (capOverride ?? autoSized).clamp(_minCap, _maxCap).toDouble();
+        (capOverride ?? defaultBudget).clamp(_minCap, _maxCap).toDouble();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1506,7 +1508,7 @@ class _DnsCapOverridePanel extends StatelessWidget {
           subtitle: Text(
             autoOn
                 ? 'Engine uses its unified DNS budget (currently '
-                    '$autoSized)'
+                    '$defaultBudget)'
                 : 'Manual override: $capOverride',
             style: const TextStyle(fontSize: 12),
           ),
