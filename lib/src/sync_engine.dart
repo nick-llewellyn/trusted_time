@@ -68,8 +68,10 @@ final class SyncEngine {
   /// Shared DNS concurrency budget (ADR 0008).
   ///
   /// One budget governs all uncached host resolutions the engine can see
-  /// in-process: it is handed to every [NtpSource] and its value is
-  /// forwarded as each [NtsSource]'s `dnsConcurrencyCap`. Built lazily
+  /// in-process: it is handed to every [NtpSource] and [HttpsSource]
+  /// (the latter pre-resolves its host through it to warm the platform
+  /// cache, ADR 0008) and its value is forwarded as each [NtsSource]'s
+  /// `dnsConcurrencyCap`. Built lazily
   /// from [TrustedTimeConfig.effectiveMaxConcurrentDnsLookups] so the
   /// migration ladder (and its one-time deprecation warning) runs exactly
   /// once, the first time the source list is materialised.
@@ -82,7 +84,8 @@ final class SyncEngine {
   /// Lazily-initialized list of authoritative time sources.
   ///
   /// DNS concurrency is governed by the shared [_dnsBudget] (ADR 0008):
-  /// NTP sources resolve through it cache-first, and its value is
+  /// NTP and HTTPS sources resolve through it cache-first (HTTPS via a
+  /// pre-resolve step that warms the platform cache), and its value is
   /// forwarded as each NTS source's `dnsConcurrencyCap` so all source
   /// kinds draw on one unified cold-start budget rather than the former
   /// NTS-only `ntsServers.length + 2` auto-size.
@@ -130,7 +133,8 @@ final class SyncEngine {
     return [
       for (final host in _config.ntpServers)
         NtpSource(host, dnsBudget: _dnsBudget),
-      for (final url in _config.httpsSources) HttpsSource(url),
+      for (final url in _config.httpsSources)
+        HttpsSource(url, dnsBudget: _dnsBudget),
       for (final host in _config.ntsServers)
         NtsSource(
           host,

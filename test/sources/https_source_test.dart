@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:trusted_time/src/infra/dns_budget.dart';
 import 'package:trusted_time/src/sources/time_sources.dart';
 
 /// Regressions for trusted_time-sps.
@@ -109,6 +112,130 @@ void main() {
       // custom timeout was respected, not that it fired exactly at
       // 200 ms.
       expect(sw.elapsed.inMilliseconds, lessThan(2000));
+    });
+  });
+
+  group('HttpsSource DNS budget integration (ADR 0008)', () {
+    // A client that always answers with a parseable Date header so
+    // getTime() reaches a TimeSample once the pre-resolve step has run.
+    http.Client dateClient() => MockClient(
+      (request) async => http.Response(
+        '',
+        200,
+        headers: const {'date': 'Wed, 21 Oct 2026 07:28:00 GMT'},
+      ),
+    );
+
+    test('pre-resolves through the budget cache-first, reusing the '
+        'result', () async {
+      final budget = DnsBudget(4);
+      var lookups = 0;
+      final source = HttpsSource(
+        'https://example.com',
+        client: dateClient(),
+        dnsBudget: budget,
+        hostResolver: (host) async {
+          lookups++;
+          return const ['1.2.3.4'];
+        },
+      );
+      addTearDown(source.dispose);
+
+      await source.getTime();
+      expect(lookups, 1);
+
+      // A second query for the same host hits the budget cache, so the
+      // warming resolver is not consulted again.
+      await source.getTime();
+      expect(lookups, 1);
+    });
+
+    test('without a budget the warming resolver is never consulted', () async {
+      var lookups = 0;
+      final source = HttpsSource(
+        'https://example.com',
+        client: dateClient(),
+        hostResolver: (host) async {
+          lookups++;
+          return const ['1.2.3.4'];
+        },
+      );
+      addTearDown(source.dispose);
+
+      await source.getTime();
+      expect(lookups, 0);
+    });
+
+    test(
+      'a saturated budget drops the source (propagates saturation)',
+      () async {
+        final budget = DnsBudget(
+          1,
+          acquireTimeout: const Duration(milliseconds: 50),
+        );
+        // Occupy the only permit under an unrelated key so the source's own
+        // warming lookup cannot be admitted.
+        final held = Completer<List<String>>();
+        unawaited(budget.guard('other-host', () => held.future));
+        await Future<void>.delayed(Duration.zero);
+
+        final source = HttpsSource(
+          'https://example.com',
+          client: dateClient(),
+          dnsBudget: budget,
+          hostResolver: (host) async => const ['1.2.3.4'],
+        );
+        addTearDown(source.dispose);
+
+        // Saturation must surface (not be swallowed like an ordinary miss)
+        // so SyncEngine drops the source onto the cooldown ladder.
+        await expectLater(
+          source.getTime(),
+          throwsA(isA<DnsBudgetSaturation>()),
+        );
+        held.complete(const []);
+      },
+    );
+
+    test('a warming lookup failure still proceeds to the HTTPS '
+        'request', () async {
+      final budget = DnsBudget(4);
+      final source = HttpsSource(
+        'https://example.com',
+        client: dateClient(),
+        dnsBudget: budget,
+        hostResolver: (host) async => throw Exception('no DNS'),
+      );
+      addTearDown(source.dispose);
+
+      // Warming is best-effort: an ordinary resolution failure is
+      // swallowed and the request still yields a sample.
+      final sample = await source.getTime();
+      expect(sample.sourceId, contains('example.com'));
+    });
+
+    test('clamps the warming timeout to the budget admission window', () async {
+      // Regression (ADR 0008): with a 30ms window and a resolver that only
+      // answers after 100ms, the warming lookup times out (swallowed as
+      // best-effort) and getTime still returns from the HTTPS request — the
+      // permit is not held past the engine's window. Mirrors NtpSource.
+      final budget = DnsBudget(
+        4,
+        acquireTimeout: const Duration(milliseconds: 30),
+      );
+      final source = HttpsSource(
+        'https://example.com',
+        client: dateClient(),
+        dnsBudget: budget,
+        hostResolver: (host) async {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+          return const ['1.2.3.4'];
+        },
+      );
+      addTearDown(source.dispose);
+
+      final sample = await source.getTime();
+      expect(sample.sourceId, contains('example.com'));
     });
   });
 }

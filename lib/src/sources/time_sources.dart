@@ -2,9 +2,18 @@ import 'package:http/http.dart' as http;
 import '../domain/time_sample.dart';
 import '../domain/time_source.dart';
 import '../domain/time_interval.dart';
+import '../infra/dns_budget.dart';
+import 'host_lookup_stub.dart' if (dart.library.io) 'host_lookup_io.dart';
 
 export 'ntp_source_stub.dart' if (dart.library.io) 'ntp_source_io.dart';
 export 'nts_source_stub.dart' if (dart.library.io) 'nts_source.dart';
+
+/// Resolves [host] to its address literals, warming the platform DNS
+/// cache. Injectable so tests can supply a deterministic mapping — or a
+/// controllable delay/failure — without real DNS. The resolved IP
+/// strings are unused beyond letting the shared [DnsBudget] cache a
+/// successful resolution for reuse across warm cycles.
+typedef HttpsHostResolver = Future<List<String>> Function(String host);
 
 /// Fetches UTC time from an HTTPS endpoint's `Date` response header.
 final class HttpsSource implements TimeSource {
@@ -24,10 +33,24 @@ final class HttpsSource implements TimeSource {
   /// [client] is null no default [http.Client] is allocated until
   /// every check has passed, so a misconfiguration cannot leak a
   /// freshly-allocated socket pool.
+  ///
+  /// [dnsBudget] is the shared SyncEngine-level DNS concurrency budget
+  /// (ADR 0008). When supplied, [getTime] first pre-resolves the host
+  /// through it cache-first to warm the platform DNS cache before
+  /// `package:http` issues its own (now-warm) internal lookup; when
+  /// `null` (direct callers, tests) — or on a platform with no
+  /// in-process resolver to warm (web), where the default lookup is a
+  /// no-op stub — no pre-resolve runs. [hostResolver] is an injection
+  /// seam for that warming step; it defaults to the platform resolver,
+  /// is unused when [dnsBudget] is `null`, and (because it is a real
+  /// seam) forces warming to run even on a platform that would otherwise
+  /// skip it.
   factory HttpsSource(
     String url, {
     http.Client? client,
     Duration requestTimeout = const Duration(seconds: 3),
+    DnsBudget? dnsBudget,
+    HttpsHostResolver? hostResolver,
   }) {
     if (requestTimeout <= Duration.zero) {
       throw ArgumentError.value(
@@ -52,14 +75,30 @@ final class HttpsSource implements TimeSource {
     if (!uri.hasAuthority || uri.host.isEmpty) {
       throw ArgumentError.value(url, 'url', 'must contain a non-empty host');
     }
-    return HttpsSource._(url, client ?? http.Client(), requestTimeout);
+    return HttpsSource._(
+      url,
+      client ?? http.Client(),
+      requestTimeout,
+      dnsBudget,
+      hostResolver,
+    );
   }
 
-  HttpsSource._(this._url, this._client, this._requestTimeout);
+  HttpsSource._(
+    this._url,
+    this._client,
+    this._requestTimeout,
+    this._dnsBudget,
+    this._hostOverride,
+  );
 
   final String _url;
   final http.Client _client;
   final Duration _requestTimeout;
+  final DnsBudget? _dnsBudget;
+  final HttpsHostResolver? _hostOverride;
+
+  HttpsHostResolver get _resolveHost => _hostOverride ?? defaultHttpsHostLookup;
 
   @override
   String get id => '${TimeSource.prefixHttps}$_url';
@@ -75,6 +114,7 @@ final class HttpsSource implements TimeSource {
 
   @override
   Future<TimeSample> getTime() async {
+    await _preResolve();
     final uri = Uri.parse(_url);
     final sw = Stopwatch()..start();
 
@@ -109,6 +149,55 @@ final class HttpsSource implements TimeSource {
       delayMs: sw.elapsedMilliseconds,
     );
   }
+
+  /// Warms the platform DNS cache for this source's host under the
+  /// shared [DnsBudget] before the HTTPS request resolves the same host
+  /// internally (ADR 0008). No-op when no budget is configured, or on a
+  /// platform with no in-process resolver to warm (web): there the
+  /// default lookup is a no-op stub and `package:http` performs its own
+  /// DNS as part of `fetch`, so acquiring a permit would be pure
+  /// overhead. An injected [hostResolver] overrides this skip.
+  ///
+  /// The lookup is admitted cache-first: a warm host within the budget's
+  /// cache TTL consumes no permit. The resolver timeout is clamped to the
+  /// budget's admission window so a stalled lookup cannot hold a permit
+  /// past the moment the engine has already dropped the source (mirrors
+  /// NtpSource). [DnsBudgetSaturation] propagates so the engine drops the
+  /// source onto the standard exponential-cooldown path exactly as a
+  /// `maxLatency` miss would; an ordinary lookup failure or timeout is
+  /// swallowed because warming is best-effort — the HTTPS request still
+  /// runs and surfaces its own connection error if the host is truly
+  /// unreachable.
+  ///
+  /// This accepts a double-resolve (our warming lookup plus
+  /// `package:http`'s internal one) and relies on the platform DNS cache
+  /// outliving the gap between them; see ADR 0008.
+  Future<void> _preResolve() async {
+    final budget = _dnsBudget;
+    if (budget == null) return;
+    // On a platform with no in-process resolver (web), the default
+    // lookup is a no-op stub: there is no platform DNS cache for
+    // `package:http` to reuse, so warming would only burn a permit (and
+    // could throw DnsBudgetSaturation) for nothing. Skip it. A
+    // test-injected resolver is a real seam to exercise, so honour it
+    // regardless of platform.
+    if (_hostOverride == null && !kSupportsHttpsHostWarming) return;
+    final host = Uri.parse(_url).host;
+    final lookupTimeout = _minDuration(
+      const Duration(seconds: 2),
+      budget.acquireTimeout,
+    );
+    try {
+      await budget.guard(host, () => _resolveHost(host).timeout(lookupTimeout));
+    } on DnsBudgetSaturation {
+      rethrow;
+    } catch (_) {
+      // Best-effort warming: an ordinary resolution failure or timeout
+      // must not pre-empt the HTTPS attempt, which has its own error path.
+    }
+  }
+
+  static Duration _minDuration(Duration a, Duration b) => a <= b ? a : b;
 
   /// Documented.
   void dispose() => _client.close();
