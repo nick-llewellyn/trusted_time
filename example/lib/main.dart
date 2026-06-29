@@ -157,7 +157,7 @@ class _HomePageState extends State<HomePage> {
   NtsDnsPoolStats? _lastSliceDnsSnapshot;
   int? _lastSliceDnsOffset;
 
-  // Optional manual override for the engine's unified DNS concurrency
+  // Optional manual override for the engine's unified DNS lookup
   // budget, forwarded as TrustedTimeConfig.maxConcurrentDnsLookups on
   // the next reconfigure (ADR 0008). Null leaves the engine on its
   // default budget (TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups).
@@ -1224,7 +1224,7 @@ class _BenchmarkingPanel extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 12),
-        // DNS concurrency cap override. Investigative knob for
+        // DNS lookup budget override. Investigative knob for
         // diagnosing whether `NtsError.timeout` failures are caused
         // by the engine's DNS budget throttling lookups (rising
         // `refused` in the Section 6 stats bar) versus real
@@ -1502,7 +1502,7 @@ class _DnsCapOverridePanel extends StatelessWidget {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           dense: true,
-          title: const Text('Use default DNS concurrency cap'),
+          title: const Text('Use default DNS lookup budget'),
           subtitle: Text(
             autoOn
                 ? 'Engine uses its unified DNS budget (currently '
