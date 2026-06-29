@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:nts/nts.dart' as nts;
 import 'package:trusted_time_example/burst/burst_engine.dart';
+import 'package:trusted_time_example/burst/burst_probe_panel.dart';
 
 /// Constructs an [NtsBurstClient] in test mode whose query callback
 /// returns a deterministic [nts.NtsTimeSample] for each issue index.
@@ -18,6 +19,13 @@ NtsBurstClient testClient({
   required int Function() nowFn,
   required List<int> rtts,
   required int serverOffsetMicros,
+  // Spec the fake client reports as its target. Defaults to a
+  // placeholder so the existing engine tests keep their `test.local`
+  // host; [testClientFactory] overrides it with the panel-selected
+  // `(host, port)` so [BurstResult.host] matches what the dropdown
+  // shows in widget tests.
+  nts.NtsServerSpec spec =
+      const nts.NtsServerSpec(host: 'test.local', port: 4460),
   Random? random,
   Duration? queryDelay,
   void Function()? onIssue,
@@ -37,7 +45,7 @@ NtsBurstClient testClient({
   List<nts.PhaseTimings>? phaseTimings,
 }) {
   return NtsBurstClient.forTest(
-    spec: const nts.NtsServerSpec(host: 'test.local', port: 4460),
+    spec: spec,
     queryFn: (index) async {
       try {
         // onIssue is inside the try so a misbehaving callback (e.g.
@@ -74,6 +82,45 @@ NtsBurstClient testClient({
     nowUtcMicros: nowFn,
     random: random,
   );
+}
+
+/// Builds an [NtsBurstClientFactory] suitable for injecting into a
+/// [BurstProbePanel] widget test. Each invocation forwards the
+/// panel-selected `(host, port)` into [testClient] so the resulting
+/// [NtsBurstClient.forTest] reports the dropdown's host on
+/// [BurstResult.host], while the burst behaviour is driven by the same
+/// deterministic [rtts] / [serverOffsetMicros] fixtures as the engine
+/// unit tests.
+///
+/// [onCreate] fires once per distinct `(host, port)` the panel asks
+/// for, letting a test assert the panel's per-target client caching
+/// (the factory should not be re-consulted for repeated bursts against
+/// the same host).
+NtsBurstClientFactory testClientFactory({
+  required int Function() nowFn,
+  required List<int> rtts,
+  required int serverOffsetMicros,
+  Random? random,
+  Duration? queryDelay,
+  void Function()? onIssue,
+  void Function()? onComplete,
+  List<nts.PhaseTimings>? phaseTimings,
+  void Function(String host, int port)? onCreate,
+}) {
+  return (host, port) {
+    onCreate?.call(host, port);
+    return testClient(
+      spec: nts.NtsServerSpec(host: host, port: port),
+      nowFn: nowFn,
+      rtts: rtts,
+      serverOffsetMicros: serverOffsetMicros,
+      random: random,
+      queryDelay: queryDelay,
+      onIssue: onIssue,
+      onComplete: onComplete,
+      phaseTimings: phaseTimings,
+    );
+  };
 }
 
 class _FakeQueryError implements Exception {
