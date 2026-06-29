@@ -450,6 +450,12 @@ final class TrustedTimeImpl {
     final completer = Completer<void>();
     _syncInProgress = completer;
     _retryTimer?.cancel();
+    // Pair cancel() with = null here too, so a retry timer that has
+    // already fired into this method (its callback is _performSync)
+    // does not leave the field pointing at a spent Timer. Together
+    // with _scheduleRetry this keeps "_retryTimer == null" a reliable
+    // "no retry armed" signal at every site, matching _refreshTimer.
+    _retryTimer = null;
     // Cancel any pending automatic refresh as well: without this, a
     // _refreshTimer armed by a prior successful cycle could fire
     // moments after this cycle completes — the in-flight guard above
@@ -611,6 +617,11 @@ final class TrustedTimeImpl {
 
   void _scheduleRetry() {
     _retryTimer?.cancel();
+    // Null alongside cancel() so the field never retains a reference to a
+    // cancelled Timer on the no-retry path, matching _scheduleRefresh /
+    // _scheduleValidate and keeping "_retryTimer == null" a reliable
+    // "no retry armed" signal for diagnostics.
+    _retryTimer = null;
     final delay = _syncEngine.getNextRetryDelay();
     if (delay > Duration.zero) {
       _retryTimer = Timer(delay, _performSync);

@@ -33,6 +33,12 @@ final class IntegrityMonitor {
   Duration? _lastTimezoneOffset;
   Timer? _driftCheckTimer;
 
+  /// Set once [dispose] runs. Guards the async drift-check loop from
+  /// resurrecting a timer (or emitting) after teardown: a
+  /// [_runAdaptiveDriftCheck] suspended mid-await can otherwise resume
+  /// post-dispose and re-arm [_driftCheckTimer].
+  bool _disposed = false;
+
   /// Reactive stream of detected integrity violations and timezone changes.
   Stream<IntegrityEvent> get events => _controller.stream;
 
@@ -46,7 +52,13 @@ final class IntegrityMonitor {
   void report(IntegrityEvent event) => _emit(event);
 
   /// Attaches the monitor to an active trust anchor and begins surveillance.
+  ///
+  /// No-op once disposed: re-attaching after teardown would open a fresh
+  /// native subscription (and arm a drift timer) that a subsequent
+  /// early-returning [dispose] could no longer cancel, leaking it past
+  /// teardown.
   void attach(TrustAnchor anchor) {
+    if (_disposed) return;
     _anchor = anchor;
     _lastTimezoneOffset = DateTime.now().timeZoneOffset;
     _nativeSub?.cancel();
@@ -61,6 +73,8 @@ final class IntegrityMonitor {
   /// Initializes or restarts the adaptive drift check loop.
   void _startDriftCheck() {
     _driftCheckTimer?.cancel();
+    _driftCheckTimer = null;
+    if (_disposed) return;
     _driftCheckTimer = Timer(_driftCheckInterval, _runAdaptiveDriftCheck);
   }
 
@@ -72,6 +86,10 @@ final class IntegrityMonitor {
   ///   the **5-minute** baseline.
   Future<void> _runAdaptiveDriftCheck() async {
     final hasAnomaly = await _checkDrift();
+    // dispose() may have run while _checkDrift awaited the platform clock.
+    // Bail before touching interval state or arming a new timer so a
+    // disposed monitor can't resurrect its drift loop.
+    if (_disposed) return;
 
     if (hasAnomaly) {
       _driftCheckInterval = const Duration(seconds: 30);
@@ -94,6 +112,7 @@ final class IntegrityMonitor {
     if (anchor == null) return false;
 
     final uptimeMs = await _clock.uptimeMs();
+    if (_disposed) return false;
     final wallMs = DateTime.now().millisecondsSinceEpoch;
 
     final elapsedUptime = uptimeMs - anchor.uptimeMs;
@@ -195,9 +214,31 @@ final class IntegrityMonitor {
     }
   }
 
+  /// Test-only: whether a drift-check timer is currently armed.
+  ///
+  /// Uses [Timer.isActive] rather than a null check so the hook reflects an
+  /// actually pending timer: a one-shot [Timer] stays referenced after it
+  /// fires (until the next [_startDriftCheck] rebinds it), so `!= null` would
+  /// report a fired-but-not-yet-rearmed timer as still armed.
+  @visibleForTesting
+  bool get debugDriftTimerActive => _driftCheckTimer?.isActive ?? false;
+
+  /// Test-only: runs one adaptive drift-check cycle and returns its
+  /// future, so the dispose-during-await race can be reproduced
+  /// deterministically without waiting on the real 5-minute timer.
+  @visibleForTesting
+  Future<void> debugRunAdaptiveDriftCheck() => _runAdaptiveDriftCheck();
+
   /// Releases platform channel listeners and stops surveillance.
+  ///
+  /// Idempotent: sets [_disposed] first so any in-flight
+  /// [_runAdaptiveDriftCheck] that resumes after this point short-circuits
+  /// instead of re-arming the drift timer.
   void dispose() {
+    if (_disposed) return;
+    _disposed = true;
     _driftCheckTimer?.cancel();
+    _driftCheckTimer = null;
     _nativeSub?.cancel();
     _controller.close();
   }
