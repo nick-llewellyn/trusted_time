@@ -1508,7 +1508,7 @@ class _DnsCapOverridePanel extends StatelessWidget {
           title: const Text('Use default DNS lookup budget'),
           subtitle: Text(
             autoOn
-                ? 'Engine uses its unified DNS budget (currently '
+                ? 'Engine uses its unified DNS budget (default '
                     '$defaultBudget)'
                 : 'Manual override: $capOverride',
             style: const TextStyle(fontSize: 12),
