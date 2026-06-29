@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:io' show InternetAddress, gzip;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/data/asn_resolver.dart';
+import 'package:trusted_time/src/infra/dns_budget.dart';
 import 'package:trusted_time/src/sources/ntp_source_io.dart';
 
 /// Single-range IPv4 table in the format `AsnResolver` reads.
@@ -166,5 +168,100 @@ void main() {
       expect(seen, '0.pool.ntp.org');
       expect(sample.groupId, 'asn-unknown');
     });
+  });
+
+  group('NtpSource DNS budget integration (ADR 0008)', () {
+    test(
+      'resolves through the budget cache-first, reusing the result',
+      () async {
+        final budget = DnsBudget(4);
+        var lookups = 0;
+        String? seen;
+        final source = NtpSource(
+          '0.pool.ntp.org',
+          dnsBudget: budget,
+          asnResolver: resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335)),
+          hostResolver: (host) async {
+            lookups++;
+            return [InternetAddress('1.2.3.4')];
+          },
+          offsetFetcher: (lookUpAddress) async {
+            seen = lookUpAddress;
+            return 0;
+          },
+        );
+
+        await source.getTime();
+        expect(seen, '1.2.3.4');
+        expect(lookups, 1);
+
+        // A second query for the same host hits the budget cache, so the
+        // resolver is not consulted again.
+        await source.getTime();
+        expect(lookups, 1);
+      },
+    );
+
+    test(
+      'a saturated budget drops the source (propagates saturation)',
+      () async {
+        final budget = DnsBudget(
+          1,
+          acquireTimeout: const Duration(milliseconds: 50),
+        );
+        // Occupy the only permit under an unrelated key so the source's own
+        // lookup cannot be admitted.
+        final held = Completer<List<InternetAddress>>();
+        unawaited(budget.guard('other-host', () => held.future));
+        await Future<void>.delayed(Duration.zero);
+
+        final source = NtpSource(
+          '0.pool.ntp.org',
+          dnsBudget: budget,
+          hostResolver: (host) async => [InternetAddress('1.2.3.4')],
+          offsetFetcher: (lookUpAddress) async => 0,
+        );
+
+        await expectLater(
+          source.getTime(),
+          throwsA(isA<DnsBudgetSaturation>()),
+        );
+        held.complete(const []);
+      },
+    );
+
+    test(
+      'clamps the resolver timeout to the budget admission window',
+      () async {
+        // Regression (ADR 0008): the host lookup must abort within the
+        // budget's acquireTimeout, not the bare 2s default. With a 30ms
+        // window and a resolver that only answers after 100ms, the lookup
+        // times out and getTime falls back to the bare host. Without the
+        // clamp the 2s default would let the 100ms resolver win and the
+        // exchange would see the resolved literal IP instead — so the
+        // permit would also stay held long past the engine's window.
+        final budget = DnsBudget(
+          4,
+          acquireTimeout: const Duration(milliseconds: 30),
+        );
+        String? seen;
+        final source = NtpSource(
+          '0.pool.ntp.org',
+          dnsBudget: budget,
+          asnResolver: resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335)),
+          hostResolver: (host) async {
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+            return [InternetAddress('1.2.3.4')];
+          },
+          offsetFetcher: (lookUpAddress) async {
+            seen = lookUpAddress;
+            return 0;
+          },
+        );
+
+        await source.getTime();
+        expect(seen, '0.pool.ntp.org');
+      },
+    );
   });
 }

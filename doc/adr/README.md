@@ -87,10 +87,18 @@ PR, three Accepted ADRs are known to diverge from current code:
   `maxConcurrentDnsLookups` semaphore governing all source kinds, a
   one-version deprecation of `ntsDnsConcurrencyCap`, and
   drop-on-saturation behaviour matching `maxLatency` semantics.
-  Current code's `ntsDnsConcurrencyCap`
-  (`lib/src/models.dart:131`) is still NTS-only and lives on the
-  `NtsSource` constructor (`lib/src/sync_engine.dart:66-67`).
-  Implementation is pending (filed as a follow-up at PR #36 landing).
+  Mostly landed (`trusted_time-bnl`): the `maxConcurrentDnsLookups`
+  field, the shared `DnsBudget` semaphore (`lib/src/infra/dns_budget.dart`,
+  cache-first with drop-on-saturation), the `ntsDnsConcurrencyCap`
+  `@Deprecated` annotation + migration ladder, NTP in-process
+  governance, and NTS cap-forwarding are all in. **One gap remains:**
+  HTTPS DNS resolves inside `package:http` / `HttpClient`, which
+  exposes no in-process resolution seam, so HTTPS lookups are not yet
+  literally counted against the budget — they stay OS-resolver-governed,
+  matching the ADR's own "best-effort across the source-kind boundary"
+  caveat. A follow-up (`trusted_time-2od`) tracks pre-resolving HTTPS
+  hosts under the budget to warm the platform cache and close this
+  divergence.
 
 Notes on previously-listed divergences:
 

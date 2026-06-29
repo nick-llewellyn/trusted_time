@@ -88,6 +88,8 @@ final class TrustedTimeConfig {
     ],
     this.ntsServers = const ['time.cloudflare.com'],
     this.ntsPort = 4460,
+    this.maxConcurrentDnsLookups,
+    // ignore: deprecated_member_use_from_same_package
     this.ntsDnsConcurrencyCap,
     this.usePlatformTrust = false,
     this.customRootCerts = const [],
@@ -194,19 +196,75 @@ final class TrustedTimeConfig {
   /// Defaults to 4460 as per RFC 8915.
   final int ntsPort;
 
+  /// SyncEngine-level ceiling on concurrent *uncached* DNS resolutions
+  /// across all source kinds (ADR 0008).
+  ///
+  /// A single budget is shared by every source whose hostname resolution
+  /// the engine can govern in-process; cache hits are free and never
+  /// consume a slot. When `null` (the default), the effective budget is
+  /// resolved by [effectiveMaxConcurrentDnsLookups]:
+  /// [kDefaultMaxConcurrentDnsLookups] (`6`), or the deprecated
+  /// [ntsDnsConcurrencyCap] during migration.
+  ///
+  /// Six sits between the carrier-conservative (4) and WiFi-optimistic
+  /// (8) envelopes: it covers a typical NTS pool plus HTTPS headroom
+  /// while staying inside the CGNAT serialisation threshold a cold-start
+  /// burst tends to hit. See ADR 0008.
+  final int? maxConcurrentDnsLookups;
+
   /// Per-call ceiling on `package:nts`'s process-wide bounded DNS
   /// resolver pool, forwarded to every `ntsQuery` and `ntsWarmCookies`
   /// the engine issues.
   ///
-  /// When `null` (the default), [SyncEngine] auto-sizes the cap as
-  /// `ntsServers.length + 2`, which keeps each cycle's concurrent
-  /// resolutions safely under the limit and avoids the deterministic
-  /// `NtsError.timeout` refusals that occur when more than four
-  /// resolutions race for admission. Set this explicitly when the
-  /// process hosts other concurrent `package:nts` callers (the pool is
-  /// process-global, so every admitted worker counts toward every
-  /// caller's threshold).
+  /// When `null` (the default), [SyncEngine] sizes the NTS cap from the
+  /// unified [effectiveMaxConcurrentDnsLookups] budget. Set this
+  /// explicitly when the process hosts other concurrent `package:nts`
+  /// callers (the pool is process-global, so every admitted worker
+  /// counts toward every caller's threshold).
+  @Deprecated(
+    'Use maxConcurrentDnsLookups instead; it governs DNS concurrency '
+    'across the engine-resolved NTP and NTS lookups rather than NTS alone '
+    '(HTTPS DNS stays OS-resolver-governed for now; see ADR 0008). '
+    'Honoured as the unified budget while maxConcurrentDnsLookups is '
+    'unset; removal is deferred to the fork 2.x release.',
+  )
   final int? ntsDnsConcurrencyCap;
+
+  /// The unified DNS budget applied when neither [maxConcurrentDnsLookups]
+  /// nor the deprecated [ntsDnsConcurrencyCap] is set (ADR 0008).
+  static const int kDefaultMaxConcurrentDnsLookups = 6;
+
+  /// The effective unified DNS budget after applying the ADR 0008
+  /// migration ladder.
+  ///
+  /// An explicit [maxConcurrentDnsLookups] wins; otherwise a legacy
+  /// [ntsDnsConcurrencyCap] is honoured; otherwise
+  /// [kDefaultMaxConcurrentDnsLookups]. Emitting the one-time deprecation
+  /// warning for the legacy branch is [SyncEngine]'s responsibility at
+  /// the point of use.
+  ///
+  /// Throws [ArgumentError] if the resolved budget is not positive. The
+  /// constructor is `const`, so a zero/negative cap cannot be rejected in
+  /// the initializer list; this getter is the single enforcement point
+  /// (mirroring [effectiveTrustMode]) so an invalid budget fails fast in
+  /// both debug and release rather than reaching [DnsBudget] — where it
+  /// would admit no lookups and stall every uncached resolution.
+  int get effectiveMaxConcurrentDnsLookups {
+    final resolved =
+        maxConcurrentDnsLookups ??
+        // ignore: deprecated_member_use_from_same_package
+        ntsDnsConcurrencyCap ??
+        kDefaultMaxConcurrentDnsLookups;
+    if (resolved < 1) {
+      throw ArgumentError.value(
+        resolved,
+        'maxConcurrentDnsLookups',
+        'the DNS budget must be at least 1; a non-positive cap would '
+            'admit no lookups and stall every uncached resolution',
+      );
+    }
+    return resolved;
+  }
 
   /// Whether to validate every NTS-KE handshake against the platform /
   /// OS trust store instead of the bundled `webpki-roots` static set.
@@ -438,6 +496,7 @@ final class TrustedTimeConfig {
     List<String>? httpsSources,
     List<String>? ntsServers,
     int? ntsPort,
+    int? maxConcurrentDnsLookups,
     int? ntsDnsConcurrencyCap,
     bool? usePlatformTrust,
     List<int>? customRootCerts,
@@ -463,6 +522,9 @@ final class TrustedTimeConfig {
       httpsSources: httpsSources ?? this.httpsSources,
       ntsServers: ntsServers ?? this.ntsServers,
       ntsPort: ntsPort ?? this.ntsPort,
+      maxConcurrentDnsLookups:
+          maxConcurrentDnsLookups ?? this.maxConcurrentDnsLookups,
+      // ignore: deprecated_member_use_from_same_package
       ntsDnsConcurrencyCap: ntsDnsConcurrencyCap ?? this.ntsDnsConcurrencyCap,
       usePlatformTrust: usePlatformTrust ?? this.usePlatformTrust,
       customRootCerts: customRootCerts ?? this.customRootCerts,
@@ -498,6 +560,8 @@ final class TrustedTimeConfig {
         listEquals(other.httpsSources, httpsSources) &&
         listEquals(other.ntsServers, ntsServers) &&
         other.ntsPort == ntsPort &&
+        other.maxConcurrentDnsLookups == maxConcurrentDnsLookups &&
+        // ignore: deprecated_member_use_from_same_package
         other.ntsDnsConcurrencyCap == ntsDnsConcurrencyCap &&
         other.usePlatformTrust == usePlatformTrust &&
         listEquals(other.customRootCerts, customRootCerts) &&
@@ -525,6 +589,8 @@ final class TrustedTimeConfig {
     Object.hashAll(httpsSources),
     Object.hashAll(ntsServers),
     ntsPort,
+    maxConcurrentDnsLookups,
+    // ignore: deprecated_member_use_from_same_package
     ntsDnsConcurrencyCap,
     usePlatformTrust,
     Object.hashAll(customRootCerts),
@@ -559,6 +625,8 @@ final class TrustedTimeConfig {
         '  httpsSources: $httpsSources,\n'
         '  ntsServers: $ntsServers,\n'
         '  ntsPort: $ntsPort,\n'
+        '  maxConcurrentDnsLookups: $maxConcurrentDnsLookups,\n'
+        // ignore: deprecated_member_use_from_same_package
         '  ntsDnsConcurrencyCap: $ntsDnsConcurrencyCap,\n'
         '  usePlatformTrust: $usePlatformTrust,\n'
         // Summarise rather than interpolate the raw bytes: dumping the

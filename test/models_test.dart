@@ -269,6 +269,80 @@ void main() {
     });
   });
 
+  group('TrustedTimeConfig maxConcurrentDnsLookups (ADR 0008)', () {
+    test('defaults to null with an effective budget of 6', () {
+      const config = TrustedTimeConfig();
+      expect(config.maxConcurrentDnsLookups, isNull);
+      expect(
+        config.effectiveMaxConcurrentDnsLookups,
+        TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups,
+      );
+      expect(config.effectiveMaxConcurrentDnsLookups, 6);
+    });
+
+    test('an explicit value wins over the deprecated NTS-only cap', () {
+      const config = TrustedTimeConfig(
+        maxConcurrentDnsLookups: 9,
+        // ignore: deprecated_member_use
+        ntsDnsConcurrencyCap: 3,
+      );
+      expect(config.effectiveMaxConcurrentDnsLookups, 9);
+    });
+
+    test('honours the deprecated ntsDnsConcurrencyCap during migration', () {
+      const config = TrustedTimeConfig(
+        // ignore: deprecated_member_use
+        ntsDnsConcurrencyCap: 4,
+      );
+      expect(config.maxConcurrentDnsLookups, isNull);
+      expect(config.effectiveMaxConcurrentDnsLookups, 4);
+    });
+
+    test('round-trips through copyWith', () {
+      const original = TrustedTimeConfig();
+      final updated = original.copyWith(maxConcurrentDnsLookups: 8);
+      expect(updated.maxConcurrentDnsLookups, 8);
+      // Purely additive: an omitted value preserves the existing one.
+      final untouched = updated.copyWith(
+        maxLatency: const Duration(seconds: 7),
+      );
+      expect(untouched.maxConcurrentDnsLookups, 8);
+    });
+
+    test('participates in equality and hashCode', () {
+      const base = TrustedTimeConfig();
+      const capped = TrustedTimeConfig(maxConcurrentDnsLookups: 8);
+      expect(base == capped, isFalse);
+
+      const a = TrustedTimeConfig(maxConcurrentDnsLookups: 8);
+      const b = TrustedTimeConfig(maxConcurrentDnsLookups: 8);
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
+    });
+
+    test('appears in toString output', () {
+      const config = TrustedTimeConfig(maxConcurrentDnsLookups: 8);
+      expect(config.toString(), contains('maxConcurrentDnsLookups: 8'));
+    });
+
+    test('rejects a non-positive resolved budget', () {
+      const explicit = TrustedTimeConfig(maxConcurrentDnsLookups: 0);
+      expect(
+        () => explicit.effectiveMaxConcurrentDnsLookups,
+        throwsArgumentError,
+      );
+
+      const legacy = TrustedTimeConfig(
+        // ignore: deprecated_member_use
+        ntsDnsConcurrencyCap: -1,
+      );
+      expect(
+        () => legacy.effectiveMaxConcurrentDnsLookups,
+        throwsArgumentError,
+      );
+    });
+  });
+
   group('TrustedTimeConfig validate cadence knobs (ADR 0006)', () {
     test('default to a 1h validate interval and 15m foreground threshold', () {
       const config = TrustedTimeConfig();
