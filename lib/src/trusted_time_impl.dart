@@ -611,6 +611,11 @@ final class TrustedTimeImpl {
 
   void _scheduleRetry() {
     _retryTimer?.cancel();
+    // Null alongside cancel() so the field never retains a reference to a
+    // cancelled Timer on the no-retry path, matching _scheduleRefresh /
+    // _scheduleValidate and keeping "_retryTimer == null" a reliable
+    // "no retry armed" signal for diagnostics.
+    _retryTimer = null;
     final delay = _syncEngine.getNextRetryDelay();
     if (delay > Duration.zero) {
       _retryTimer = Timer(delay, _performSync);
