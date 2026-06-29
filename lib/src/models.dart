@@ -223,9 +223,10 @@ final class TrustedTimeConfig {
   /// counts toward every caller's threshold).
   @Deprecated(
     'Use maxConcurrentDnsLookups instead; it governs DNS concurrency '
-    'uniformly across NTS, NTP, and HTTPS rather than NTS alone. Honoured '
-    'as the unified budget while maxConcurrentDnsLookups is unset; removal '
-    'is deferred to the fork 2.x release. See ADR 0008.',
+    'across the engine-resolved NTP and NTS lookups rather than NTS alone '
+    '(HTTPS DNS stays OS-resolver-governed for now; see ADR 0008). '
+    'Honoured as the unified budget while maxConcurrentDnsLookups is '
+    'unset; removal is deferred to the fork 2.x release.',
   )
   final int? ntsDnsConcurrencyCap;
 
@@ -238,14 +239,32 @@ final class TrustedTimeConfig {
   ///
   /// An explicit [maxConcurrentDnsLookups] wins; otherwise a legacy
   /// [ntsDnsConcurrencyCap] is honoured; otherwise
-  /// [kDefaultMaxConcurrentDnsLookups]. This getter is pure — emitting
-  /// the one-time deprecation warning for the legacy branch is
-  /// [SyncEngine]'s responsibility at the point of use.
-  int get effectiveMaxConcurrentDnsLookups =>
-      maxConcurrentDnsLookups ??
-      // ignore: deprecated_member_use_from_same_package
-      ntsDnsConcurrencyCap ??
-      kDefaultMaxConcurrentDnsLookups;
+  /// [kDefaultMaxConcurrentDnsLookups]. Emitting the one-time deprecation
+  /// warning for the legacy branch is [SyncEngine]'s responsibility at
+  /// the point of use.
+  ///
+  /// Throws [ArgumentError] if the resolved budget is not positive. The
+  /// constructor is `const`, so a zero/negative cap cannot be rejected in
+  /// the initializer list; this getter is the single enforcement point
+  /// (mirroring [effectiveTrustMode]) so an invalid budget fails fast in
+  /// both debug and release rather than reaching [DnsBudget] — where it
+  /// would admit no lookups and stall every uncached resolution.
+  int get effectiveMaxConcurrentDnsLookups {
+    final resolved =
+        maxConcurrentDnsLookups ??
+        // ignore: deprecated_member_use_from_same_package
+        ntsDnsConcurrencyCap ??
+        kDefaultMaxConcurrentDnsLookups;
+    if (resolved < 1) {
+      throw ArgumentError.value(
+        resolved,
+        'maxConcurrentDnsLookups',
+        'the DNS budget must be at least 1; a non-positive cap would '
+            'admit no lookups and stall every uncached resolution',
+      );
+    }
+    return resolved;
+  }
 
   /// Whether to validate every NTS-KE handshake against the platform /
   /// OS trust store instead of the bundled `webpki-roots` static set.

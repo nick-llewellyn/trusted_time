@@ -324,6 +324,23 @@ void main() {
       const config = TrustedTimeConfig(maxConcurrentDnsLookups: 8);
       expect(config.toString(), contains('maxConcurrentDnsLookups: 8'));
     });
+
+    test('rejects a non-positive resolved budget', () {
+      const explicit = TrustedTimeConfig(maxConcurrentDnsLookups: 0);
+      expect(
+        () => explicit.effectiveMaxConcurrentDnsLookups,
+        throwsArgumentError,
+      );
+
+      const legacy = TrustedTimeConfig(
+        // ignore: deprecated_member_use
+        ntsDnsConcurrencyCap: -1,
+      );
+      expect(
+        () => legacy.effectiveMaxConcurrentDnsLookups,
+        throwsArgumentError,
+      );
+    });
   });
 
   group('TrustedTimeConfig validate cadence knobs (ADR 0006)', () {
