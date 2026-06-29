@@ -137,6 +137,10 @@ void main() {
       final gate = Completer<void>();
       final gatedClock = GatedMonotonicClock()..gate = gate;
       final racing = IntegrityMonitor(clock: gatedClock);
+      // Resilient to an early failure before the explicit dispose() below;
+      // dispose() is idempotent, so the duplicate teardown is harmless and
+      // it prevents leaking a live drift timer into later tests.
+      addTearDown(racing.dispose);
       final anchor = TrustAnchor(
         networkUtcMs: DateTime.now().millisecondsSinceEpoch,
         uptimeMs: 1000,
