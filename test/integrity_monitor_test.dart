@@ -163,5 +163,20 @@ void main() {
       // The disposed monitor must not have armed a fresh drift timer.
       expect(racing.debugDriftTimerActive, isFalse);
     });
+
+    test('attach after dispose is a no-op (no surveillance resurrection)', () {
+      monitor.dispose();
+      final anchor = TrustAnchor(
+        networkUtcMs: DateTime.now().millisecondsSinceEpoch,
+        uptimeMs: 1000,
+        wallMs: DateTime.now().millisecondsSinceEpoch,
+        uncertaintyMs: 10,
+      );
+      // attach() must short-circuit on a disposed monitor: no native
+      // subscription is opened and no drift timer is armed, so nothing leaks
+      // past the (idempotent) dispose() above.
+      monitor.attach(anchor);
+      expect(monitor.debugDriftTimerActive, isFalse);
+    });
   });
 }

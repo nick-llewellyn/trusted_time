@@ -52,7 +52,13 @@ final class IntegrityMonitor {
   void report(IntegrityEvent event) => _emit(event);
 
   /// Attaches the monitor to an active trust anchor and begins surveillance.
+  ///
+  /// No-op once disposed: re-attaching after teardown would open a fresh
+  /// native subscription (and arm a drift timer) that a subsequent
+  /// early-returning [dispose] could no longer cancel, leaking it past
+  /// teardown.
   void attach(TrustAnchor anchor) {
+    if (_disposed) return;
     _anchor = anchor;
     _lastTimezoneOffset = DateTime.now().timeZoneOffset;
     _nativeSub?.cancel();
@@ -209,8 +215,13 @@ final class IntegrityMonitor {
   }
 
   /// Test-only: whether a drift-check timer is currently armed.
+  ///
+  /// Uses [Timer.isActive] rather than a null check so the hook reflects an
+  /// actually pending timer: a one-shot [Timer] stays referenced after it
+  /// fires (until the next [_startDriftCheck] rebinds it), so `!= null` would
+  /// report a fired-but-not-yet-rearmed timer as still armed.
   @visibleForTesting
-  bool get debugDriftTimerActive => _driftCheckTimer != null;
+  bool get debugDriftTimerActive => _driftCheckTimer?.isActive ?? false;
 
   /// Test-only: runs one adaptive drift-check cycle and returns its
   /// future, so the dispose-during-await race can be reproduced
