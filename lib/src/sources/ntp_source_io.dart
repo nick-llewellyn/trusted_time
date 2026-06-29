@@ -121,9 +121,18 @@ final class NtpSource implements TimeSource {
   /// up in time. Without a budget the lookup runs directly, preserving
   /// the behaviour of direct (non-engine) callers and tests.
   Future<List<InternetAddress>> _lookupAddresses() {
-    Future<List<InternetAddress>> lookup() =>
-        _resolveHost(_host).timeout(const Duration(seconds: 2));
     final budget = _dnsBudget;
+    // Cap the resolver timeout at the budget's admission window when one
+    // is present (ADR 0008): SyncEngine sets acquireTimeout == maxLatency,
+    // so the lookup must release its permit within the same window the
+    // engine is willing to wait. Without the clamp a maxLatency below 2s
+    // lets a stalled lookup keep holding a permit after the engine has
+    // already dropped the source, starving its peers.
+    final lookupTimeout = budget == null
+        ? const Duration(seconds: 2)
+        : _minDuration(const Duration(seconds: 2), budget.acquireTimeout);
+    Future<List<InternetAddress>> lookup() =>
+        _resolveHost(_host).timeout(lookupTimeout);
     return budget == null ? lookup() : budget.guard(_host, lookup);
   }
 
@@ -135,6 +144,8 @@ final class NtpSource implements TimeSource {
     if (aV4 != bV4) return aV4 ? a : b;
     return a.address.compareTo(b.address) <= 0 ? a : b;
   }
+
+  static Duration _minDuration(Duration a, Duration b) => a <= b ? a : b;
 
   /// Maps an already-resolved [addr] to its ASN group (`as<asn>`), falling
   /// back to the shared [groupIdUnknown] sentinel on a null address, an

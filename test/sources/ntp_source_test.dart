@@ -229,5 +229,39 @@ void main() {
         held.complete(const []);
       },
     );
+
+    test(
+      'clamps the resolver timeout to the budget admission window',
+      () async {
+        // Regression (ADR 0008): the host lookup must abort within the
+        // budget's acquireTimeout, not the bare 2s default. With a 30ms
+        // window and a resolver that only answers after 100ms, the lookup
+        // times out and getTime falls back to the bare host. Without the
+        // clamp the 2s default would let the 100ms resolver win and the
+        // exchange would see the resolved literal IP instead — so the
+        // permit would also stay held long past the engine's window.
+        final budget = DnsBudget(
+          4,
+          acquireTimeout: const Duration(milliseconds: 30),
+        );
+        String? seen;
+        final source = NtpSource(
+          '0.pool.ntp.org',
+          dnsBudget: budget,
+          asnResolver: resolverFor(singleV4('1.2.3.0', '1.2.3.255', 13335)),
+          hostResolver: (host) async {
+            await Future<void>.delayed(const Duration(milliseconds: 100));
+            return [InternetAddress('1.2.3.4')];
+          },
+          offsetFetcher: (lookUpAddress) async {
+            seen = lookUpAddress;
+            return 0;
+          },
+        );
+
+        await source.getTime();
+        expect(seen, '0.pool.ntp.org');
+      },
+    );
   });
 }

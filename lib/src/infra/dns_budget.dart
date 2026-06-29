@@ -46,17 +46,31 @@ class DnsBudget {
   /// passes `maxLatency` so a queued source drops on the same ceiling as
   /// a slow one. [cacheTtl] bounds how long a successful resolution is
   /// reused before the next lookup re-acquires a permit.
+  ///
+  /// Throws [ArgumentError] if [maxConcurrent] is `< 1` or either
+  /// duration is not strictly positive. This is enforced at runtime
+  /// (not via `assert`) because the type is instantiable outside
+  /// [TrustedTimeConfig]: a `DnsBudget(0)` would otherwise construct in
+  /// release builds and silently deny every lookup, since the assert is
+  /// stripped and no permit can ever be admitted.
   DnsBudget(
     this.maxConcurrent, {
     Duration acquireTimeout = const Duration(seconds: 4),
     Duration cacheTtl = const Duration(seconds: 60),
-  }) : assert(maxConcurrent > 0, 'maxConcurrent must be positive'),
-       _available = maxConcurrent,
-       _acquireTimeout = acquireTimeout,
-       _cacheTtl = cacheTtl;
+  }) : _available = _requirePositive(maxConcurrent, 'maxConcurrent'),
+       _acquireTimeout = _requirePositiveDuration(
+         acquireTimeout,
+         'acquireTimeout',
+       ),
+       _cacheTtl = _requirePositiveDuration(cacheTtl, 'cacheTtl');
 
   /// Maximum number of concurrent uncached lookups permitted.
   final int maxConcurrent;
+
+  /// Per-lookup admission window. Callers align their own resolution
+  /// timeout to this so a permit is never held past the window the
+  /// engine is willing to wait on the source (ADR 0008).
+  Duration get acquireTimeout => _acquireTimeout;
 
   final Duration _acquireTimeout;
   final Duration _cacheTtl;
@@ -125,6 +139,20 @@ class DnsBudget {
   }
 
   static int _nowMs() => DateTime.now().millisecondsSinceEpoch;
+
+  static int _requirePositive(int value, String name) {
+    if (value < 1) {
+      throw ArgumentError.value(value, name, 'must be >= 1');
+    }
+    return value;
+  }
+
+  static Duration _requirePositiveDuration(Duration value, String name) {
+    if (value <= Duration.zero) {
+      throw ArgumentError.value(value, name, 'must be positive');
+    }
+    return value;
+  }
 }
 
 class _CacheEntry {

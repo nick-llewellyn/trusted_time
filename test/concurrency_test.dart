@@ -1880,5 +1880,29 @@ void main() {
       // The permit must have been released despite the failure.
       expect(budget.availablePermits, 1);
     });
+
+    test('rejects a non-positive maxConcurrent with ArgumentError', () {
+      // Runtime validation (not assert): the type is instantiable outside
+      // TrustedTimeConfig, and a stripped assert in release would let
+      // DnsBudget(0) construct and then deny every lookup forever.
+      expect(() => DnsBudget(0), throwsArgumentError);
+      expect(() => DnsBudget(-1), throwsArgumentError);
+    });
+
+    test('rejects a non-positive acquireTimeout or cacheTtl', () {
+      expect(
+        () => DnsBudget(1, acquireTimeout: Duration.zero),
+        throwsArgumentError,
+      );
+      expect(
+        () => DnsBudget(1, cacheTtl: const Duration(milliseconds: -1)),
+        throwsArgumentError,
+      );
+    });
+
+    test('exposes its admission window via acquireTimeout', () {
+      const window = Duration(milliseconds: 250);
+      expect(DnsBudget(2, acquireTimeout: window).acquireTimeout, window);
+    });
   });
 }

@@ -121,7 +121,12 @@ final class SyncEngine {
   /// resolved mode is then reused for every [NtsSource].
   List<TimeSource> _buildSources() {
     final trustMode = _config.effectiveTrustMode;
-    final dnsCap = _config.effectiveMaxConcurrentDnsLookups;
+    // Reuse the already-constructed budget's cap rather than re-reading
+    // effectiveMaxConcurrentDnsLookups: the migration ladder (and its
+    // one-time deprecation warning) then runs exactly once, in
+    // _buildDnsBudget, and the NTS forwarding cap can never drift from
+    // the budget actually handed to the NTP sources. See ADR 0008.
+    final dnsCap = _dnsBudget.maxConcurrent;
     return [
       for (final host in _config.ntpServers)
         NtpSource(host, dnsBudget: _dnsBudget),
