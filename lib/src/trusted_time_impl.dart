@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart';
 import 'models.dart';
 import 'anchor_store.dart';
@@ -97,6 +98,30 @@ final class TrustedTimeImpl {
   Timer? _desktopBgTimer;
   StreamSubscription<IntegrityEvent>? _integritySub;
   Completer<void>? _syncInProgress;
+
+  // Tiered-cadence auxiliaries (ADR 0006), live only under
+  // [CadenceMode.tieredMobile]. Under the legacy
+  // [CadenceMode.singleTier30m] schedule all three stay null/zero and no
+  // tiered code path is ever reached, so that mode is bit-for-bit
+  // unchanged.
+  Timer? _validateTimer;
+  WidgetsBindingObserver? _lifecycleObserver;
+  Duration? _backgroundedElapsed;
+  int _validateCycleCount = 0;
+
+  // Validate-cycle in-flight guard (ADR 0006). Held for the duration of
+  // a single [_runValidateCycle] so the periodic validate timer and the
+  // foreground-resume trigger can never run overlapping validate bursts
+  // against the same source.
+  bool _validateInProgress = false;
+
+  /// Monotonic clock used to measure how long the app spent backgrounded.
+  /// Deliberately *not* wall-clock time: a trusted-time library must not
+  /// trust [DateTime.now] to gate its own freshness checks, since a
+  /// backward clock jump would yield a negative duration and skip the
+  /// validate cycle precisely when drift is most likely. [Stopwatch] is
+  /// backed by a monotonic platform clock and is immune to such jumps.
+  final Stopwatch _monotonic = Stopwatch()..start();
 
   /// Synchronous re-entry guard for [_performSync], paired with
   /// [_syncInProgress]. The Completer-based check is the canonical
@@ -324,6 +349,7 @@ final class TrustedTimeImpl {
 
   Future<void> _bootstrap() async {
     _listenForIntegrityEvents();
+    _startTieredSchedulingIfNeeded();
 
     if (_config.persistState) {
       final lastKnown = await _store.loadLastKnown();
@@ -591,6 +617,150 @@ final class TrustedTimeImpl {
     }
   }
 
+  /// Starts the tiered-cadence auxiliaries (ADR 0006): the periodic
+  /// validate timer plus a self-installed [WidgetsBindingObserver] that
+  /// runs a freshness probe when the app returns to the foreground after
+  /// a long background. No-op under [CadenceMode.singleTier30m], so the
+  /// legacy single-timer schedule is left bit-for-bit unchanged.
+  void _startTieredSchedulingIfNeeded() {
+    if (_config.cadenceMode != CadenceMode.tieredMobile) return;
+    _scheduleValidate();
+    if (kIsWeb) return;
+    final observer = _AppLifecycleObserver(
+      (state) => _handleAppLifecycleState(state, _monotonic.elapsed),
+    );
+    try {
+      WidgetsBinding.instance.addObserver(observer);
+      _lifecycleObserver = observer;
+    } catch (e) {
+      // No widgets binding (e.g. a headless background isolate). The
+      // periodic validate timer still drives cadence; only the
+      // foreground-resume trigger is unavailable in this context.
+      if (kDebugMode) {
+        debugPrint(
+          '[TrustedTime] Foreground-validate observer not installed: $e',
+        );
+      }
+    }
+  }
+
+  /// Arms the validate-tier timer (ADR 0006). Re-arms itself after each
+  /// cycle completes so probes never overlap. No-op under
+  /// [CadenceMode.singleTier30m] or when [TrustedTimeConfig.validateInterval]
+  /// is non-positive.
+  void _scheduleValidate() {
+    _validateTimer?.cancel();
+    _validateTimer = null;
+    if (_disposed) return;
+    if (_config.cadenceMode != CadenceMode.tieredMobile) return;
+    final interval = _config.validateInterval;
+    if (interval <= Duration.zero) return;
+    _validateTimer = Timer(interval, () {
+      // Fire-and-forget: the cycle re-arms the timer via whenComplete, so
+      // the returned Future is intentionally not awaited. unawaited makes
+      // that explicit and matches the other validate/sync call sites.
+      unawaited(_runValidateCycle().whenComplete(_scheduleValidate));
+    });
+  }
+
+  /// Runs one validate-tier freshness probe and escalates to a full
+  /// establish cycle only if the probe positively disagrees with network
+  /// time (ADR 0006).
+  ///
+  /// Tolerant by design: a probe that cannot run at all (no anchor yet,
+  /// no NTS source, every burst query failed) is "freshness unknown",
+  /// not a verdict — it is swallowed and the anchor and schedule are left
+  /// intact, mirroring [validateFreshness]'s contract. A probe is also
+  /// skipped while a full sync is already in flight, since an establish
+  /// cycle supersedes a cheap probe, and while another validate cycle is
+  /// already running, so the timer and foreground-resume entry points
+  /// never issue overlapping bursts.
+  Future<void> _runValidateCycle() async {
+    if (_disposed) return;
+    _validateCycleCount++;
+    if (_syncInProgress != null) return;
+    // Validate-in-flight guard. The periodic timer self-rearms only
+    // after its cycle completes, so the timer path never overlaps
+    // itself — but the foreground-resume trigger calls in independently
+    // and can land while a timer-driven probe is still awaiting its NTS
+    // burst. Without this guard the two entry points would issue
+    // concurrent SyncEngine.validate() bursts, doubling radio/battery
+    // use and contending on shared per-source state (e.g. NTS cookie
+    // jars); the flag gives both paths the same non-overlap guarantee
+    // the self-rearming timer already had on its own.
+    if (_validateInProgress) return;
+    _validateInProgress = true;
+    bool fresh;
+    try {
+      fresh = await validateFreshness();
+    } on TrustedTimeFreshnessProbeException {
+      return;
+    } catch (e) {
+      if (kDebugMode) debugPrint('[TrustedTime] Validate probe error: $e');
+      return;
+    } finally {
+      _validateInProgress = false;
+    }
+    if (!fresh && !_disposed && _syncInProgress == null) {
+      unawaited(_performSync());
+    }
+  }
+
+  /// Foreground-resume validate trigger (ADR 0006). Records the first
+  /// non-resumed lifecycle transition as the background-entry reading on
+  /// a monotonic clock, and on the next [AppLifecycleState.resumed] runs
+  /// a validate cycle iff the app was backgrounded for at least
+  /// [TrustedTimeConfig.foregroundValidateThreshold]. [now] is a
+  /// monotonic elapsed reading (see [_monotonic]), never wall-clock time,
+  /// so a backward clock jump can neither produce a negative duration nor
+  /// suppress the probe. Gated on [CadenceMode.tieredMobile] so the
+  /// legacy mode never reacts to lifecycle events.
+  void _handleAppLifecycleState(AppLifecycleState state, Duration now) {
+    if (_disposed) return;
+    if (_config.cadenceMode != CadenceMode.tieredMobile) return;
+    if (state == AppLifecycleState.resumed) {
+      final since = _backgroundedElapsed;
+      _backgroundedElapsed = null;
+      if (since == null) return;
+      // A negative threshold is nonsensical but cannot be rejected in the
+      // `const` config constructor; normalize it to zero here so it means
+      // "probe on every resume" rather than relying on the always-true
+      // comparison against a negative bound.
+      final threshold = _config.foregroundValidateThreshold.isNegative
+          ? Duration.zero
+          : _config.foregroundValidateThreshold;
+      if (now - since >= threshold) {
+        unawaited(_runValidateCycle());
+      }
+      return;
+    }
+    // Any non-resumed state means the app left the foreground. Keep the
+    // first such reading (??=) so a burst of inactive/paused/hidden
+    // callbacks does not reset the measured background duration.
+    _backgroundedElapsed ??= now;
+  }
+
+  /// Whether the tiered-cadence validate timer is currently armed.
+  @visibleForTesting
+  bool get debugValidateTimerActive => _validateTimer != null;
+
+  /// Whether the foreground-resume lifecycle observer is installed.
+  @visibleForTesting
+  bool get debugLifecycleObserverInstalled => _lifecycleObserver != null;
+
+  /// Number of validate cycles attempted since construction.
+  @visibleForTesting
+  int get debugValidateCycleCount => _validateCycleCount;
+
+  /// Drives the foreground-resume validate path deterministically in
+  /// tests without a real [WidgetsBinding] lifecycle dispatch. [elapsed]
+  /// overrides the monotonic reading used to measure background duration.
+  @visibleForTesting
+  void debugHandleAppLifecycleState(
+    AppLifecycleState state, {
+    Duration? elapsed,
+  }) => _handleAppLifecycleState(state, elapsed ?? _monotonic.elapsed);
+
   static const _bgChannel = MethodChannel('trusted_time/background');
 
   Future<void> _invokeBackgroundSync(Duration interval) async {
@@ -625,6 +795,17 @@ final class TrustedTimeImpl {
     _retryTimer = null;
     _desktopBgTimer?.cancel();
     _desktopBgTimer = null;
+    _validateTimer?.cancel();
+    _validateTimer = null;
+    final observer = _lifecycleObserver;
+    if (observer != null) {
+      try {
+        WidgetsBinding.instance.removeObserver(observer);
+      } catch (_) {
+        // Binding already torn down; nothing to detach.
+      }
+      _lifecycleObserver = null;
+    }
     _integritySub?.cancel();
     _integritySub = null;
     _syncEngine.dispose();
@@ -678,4 +859,15 @@ class _ProxySyncObserver implements SyncObserver {
       o.onMetricsReported(metrics);
     }
   }
+}
+
+/// Forwards [WidgetsBindingObserver.didChangeAppLifecycleState] to a
+/// callback so [TrustedTimeImpl] can self-install a foreground-resume
+/// validate trigger (ADR 0006) without itself mixing in the observer.
+class _AppLifecycleObserver with WidgetsBindingObserver {
+  _AppLifecycleObserver(this._onState);
+  final void Function(AppLifecycleState) _onState;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) => _onState(state);
 }

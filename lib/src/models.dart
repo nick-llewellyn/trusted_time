@@ -105,6 +105,8 @@ final class TrustedTimeConfig {
     this.transientStreakThreshold = 5,
     this.cadenceMode = CadenceMode.singleTier30m,
     this.validateBurstCount = 4,
+    this.validateInterval = const Duration(hours: 1),
+    this.foregroundValidateThreshold = const Duration(minutes: 15),
   }) : assert(
          validateBurstCount >= 1,
          'validateBurstCount must be at least 1: the validate tier must '
@@ -173,6 +175,8 @@ final class TrustedTimeConfig {
       refreshInterval: Duration(hours: 24),
       backgroundSyncInterval: Duration(hours: 24),
       validateBurstCount: 4,
+      validateInterval: Duration(hours: 1),
+      foregroundValidateThreshold: Duration(minutes: 15),
     );
   }
 
@@ -356,6 +360,39 @@ final class TrustedTimeConfig {
   /// must be at least `1`. Has no effect outside the validate tier.
   final int validateBurstCount;
 
+  /// How often the validate tier runs its cheap freshness probe while
+  /// the app is foregrounded (ADR 0006).
+  ///
+  /// Only consulted when [cadenceMode] is [CadenceMode.tieredMobile]; the
+  /// legacy [CadenceMode.singleTier30m] schedule ignores it entirely.
+  /// In tiered mode the engine runs an infrequent full *establish* cycle
+  /// on [refreshInterval] (24h via [mobileDefaults]) plus this frequent
+  /// *validate* cycle, which confirms the existing anchor with a single
+  /// cookie-warm NTS burst rather than a full Marzullo pass. Defaults to
+  /// one hour. A non-positive value disables the periodic validate timer;
+  /// the foreground-resume trigger is independent of this value, but it
+  /// is itself only active where a [WidgetsBindingObserver] can be
+  /// installed (a non-web platform with a live binding), so disabling the
+  /// timer does not guarantee a foreground trigger in every environment —
+  /// e.g. on web or in a headless background isolate neither fires.
+  final Duration validateInterval;
+
+  /// Minimum time the app must have spent backgrounded before a return
+  /// to the foreground triggers a validate-tier freshness probe (ADR
+  /// 0006).
+  ///
+  /// Only consulted when [cadenceMode] is [CadenceMode.tieredMobile].
+  /// A brief background excursion (switching apps, pulling down a
+  /// notification) is below this threshold and does not spend a probe;
+  /// returning after a longer absence — where the anchor is most likely
+  /// to have drifted — does. Defaults to fifteen minutes.
+  ///
+  /// Expected to be non-negative. The constructor is `const`, so this is
+  /// not enforced by assertion (`Duration` comparison is not a constant
+  /// expression); instead a negative value is normalized to
+  /// [Duration.zero] at the point of use, i.e. it probes on every resume.
+  final Duration foregroundValidateThreshold;
+
   /// The [nts.TrustMode] the engine applies to every per-source
   /// [nts.NtsClient], derived from [usePlatformTrust] and
   /// [customRootCerts].
@@ -418,6 +455,8 @@ final class TrustedTimeConfig {
     int? transientStreakThreshold,
     CadenceMode? cadenceMode,
     int? validateBurstCount,
+    Duration? validateInterval,
+    Duration? foregroundValidateThreshold,
   }) {
     return TrustedTimeConfig(
       ntpServers: ntpServers ?? this.ntpServers,
@@ -445,6 +484,9 @@ final class TrustedTimeConfig {
           transientStreakThreshold ?? this.transientStreakThreshold,
       cadenceMode: cadenceMode ?? this.cadenceMode,
       validateBurstCount: validateBurstCount ?? this.validateBurstCount,
+      validateInterval: validateInterval ?? this.validateInterval,
+      foregroundValidateThreshold:
+          foregroundValidateThreshold ?? this.foregroundValidateThreshold,
     );
   }
 
@@ -472,7 +514,9 @@ final class TrustedTimeConfig {
         other.backgroundSyncInterval == backgroundSyncInterval &&
         other.transientStreakThreshold == transientStreakThreshold &&
         other.cadenceMode == cadenceMode &&
-        other.validateBurstCount == validateBurstCount;
+        other.validateBurstCount == validateBurstCount &&
+        other.validateInterval == validateInterval &&
+        other.foregroundValidateThreshold == foregroundValidateThreshold;
   }
 
   @override
@@ -498,6 +542,8 @@ final class TrustedTimeConfig {
     transientStreakThreshold,
     cadenceMode,
     validateBurstCount,
+    validateInterval,
+    foregroundValidateThreshold,
   ]);
 
   @override
@@ -535,6 +581,8 @@ final class TrustedTimeConfig {
         '  transientStreakThreshold: $transientStreakThreshold,\n'
         '  cadenceMode: $cadenceMode,\n'
         '  validateBurstCount: $validateBurstCount,\n'
+        '  validateInterval: $validateInterval,\n'
+        '  foregroundValidateThreshold: $foregroundValidateThreshold,\n'
         ')';
   }
 }

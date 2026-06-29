@@ -1,4 +1,5 @@
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
@@ -618,6 +619,243 @@ void main() {
       expect(await TrustedTime.validateFreshness(), isFalse);
     });
   });
+
+  group('TrustedTime tiered cadence scheduler (ADR 0006)', () {
+    // Live-engine tests; clear any override left by earlier groups so the
+    // static surface drops into the real TrustedTimeImpl singleton.
+    tearDown(TrustedTime.resetOverride);
+
+    Future<void> initTiered(
+      _MidpointBox box, {
+      Duration foregroundValidateThreshold = const Duration(minutes: 15),
+    }) async {
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          persistState: false,
+          earlyExit: false,
+          cadenceMode: CadenceMode.tieredMobile,
+          foregroundValidateThreshold: foregroundValidateThreshold,
+          additionalSources: [
+            _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
+            _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+    }
+
+    Future<void> initSingleTier() async {
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+    }
+
+    _MidpointBox freshBox() =>
+        _MidpointBox(DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch);
+
+    test('singleTier30m arms neither the validate timer nor the '
+        'lifecycle observer', () async {
+      await initSingleTier();
+      final impl = TrustedTimeImpl.instance;
+      expect(impl.debugValidateTimerActive, isFalse);
+      expect(impl.debugLifecycleObserverInstalled, isFalse);
+    });
+
+    test('tieredMobile arms the validate timer and installs the '
+        'lifecycle observer', () async {
+      await initTiered(freshBox());
+      final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.isTrusted, isTrue);
+      expect(impl.debugValidateTimerActive, isTrue);
+      expect(impl.debugLifecycleObserverInstalled, isTrue);
+    });
+
+    test(
+      'a foreground resume after the threshold runs a validate cycle',
+      () async {
+        await initTiered(freshBox());
+        final impl = TrustedTimeImpl.instance;
+        expect(impl.debugValidateCycleCount, 0);
+
+        const bg = Duration(hours: 5);
+        impl.debugHandleAppLifecycleState(
+          AppLifecycleState.paused,
+          elapsed: bg,
+        );
+        impl.debugHandleAppLifecycleState(
+          AppLifecycleState.resumed,
+          elapsed: bg + const Duration(minutes: 20),
+        );
+        // The cycle is fire-and-forget; let its probe settle.
+        await Future.delayed(const Duration(milliseconds: 20));
+
+        expect(impl.debugValidateCycleCount, 1);
+        // The probe agreed with the anchor, so trust is intact.
+        expect(TrustedTime.isTrusted, isTrue);
+      },
+    );
+
+    test('a brief background excursion below the threshold does not '
+        'run a validate cycle', () async {
+      await initTiered(freshBox());
+      final impl = TrustedTimeImpl.instance;
+
+      const bg = Duration(hours: 5);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
+      impl.debugHandleAppLifecycleState(
+        AppLifecycleState.resumed,
+        elapsed: bg + const Duration(minutes: 5),
+      );
+      await Future.delayed(const Duration(milliseconds: 20));
+
+      expect(impl.debugValidateCycleCount, 0);
+    });
+
+    test('a resume with no prior background transition is a no-op', () async {
+      await initTiered(freshBox());
+      final impl = TrustedTimeImpl.instance;
+
+      impl.debugHandleAppLifecycleState(
+        AppLifecycleState.resumed,
+        elapsed: const Duration(hours: 5),
+      );
+      await Future.delayed(const Duration(milliseconds: 20));
+
+      expect(impl.debugValidateCycleCount, 0);
+    });
+
+    test('a negative foreground threshold is normalized to zero and probes '
+        'on every resume', () async {
+      await initTiered(
+        freshBox(),
+        foregroundValidateThreshold: const Duration(minutes: -1),
+      );
+      final impl = TrustedTimeImpl.instance;
+
+      // Same monotonic reading on background and resume: a zero-length
+      // excursion. With the negative threshold normalized to zero, the
+      // delta (0) still meets the bound, so a cycle runs.
+      const bg = Duration(hours: 5);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed, elapsed: bg);
+      await Future.delayed(const Duration(milliseconds: 20));
+
+      expect(impl.debugValidateCycleCount, 1);
+    });
+
+    test('a non-advancing monotonic reading on resume does not run a '
+        'cycle (guards the wall-clock-regression case)', () async {
+      await initTiered(freshBox());
+      final impl = TrustedTimeImpl.instance;
+
+      const bg = Duration(hours: 5);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
+      // Under wall-clock time a backward jump while backgrounded would
+      // make the delta negative and silently skip the probe. A monotonic
+      // source can never regress, so a non-advancing reading is simply a
+      // sub-threshold (here zero) duration and runs no cycle.
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed, elapsed: bg);
+      await Future.delayed(const Duration(milliseconds: 20));
+
+      expect(impl.debugValidateCycleCount, 0);
+    });
+
+    test('singleTier30m ignores lifecycle transitions entirely', () async {
+      await initSingleTier();
+      final impl = TrustedTimeImpl.instance;
+
+      const bg = Duration(hours: 5);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
+      impl.debugHandleAppLifecycleState(
+        AppLifecycleState.resumed,
+        elapsed: bg + const Duration(hours: 1),
+      );
+      await Future.delayed(const Duration(milliseconds: 20));
+
+      expect(impl.debugValidateCycleCount, 0);
+    });
+
+    test(
+      'dispose cancels the validate timer and detaches the observer',
+      () async {
+        await initTiered(freshBox());
+        final impl = TrustedTimeImpl.instance;
+        expect(impl.debugValidateTimerActive, isTrue);
+        expect(impl.debugLifecycleObserverInstalled, isTrue);
+
+        impl.dispose();
+
+        expect(impl.debugValidateTimerActive, isFalse);
+        expect(impl.debugLifecycleObserverInstalled, isFalse);
+      },
+    );
+
+    test('a foreground resume does not start a probe that overlaps an '
+        'in-flight validate cycle (shared in-flight guard)', () async {
+      // burst of 1 keeps the probe to a single getTime() so the query
+      // tally is exactly "one burst == one query"; the two sources share
+      // one counter so the assertion holds regardless of which ranked
+      // source the validate tier selects.
+      final counter = _ProbeCounter();
+      final box = freshBox();
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          persistState: false,
+          earlyExit: false,
+          cadenceMode: CadenceMode.tieredMobile,
+          validateBurstCount: 1,
+          additionalSources: [
+            _CountingSource(box, id: 'nts:a', groupId: 'g1', counter: counter),
+            _CountingSource(box, id: 'nts:b', groupId: 'g2', counter: counter),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      final impl = TrustedTimeImpl.instance;
+
+      // The bootstrap establish cycle queried the sources; only
+      // post-init probe queries are relevant to the guard.
+      counter.count = 0;
+
+      // Two foreground resumes dispatched in the same synchronous turn.
+      // The first drives _runValidateCycle to its first await — setting
+      // the in-flight flag before yielding — so the second must observe
+      // the flag and return before issuing any probe query.
+      const bg1 = Duration(hours: 5);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg1);
+      impl.debugHandleAppLifecycleState(
+        AppLifecycleState.resumed,
+        elapsed: bg1 + const Duration(minutes: 20),
+      );
+      const bg2 = Duration(hours: 10);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg2);
+      impl.debugHandleAppLifecycleState(
+        AppLifecycleState.resumed,
+        elapsed: bg2 + const Duration(minutes: 20),
+      );
+
+      await Future.delayed(const Duration(milliseconds: 30));
+
+      // Both resumes register as attempts, but the guard let only one
+      // burst reach a source: a single probe query, not two overlapping
+      // bursts contending on shared per-source state.
+      expect(impl.debugValidateCycleCount, 2);
+      expect(counter.count, 1);
+      expect(TrustedTime.isTrusted, isTrue);
+    });
+  });
 }
 
 /// Minimal [SyncObserver] that just counts onSyncStarted invocations,
@@ -649,6 +887,46 @@ class _SyncStartedProbe implements SyncObserver {
 class _MidpointBox {
   _MidpointBox(this.midpointMs);
   int midpointMs;
+}
+
+/// Shared getTime() tally so an overlap test can count how many probe
+/// queries actually executed independently of which ranked source the
+/// validate tier selected.
+class _ProbeCounter {
+  int count = 0;
+}
+
+/// A [_BoxedSource] variant that tallies every getTime() call into a
+/// shared [_ProbeCounter], used to prove the validate-in-flight guard
+/// stops a second overlapping probe burst from reaching a source.
+class _CountingSource implements TimeSource {
+  _CountingSource(
+    this._box, {
+    required this.id,
+    required this.groupId,
+    required this.counter,
+  });
+
+  final _MidpointBox _box;
+  @override
+  final String id;
+  @override
+  final String groupId;
+  final _ProbeCounter counter;
+  static const int halfWidthMs = 10;
+
+  @override
+  Future<TimeSample> getTime() async {
+    counter.count++;
+    return TimeSample(
+      interval: TimeInterval(
+        startMs: _box.midpointMs - halfWidthMs,
+        endMs: _box.midpointMs + halfWidthMs,
+      ),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
 }
 
 /// A [TimeSource] that reports an interval centred on a [_MidpointBox]

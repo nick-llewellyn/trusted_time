@@ -269,6 +269,78 @@ void main() {
     });
   });
 
+  group('TrustedTimeConfig validate cadence knobs (ADR 0006)', () {
+    test('default to a 1h validate interval and 15m foreground threshold', () {
+      const config = TrustedTimeConfig();
+      expect(config.validateInterval, const Duration(hours: 1));
+      expect(config.foregroundValidateThreshold, const Duration(minutes: 15));
+    });
+
+    test('mobileDefaults() pins the ADR 0006 validate cadence', () {
+      final config = TrustedTimeConfig.mobileDefaults();
+      expect(config.validateInterval, const Duration(hours: 1));
+      expect(config.foregroundValidateThreshold, const Duration(minutes: 15));
+    });
+
+    test('round-trip through copyWith', () {
+      const original = TrustedTimeConfig();
+      final updated = original.copyWith(
+        validateInterval: const Duration(minutes: 30),
+        foregroundValidateThreshold: const Duration(minutes: 5),
+      );
+      expect(updated.validateInterval, const Duration(minutes: 30));
+      expect(updated.foregroundValidateThreshold, const Duration(minutes: 5));
+      // Purely additive: omitted values preserve the existing ones.
+      final untouched = updated.copyWith(
+        maxLatency: const Duration(seconds: 7),
+      );
+      expect(untouched.validateInterval, const Duration(minutes: 30));
+      expect(untouched.foregroundValidateThreshold, const Duration(minutes: 5));
+    });
+
+    test('participate in equality and hashCode', () {
+      const base = TrustedTimeConfig();
+      const slowValidate = TrustedTimeConfig(
+        validateInterval: Duration(hours: 2),
+      );
+      const eagerForeground = TrustedTimeConfig(
+        foregroundValidateThreshold: Duration(minutes: 1),
+      );
+      expect(base == slowValidate, isFalse);
+      expect(base == eagerForeground, isFalse);
+
+      const a = TrustedTimeConfig(validateInterval: Duration(hours: 2));
+      const b = TrustedTimeConfig(validateInterval: Duration(hours: 2));
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
+    });
+
+    test('appear in toString output', () {
+      const config = TrustedTimeConfig(
+        validateInterval: Duration(minutes: 45),
+        foregroundValidateThreshold: Duration(minutes: 3),
+      );
+      final dump = config.toString();
+      expect(dump, contains('validateInterval: 0:45:00.000000'));
+      expect(dump, contains('foregroundValidateThreshold: 0:03:00.000000'));
+    });
+
+    test('allows a zero foreground threshold (probe on every resume)', () {
+      const config = TrustedTimeConfig(
+        foregroundValidateThreshold: Duration.zero,
+      );
+      expect(config.foregroundValidateThreshold, Duration.zero);
+    });
+
+    test('const-constructs a negative foreground threshold (normalized to '
+        'zero at the point of use, not by the const constructor)', () {
+      const config = TrustedTimeConfig(
+        foregroundValidateThreshold: Duration(minutes: -1),
+      );
+      expect(config.foregroundValidateThreshold, const Duration(minutes: -1));
+    });
+  });
+
   group('TimeSample.trustBackend', () {
     // The field is the per-handshake observability counterpart to the
     // TrustedTimeConfig trust policy (usePlatformTrust /
