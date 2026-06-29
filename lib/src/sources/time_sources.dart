@@ -38,10 +38,13 @@ final class HttpsSource implements TimeSource {
   /// (ADR 0008). When supplied, [getTime] first pre-resolves the host
   /// through it cache-first to warm the platform DNS cache before
   /// `package:http` issues its own (now-warm) internal lookup; when
-  /// `null` (direct callers, tests, web) no pre-resolve runs.
-  /// [hostResolver] is an injection seam for that warming step; it
-  /// defaults to the platform resolver and is unused when [dnsBudget]
-  /// is `null`.
+  /// `null` (direct callers, tests) — or on a platform with no
+  /// in-process resolver to warm (web), where the default lookup is a
+  /// no-op stub — no pre-resolve runs. [hostResolver] is an injection
+  /// seam for that warming step; it defaults to the platform resolver,
+  /// is unused when [dnsBudget] is `null`, and (because it is a real
+  /// seam) forces warming to run even on a platform that would otherwise
+  /// skip it.
   factory HttpsSource(
     String url, {
     http.Client? client,
@@ -149,7 +152,11 @@ final class HttpsSource implements TimeSource {
 
   /// Warms the platform DNS cache for this source's host under the
   /// shared [DnsBudget] before the HTTPS request resolves the same host
-  /// internally (ADR 0008). No-op when no budget is configured.
+  /// internally (ADR 0008). No-op when no budget is configured, or on a
+  /// platform with no in-process resolver to warm (web): there the
+  /// default lookup is a no-op stub and `package:http` performs its own
+  /// DNS as part of `fetch`, so acquiring a permit would be pure
+  /// overhead. An injected [hostResolver] overrides this skip.
   ///
   /// The lookup is admitted cache-first: a warm host within the budget's
   /// cache TTL consumes no permit. The resolver timeout is clamped to the
@@ -168,6 +175,13 @@ final class HttpsSource implements TimeSource {
   Future<void> _preResolve() async {
     final budget = _dnsBudget;
     if (budget == null) return;
+    // On a platform with no in-process resolver (web), the default
+    // lookup is a no-op stub: there is no platform DNS cache for
+    // `package:http` to reuse, so warming would only burn a permit (and
+    // could throw DnsBudgetSaturation) for nothing. Skip it. A
+    // test-injected resolver is a real seam to exercise, so honour it
+    // regardless of platform.
+    if (_hostOverride == null && !kSupportsHttpsHostWarming) return;
     final host = Uri.parse(_url).host;
     final lookupTimeout = _minDuration(
       const Duration(seconds: 2),

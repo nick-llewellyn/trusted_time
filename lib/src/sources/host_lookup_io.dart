@@ -1,5 +1,11 @@
 import 'dart:io' show InternetAddress;
 
+/// Whether this platform exposes an in-process resolver whose cache the
+/// HTTPS pre-resolve step can warm. Always `true` here: `dart:io`'s
+/// [InternetAddress.lookup] populates the OS/platform DNS cache that
+/// `package:http`'s subsequent internal resolution then reuses.
+const bool kSupportsHttpsHostWarming = true;
+
 /// Resolves [host] to its address literals via the platform resolver.
 ///
 /// The returned IP strings are intentionally unused by the caller: the
