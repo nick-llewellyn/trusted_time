@@ -1466,10 +1466,11 @@ class _TrustStatusBar extends StatelessWidget {
   }
 }
 
-/// Manual override for `package:nts`'s per-call dnsConcurrencyCap.
-/// "Auto" forwards null and lets [SyncEngine] use its
-/// `ntsServers.length + 2` heuristic; toggling auto off enables a
-/// slider that lets the operator pick an explicit cap (4–32) and
+/// Manual override for the engine's unified DNS lookup budget
+/// (`TrustedTimeConfig.maxConcurrentDnsLookups`, ADR 0008). "Use
+/// default" forwards null and lets the engine apply its fixed
+/// `kDefaultMaxConcurrentDnsLookups` default; toggling it off enables
+/// a slider that lets the operator pick an explicit budget (4–32) and
 /// observe the effect on the [_DnsPoolStatsBar] counters during a
 /// run. Stateless — all state lives on _HomePageState; this widget
 /// just renders the snapshot and pipes gestures back through
