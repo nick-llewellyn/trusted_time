@@ -157,14 +157,14 @@ class _HomePageState extends State<HomePage> {
   NtsDnsPoolStats? _lastSliceDnsSnapshot;
   int? _lastSliceDnsOffset;
 
-  // Optional manual override for `package:nts`'s per-call
-  // dnsConcurrencyCap, forwarded as TrustedTimeConfig.
-  // ntsDnsConcurrencyCap on the next reconfigure. Null leaves the
-  // engine on its default `ntsServers.length + 2` auto-sizing.
+  // Optional manual override for the engine's unified DNS concurrency
+  // budget, forwarded as TrustedTimeConfig.maxConcurrentDnsLookups on
+  // the next reconfigure (ADR 0008). Null leaves the engine on its
+  // default budget (TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups).
   // Investigative knob for diagnosing DNS-pool starvation observed
   // via [_DnsPoolStatsBar] (rising `refused`) versus genuine
   // server-side timeouts.
-  int? _ntsDnsConcurrencyCapOverride;
+  int? _maxDnsLookupsOverride;
 
   final BenchmarkLogger _benchmarkLogger = BenchmarkLogger();
 
@@ -483,7 +483,7 @@ class _HomePageState extends State<HomePage> {
           ntpServers: const [],
           httpsSources: const [],
           ntsServers: shuffled,
-          ntsDnsConcurrencyCap: _ntsDnsConcurrencyCapOverride,
+          maxConcurrentDnsLookups: _maxDnsLookupsOverride,
           minimumQuorum: 2,
           minQuorumRatio: 0.4,
           refreshInterval: const Duration(seconds: 30),
@@ -732,19 +732,18 @@ class _HomePageState extends State<HomePage> {
                 continuousEnabled: _continuousSyncEnabled,
                 reconfiguring: _reconfiguring,
                 interCycleDelaySeconds: _interCycleDelaySeconds,
-                ntsDnsConcurrencyCapOverride: _ntsDnsConcurrencyCapOverride,
-                // Mirror the live engine's heuristic
-                // (ntsServers.length + 2) so the displayed cap
-                // reflects what the running engine is actually
-                // sized to — rotation mode reconfigures with
-                // 8-host slices regardless of the chip selection,
-                // so basing this on _selectedServers.length would
-                // surface the wrong number during a worldwide run.
-                autoSizedDnsCap: TrustedTime.config.ntsServers.length + 2,
+                maxDnsLookupsOverride: _maxDnsLookupsOverride,
+                // The unified DNS budget (ADR 0008) defaults to a fixed
+                // TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups
+                // rather than the former NTS-only `ntsServers.length + 2`
+                // auto-size, so the displayed default is stable across
+                // the chip selection and rotation slices.
+                autoSizedDnsCap:
+                    TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups,
                 logFilePath: _benchmarkLogger.filePath,
                 onRunWorldwide: _runWorldwideBenchmark,
                 onDnsCapOverrideChanged: (val) {
-                  setState(() => _ntsDnsConcurrencyCapOverride = val);
+                  setState(() => _maxDnsLookupsOverride = val);
                 },
                 onToggleServer: (host, picked) {
                   setState(() {
@@ -1112,7 +1111,7 @@ class _BenchmarkingPanel extends StatelessWidget {
     required this.continuousEnabled,
     required this.reconfiguring,
     required this.interCycleDelaySeconds,
-    required this.ntsDnsConcurrencyCapOverride,
+    required this.maxDnsLookupsOverride,
     required this.autoSizedDnsCap,
     required this.logFilePath,
     required this.onRunWorldwide,
@@ -1132,7 +1131,7 @@ class _BenchmarkingPanel extends StatelessWidget {
   final bool continuousEnabled;
   final bool reconfiguring;
   final int interCycleDelaySeconds;
-  final int? ntsDnsConcurrencyCapOverride;
+  final int? maxDnsLookupsOverride;
   final int autoSizedDnsCap;
   final String? logFilePath;
   final Future<void> Function() onRunWorldwide;
@@ -1227,12 +1226,13 @@ class _BenchmarkingPanel extends StatelessWidget {
         const SizedBox(height: 12),
         // DNS concurrency cap override. Investigative knob for
         // diagnosing whether `NtsError.timeout` failures are caused
-        // by the engine's auto-sized cap throttling DNS lookups
-        // (rising `refused` in the Section 6 stats bar) versus real
-        // server-side timeouts. Default is auto-size (null), which
-        // forwards SyncEngine's `ntsServers.length + 2` heuristic.
+        // by the engine's DNS budget throttling lookups (rising
+        // `refused` in the Section 6 stats bar) versus real
+        // server-side timeouts. Default is the unified budget (null),
+        // which forwards TrustedTimeConfig.maxConcurrentDnsLookups
+        // (default kDefaultMaxConcurrentDnsLookups). See ADR 0008.
         _DnsCapOverridePanel(
-          capOverride: ntsDnsConcurrencyCapOverride,
+          capOverride: maxDnsLookupsOverride,
           autoSized: autoSizedDnsCap,
           onChanged: onDnsCapOverrideChanged,
         ),
@@ -1502,10 +1502,10 @@ class _DnsCapOverridePanel extends StatelessWidget {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           dense: true,
-          title: const Text('Auto-size DNS concurrency cap'),
+          title: const Text('Use default DNS concurrency cap'),
           subtitle: Text(
             autoOn
-                ? 'Engine uses ntsServers.length + 2 (currently '
+                ? 'Engine uses its unified DNS budget (currently '
                     '$autoSized)'
                 : 'Manual override: $capOverride',
             style: const TextStyle(fontSize: 12),
