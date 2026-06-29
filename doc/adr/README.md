@@ -83,22 +83,6 @@ PR, three Accepted ADRs are known to diverge from current code:
 - **ADR 0002** decides on real headless background anchor refresh.
   Implementation is still in-progress (`trusted_time-e0v`) — the
   current native code performs only an HTTPS HEAD connectivity check.
-- **ADR 0008** decides on a SyncEngine-level
-  `maxConcurrentDnsLookups` semaphore governing all source kinds, a
-  one-version deprecation of `ntsDnsConcurrencyCap`, and
-  drop-on-saturation behaviour matching `maxLatency` semantics.
-  Mostly landed (`trusted_time-bnl`): the `maxConcurrentDnsLookups`
-  field, the shared `DnsBudget` semaphore (`lib/src/infra/dns_budget.dart`,
-  cache-first with drop-on-saturation), the `ntsDnsConcurrencyCap`
-  `@Deprecated` annotation + migration ladder, NTP in-process
-  governance, and NTS cap-forwarding are all in. **One gap remains:**
-  HTTPS DNS resolves inside `package:http` / `HttpClient`, which
-  exposes no in-process resolution seam, so HTTPS lookups are not yet
-  literally counted against the budget — they stay OS-resolver-governed,
-  matching the ADR's own "best-effort across the source-kind boundary"
-  caveat. A follow-up (`trusted_time-2od`) tracks pre-resolving HTTPS
-  hosts under the budget to warm the platform cache and close this
-  divergence.
 
 Notes on previously-listed divergences:
 
@@ -122,6 +106,25 @@ Notes on previously-listed divergences:
   lookup the ADR originally framed; that mechanism change is recorded
   in ADR 0007's 2026-06-27 postscript (the decision itself is
   unchanged) rather than by editing the original Accepted text.
+- **ADR 0008** is no longer listed as a code divergence. The
+  SyncEngine-level `maxConcurrentDnsLookups` semaphore, the shared
+  `DnsBudget` (`lib/src/infra/dns_budget.dart`, cache-first with
+  drop-on-saturation), the `ntsDnsConcurrencyCap` `@Deprecated`
+  annotation + migration ladder, NTP in-process governance, and NTS
+  cap-forwarding landed via `trusted_time-bnl`. The remaining HTTPS gap
+  is closed by `trusted_time-2od`: `HttpsSource`
+  (`lib/src/sources/time_sources.dart`) now pre-resolves its host
+  through the shared `DnsBudget` cache-first — with the same
+  drop-on-saturation and admission-window-clamp behaviour as NTP — to
+  warm the platform DNS cache before `package:http` performs its own
+  internal resolution, so HTTPS cold-start lookups draw on the unified
+  budget alongside NTP and NTS. Two best-effort tradeoffs are intentional
+  and documented at the call site: a double-resolve (the warming lookup
+  plus `package:http`'s internal one) and reliance on the platform DNS
+  cache TTL outliving the gap between them — consistent with the ADR's
+  own "best-effort across the source-kind boundary" caveat. HTTPS DNS is
+  not literally counted at the `HttpClient` layer (which still exposes no
+  in-process seam); the pre-resolve is the seam.
 
 Each divergence will be reconciled by either a follow-up implementing
 PR (closing the gap) or a timestamped postscript on the affected ADR
