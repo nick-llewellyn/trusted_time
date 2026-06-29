@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
@@ -15,6 +16,7 @@ import 'monotonic_clock.dart';
 import 'source_quality_tracker.dart';
 import 'sources/nts_auth_level.dart';
 import 'sources/time_sources.dart';
+import 'infra/dns_budget.dart';
 import 'infra/sync_observer.dart';
 import 'infra/consensus_cache.dart';
 
@@ -63,17 +65,48 @@ final class SyncEngine {
   final ConsensusCache? _cache;
   final MarzulloEngine _engine;
 
+  /// Shared DNS concurrency budget (ADR 0008).
+  ///
+  /// One budget governs all uncached host resolutions the engine can see
+  /// in-process: it is handed to every [NtpSource] and its value is
+  /// forwarded as each [NtsSource]'s `dnsConcurrencyCap`. Built lazily
+  /// from [TrustedTimeConfig.effectiveMaxConcurrentDnsLookups] so the
+  /// migration ladder (and its one-time deprecation warning) runs exactly
+  /// once, the first time the source list is materialised.
+  late final DnsBudget _dnsBudget = _buildDnsBudget();
+
+  /// Process-wide guard so the [ntsDnsConcurrencyCap] deprecation notice
+  /// is emitted at most once regardless of how many engines are built.
+  static bool _deprecationWarned = false;
+
   /// Lazily-initialized list of authoritative time sources.
   ///
-  /// NTS sources receive a `dnsConcurrencyCap` of
-  /// `ntsServers.length + 2` (or the explicit
-  /// [TrustedTimeConfig.ntsDnsConcurrencyCap] override when set) so the
-  /// per-cycle burst of resolutions stays under the `package:nts`
-  /// process-wide pool ceiling. The `+ 2` margin absorbs incidental
-  /// concurrent resolutions (e.g., warming overlapping with the start
-  /// of a cycle) without forcing every caller to think about cap
-  /// sizing.
+  /// DNS concurrency is governed by the shared [_dnsBudget] (ADR 0008):
+  /// NTP sources resolve through it cache-first, and its value is
+  /// forwarded as each NTS source's `dnsConcurrencyCap` so all source
+  /// kinds draw on one unified cold-start budget rather than the former
+  /// NTS-only `ntsServers.length + 2` auto-size.
   late final List<TimeSource> _sources = _buildSources();
+
+  /// Resolves the unified DNS budget and emits the one-time
+  /// [ntsDnsConcurrencyCap] deprecation warning when the legacy NTS-only
+  /// knob is what supplies the value (ADR 0008 migration).
+  DnsBudget _buildDnsBudget() {
+    final cap = _config.effectiveMaxConcurrentDnsLookups;
+    // ignore: deprecated_member_use_from_same_package
+    final legacyCap = _config.ntsDnsConcurrencyCap;
+    if (_config.maxConcurrentDnsLookups == null &&
+        legacyCap != null &&
+        !_deprecationWarned) {
+      _deprecationWarned = true;
+      debugPrint(
+        '[TrustedTime] TrustedTimeConfig.ntsDnsConcurrencyCap is '
+        'deprecated; use maxConcurrentDnsLookups. Honouring the legacy '
+        'value ($cap) as the unified DNS budget. See ADR 0008.',
+      );
+    }
+    return DnsBudget(cap, acquireTimeout: _config.maxLatency);
+  }
 
   /// Builds the authoritative source list for this engine.
   ///
@@ -88,15 +121,16 @@ final class SyncEngine {
   /// resolved mode is then reused for every [NtsSource].
   List<TimeSource> _buildSources() {
     final trustMode = _config.effectiveTrustMode;
+    final dnsCap = _config.effectiveMaxConcurrentDnsLookups;
     return [
-      for (final host in _config.ntpServers) NtpSource(host),
+      for (final host in _config.ntpServers)
+        NtpSource(host, dnsBudget: _dnsBudget),
       for (final url in _config.httpsSources) HttpsSource(url),
       for (final host in _config.ntsServers)
         NtsSource(
           host,
           port: _config.ntsPort,
-          dnsConcurrencyCap:
-              _config.ntsDnsConcurrencyCap ?? _config.ntsServers.length + 2,
+          dnsConcurrencyCap: dnsCap,
           maxLatency: _config.maxLatency,
           trustMode: trustMode,
           customRoots: _config.customRootCerts.isEmpty

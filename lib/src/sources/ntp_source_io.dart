@@ -6,6 +6,7 @@ import '../data/asn_resolver.dart';
 import '../domain/time_sample.dart';
 import '../domain/time_source.dart';
 import '../domain/time_interval.dart';
+import '../infra/dns_budget.dart';
 
 /// Resolves [host] to its addresses. Injectable so tests can supply a
 /// deterministic mapping without real DNS.
@@ -26,14 +27,21 @@ final class NtpSource implements TimeSource {
   /// respectively. All default to `null` and the shared defaults are
   /// resolved lazily via getters so the constructor stays `const` for
   /// the common (no-override) call site.
+  ///
+  /// [dnsBudget] is the shared SyncEngine-level DNS concurrency budget
+  /// (ADR 0008). When supplied, host resolution is admitted through it
+  /// cache-first; when `null` (direct callers, tests) resolution runs
+  /// ungoverned.
   const NtpSource(
     this._host, {
     AsnResolver? asnResolver,
     HostResolver? hostResolver,
     OffsetFetcher? offsetFetcher,
+    DnsBudget? dnsBudget,
   }) : _asnOverride = asnResolver,
        _hostOverride = hostResolver,
-       _offsetOverride = offsetFetcher;
+       _offsetOverride = offsetFetcher,
+       _dnsBudget = dnsBudget;
 
   /// Shared across all NTP sources so the bundled ASN table is
   /// decompressed and held in memory exactly once per isolate.
@@ -43,6 +51,7 @@ final class NtpSource implements TimeSource {
   final AsnResolver? _asnOverride;
   final HostResolver? _hostOverride;
   final OffsetFetcher? _offsetOverride;
+  final DnsBudget? _dnsBudget;
 
   AsnResolver get _asn => _asnOverride ?? _sharedAsn;
   HostResolver get _resolveHost => _hostOverride ?? InternetAddress.lookup;
@@ -91,13 +100,31 @@ final class NtpSource implements TimeSource {
   /// and the NTP exchange.
   Future<InternetAddress?> _resolveFirst() async {
     try {
-      final addrs = await _resolveHost(
-        _host,
-      ).timeout(const Duration(seconds: 2));
+      final addrs = await _lookupAddresses();
       return addrs.isEmpty ? null : addrs.reduce(_preferred);
+    } on DnsBudgetSaturation {
+      // ADR 0008 answer 5: a lookup that cannot even acquire a DNS slot
+      // within the unified budget is dropped from this cycle exactly like
+      // a maxLatency timeout. Propagate so SyncEngine's per-source
+      // failure path arms the standard exponential cooldown, rather than
+      // silently falling back to the bare host as for an ordinary miss.
+      rethrow;
     } catch (_) {
       return null;
     }
+  }
+
+  /// Resolves [_host], routed through the shared [DnsBudget] when one is
+  /// configured. The budget consults its cache first (a hit never
+  /// consumes a slot) and otherwise admits the lookup under the unified
+  /// concurrency cap, throwing [DnsBudgetSaturation] when no slot frees
+  /// up in time. Without a budget the lookup runs directly, preserving
+  /// the behaviour of direct (non-engine) callers and tests.
+  Future<List<InternetAddress>> _lookupAddresses() {
+    Future<List<InternetAddress>> lookup() =>
+        _resolveHost(_host).timeout(const Duration(seconds: 2));
+    final budget = _dnsBudget;
+    return budget == null ? lookup() : budget.guard(_host, lookup);
   }
 
   /// Deterministic tiebreak between two resolved addresses: prefer IPv4,

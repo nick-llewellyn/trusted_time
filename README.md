@@ -283,6 +283,7 @@ void main() {
 | `refreshInterval` | `Duration` | `30m` | How often to re-sync in the foreground |
 | `backgroundSyncInterval` | `Duration?` | `null` | If set, enables background sync at this interval |
 | `maxLatency` | `Duration` | `4s` | Per-source query timeout |
+| `maxConcurrentDnsLookups` | `int?` | `null` → `6` | Cold-start ceiling on concurrent *uncached* DNS lookups, shared across source kinds (NTP governed in-process; forwarded to NTS). Supersedes the deprecated NTS-only `ntsDnsConcurrencyCap` — see [ADR 0008](doc/adr/0008-unified-dns-tls-budget.md) |
 | `minimumQuorum` | `int` | `2` | Minimum sources required for consensus |
 | `minQuorumRatio` | `double` | `0.6` | Fraction of responding sources required |
 | `minGroupCount` | `int` | `2` | Minimum distinct provider groups required |
