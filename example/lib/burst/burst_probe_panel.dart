@@ -38,10 +38,12 @@ Future<int?> defaultBatteryProbe() async {
 /// touching the network or the NTS-KE handshake.
 ///
 /// The default factory [defaultNtsBurstClientFactory] mints a
-/// production [NtsBurstClient]; the panel caches the returned instance
-/// per `(host, port)` (see [_BurstProbePanelState._clientFor]) so a
-/// custom factory is consulted once per distinct target, not once per
-/// burst.
+/// production [NtsBurstClient]; the panel holds a single
+/// most-recently-used client (see [_BurstProbePanelState._clientFor]),
+/// so consecutive bursts against an unchanged target reuse it rather
+/// than re-consulting the factory each burst. Changing target — which
+/// includes switching away and back — drops the cached client and
+/// re-consults the factory.
 typedef NtsBurstClientFactory = NtsBurstClient Function(String host, int port);
 
 /// Default [NtsBurstClientFactory] backed by `package:nts`. Constructs
@@ -98,9 +100,11 @@ class BurstProbePanel extends StatefulWidget {
   /// selected `(host, ntsKePort)`. Defaults to
   /// [defaultNtsBurstClientFactory]; widget tests inject a fake that
   /// returns an [NtsBurstClient.forTest] so the burst flow can be
-  /// driven deterministically without network I/O. The result is
-  /// cached per `(host, port)` (see [_BurstProbePanelState._clientFor]),
-  /// so the factory is consulted once per distinct target.
+  /// driven deterministically without network I/O. The result is held
+  /// as a single most-recently-used client (see
+  /// [_BurstProbePanelState._clientFor]), so consecutive bursts against
+  /// an unchanged target reuse it; changing target re-consults the
+  /// factory.
   final NtsBurstClientFactory clientFactory;
 
   @override

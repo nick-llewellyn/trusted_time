@@ -98,10 +98,12 @@ NtsBurstClient testClient({
 /// is still structurally assignable to `clientFactory` at the
 /// widget-test call site.
 ///
-/// [onCreate] fires once per distinct `(host, port)` the panel asks
-/// for, letting a test assert the panel's per-target client caching
-/// (the factory should not be re-consulted for repeated bursts against
-/// the same host).
+/// [onCreate] fires whenever the panel consults the factory: once for a
+/// run of consecutive bursts against an unchanged `(host, port)`, and
+/// again whenever the target changes (the panel keeps only a single
+/// most-recently-used client, so switching away and back re-consults).
+/// This lets a test assert that repeated bursts against the same host
+/// reuse the cached client rather than rebuilding it each burst.
 NtsBurstClient Function(String host, int port) testClientFactory({
   required int Function() nowFn,
   required List<int> rtts,
