@@ -2,7 +2,6 @@ import 'dart:math';
 
 import 'package:nts/nts.dart' as nts;
 import 'package:trusted_time_example/burst/burst_engine.dart';
-import 'package:trusted_time_example/burst/burst_probe_panel.dart';
 
 /// Constructs an [NtsBurstClient] in test mode whose query callback
 /// returns a deterministic [nts.NtsTimeSample] for each issue index.
@@ -84,19 +83,26 @@ NtsBurstClient testClient({
   );
 }
 
-/// Builds an [NtsBurstClientFactory] suitable for injecting into a
-/// [BurstProbePanel] widget test. Each invocation forwards the
-/// panel-selected `(host, port)` into [testClient] so the resulting
-/// [NtsBurstClient.forTest] reports the dropdown's host on
-/// [BurstResult.host], while the burst behaviour is driven by the same
-/// deterministic [rtts] / [serverOffsetMicros] fixtures as the engine
-/// unit tests.
+/// Builds a burst-client factory suitable for injecting into a
+/// `BurstProbePanel` widget test via its `clientFactory` seam. Each
+/// invocation forwards the panel-selected `(host, port)` into
+/// [testClient] so the resulting [NtsBurstClient.forTest] reports the
+/// dropdown's host on [BurstResult.host], while the burst behaviour is
+/// driven by the same deterministic [rtts] / [serverOffsetMicros]
+/// fixtures as the engine unit tests.
+///
+/// Returns the bare `NtsBurstClient Function(String, int)` rather than
+/// the panel's `NtsBurstClientFactory` typedef so this helper — shared
+/// with the non-widget engine tests — doesn't drag the Flutter / UI
+/// layer (and `battery_plus`) into their dependency graph. The closure
+/// is still structurally assignable to `clientFactory` at the
+/// widget-test call site.
 ///
 /// [onCreate] fires once per distinct `(host, port)` the panel asks
 /// for, letting a test assert the panel's per-target client caching
 /// (the factory should not be re-consulted for repeated bursts against
 /// the same host).
-NtsBurstClientFactory testClientFactory({
+NtsBurstClient Function(String host, int port) testClientFactory({
   required int Function() nowFn,
   required List<int> rtts,
   required int serverOffsetMicros,

@@ -157,6 +157,19 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
     if (_selectedHost != null && !hosts.contains(_selectedHost)) {
       _selectedHost = null;
     }
+    // Invalidate the cached client when the injected factory or the
+    // target port changes, so the next burst is built by the current
+    // factory rather than a stale one. Without this, a parent rebuild
+    // that swaps clientFactory (hot reload, or a widget test swapping
+    // fakes for production) would keep reusing the old factory's client
+    // for an unchanged host. A port change is also caught by the
+    // (host, port) key in _clientFor, but clearing here keeps the two
+    // invalidation paths consistent.
+    if (!identical(oldWidget.clientFactory, widget.clientFactory) ||
+        oldWidget.ntsKePort != widget.ntsKePort) {
+      _cachedClient = null;
+      _cachedClientKey = null;
+    }
   }
 
   /// Returns the cached [NtsBurstClient] for `(host, port)`, obtaining

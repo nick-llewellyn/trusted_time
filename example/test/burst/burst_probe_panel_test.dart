@@ -31,17 +31,26 @@ Widget _harness({
 }
 
 /// Taps the Run Burst button and pumps discrete frames until the
-/// in-flight indicator clears. Deliberately avoids `pumpAndSettle`:
-/// the running button hosts a [CircularProgressIndicator] whose
-/// indefinite animation would make `pumpAndSettle` time out. A
-/// no-delay parallel burst plus the two battery-probe microtasks
-/// resolve within a handful of frames.
+/// in-flight indicator clears, then asserts the burst actually
+/// finished. Deliberately avoids `pumpAndSettle`: the running button
+/// hosts a [CircularProgressIndicator] whose indefinite animation would
+/// make `pumpAndSettle` time out. A no-delay parallel burst plus the
+/// two battery-probe microtasks resolve in a handful of frames; the
+/// generous upper bound only guards against slower CI or an extra await
+/// creeping into the burst path, and the trailing expectation turns
+/// "still running" into a deterministic failure rather than a silent
+/// early return mid-flight.
 Future<void> _runBurstAndSettle(WidgetTester tester) async {
   await tester.tap(find.text('Run Burst'));
   await tester.pump(); // commit running = true
-  for (var i = 0; i < 10 && find.text('Running…').evaluate().isNotEmpty; i++) {
-    await tester.pump(const Duration(milliseconds: 1));
+  for (var i = 0; i < 200 && find.text('Running…').evaluate().isNotEmpty; i++) {
+    await tester.pump(const Duration(milliseconds: 5));
   }
+  expect(
+    find.text('Running…'),
+    findsNothing,
+    reason: 'burst did not finish within the pump budget',
+  );
 }
 
 void main() {
@@ -368,6 +377,53 @@ void main() {
         await _runBurstAndSettle(tester);
 
         expect(created, ['time.cloudflare.com:4460']);
+      },
+    );
+
+    testWidgets(
+      'rebuilding with a new clientFactory invalidates the cached client '
+      'so the next burst uses the updated factory',
+      (tester) async {
+        // Complements the caching test above: when the parent rebuilds
+        // the panel with a *different* factory (hot reload, or a test
+        // swapping fakes), didUpdateWidget must drop the cached client
+        // so the next burst is built by the new factory rather than the
+        // stale one. Without that invalidation `second` stays empty.
+        final first = <String>[];
+        final second = <String>[];
+
+        Widget build(NtsBurstClientFactory factory) => _harness(
+              hosts: const ['time.cloudflare.com'],
+              batteryProbe: () async => 50,
+              clientFactory: factory,
+            );
+
+        await tester.pumpWidget(
+          build(
+            testClientFactory(
+              nowFn: () => 1000000000,
+              rtts: const [10000, 20000, 30000, 40000],
+              serverOffsetMicros: 5000,
+              onCreate: (host, port) => first.add('$host:$port'),
+            ),
+          ),
+        );
+        await _runBurstAndSettle(tester);
+        expect(first, ['time.cloudflare.com:4460']);
+
+        await tester.pumpWidget(
+          build(
+            testClientFactory(
+              nowFn: () => 1000000000,
+              rtts: const [10000, 20000, 30000, 40000],
+              serverOffsetMicros: 5000,
+              onCreate: (host, port) => second.add('$host:$port'),
+            ),
+          ),
+        );
+        await _runBurstAndSettle(tester);
+
+        expect(second, ['time.cloudflare.com:4460']);
       },
     );
   });
