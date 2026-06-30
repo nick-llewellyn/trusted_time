@@ -30,6 +30,28 @@ Future<int?> defaultBatteryProbe() async {
   }
 }
 
+/// Factory that builds the [NtsBurstClient] a [BurstProbePanel] fires
+/// each burst through, given the operator-selected `host` and the
+/// panel's [BurstProbePanel.ntsKePort]. Injected so widget tests can
+/// swap the real `package:nts`-backed client for a deterministic fake,
+/// exercising the battery-probe / burst-flow integration without
+/// touching the network or the NTS-KE handshake.
+///
+/// The default factory [defaultNtsBurstClientFactory] mints a
+/// production [NtsBurstClient]; the panel holds a single
+/// most-recently-used client (see [_BurstProbePanelState._clientFor]),
+/// so consecutive bursts against an unchanged target reuse it rather
+/// than re-consulting the factory each burst. Changing target — which
+/// includes switching away and back — drops the cached client and
+/// re-consults the factory.
+typedef NtsBurstClientFactory = NtsBurstClient Function(String host, int port);
+
+/// Default [NtsBurstClientFactory] backed by `package:nts`. Constructs
+/// a long-lived [NtsBurstClient] whose cached NTS-KE session and
+/// freshly-rotated cookies are reused across same-host bursts.
+NtsBurstClient defaultNtsBurstClientFactory(String host, int port) =>
+    NtsBurstClient(spec: nts.NtsServerSpec(host: host, port: port));
+
 /// Operator-driven UI for firing a single per-host NTS burst against a
 /// chosen server with configurable size and inter-burst spacing mode,
 /// surfacing the [BurstResult] aggregated by [NtsBurstClient].
@@ -52,6 +74,7 @@ class BurstProbePanel extends StatefulWidget {
     required this.candidateHosts,
     this.ntsKePort = 4460,
     this.batteryProbe = defaultBatteryProbe,
+    this.clientFactory = defaultNtsBurstClientFactory,
   });
 
   /// Hosts the dropdown will offer. Typically the live engine's NTS
@@ -72,6 +95,17 @@ class BurstProbePanel extends StatefulWidget {
   /// tests inject a deterministic stub so they don't depend on the
   /// underlying platform plugin.
   final BatteryProbe batteryProbe;
+
+  /// Factory the panel calls to obtain the [NtsBurstClient] for the
+  /// selected `(host, ntsKePort)`. Defaults to
+  /// [defaultNtsBurstClientFactory]; widget tests inject a fake that
+  /// returns an [NtsBurstClient.forTest] so the burst flow can be
+  /// driven deterministically without network I/O. The result is held
+  /// as a single most-recently-used client (see
+  /// [_BurstProbePanelState._clientFor]), so consecutive bursts against
+  /// an unchanged target reuse it; changing target re-consults the
+  /// factory.
+  final NtsBurstClientFactory clientFactory;
 
   @override
   State<BurstProbePanel> createState() => _BurstProbePanelState();
@@ -127,19 +161,31 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
     if (_selectedHost != null && !hosts.contains(_selectedHost)) {
       _selectedHost = null;
     }
+    // Invalidate the cached client when the injected factory or the
+    // target port changes, so the next burst is built by the current
+    // factory rather than a stale one. Without this, a parent rebuild
+    // that swaps clientFactory (hot reload, or a widget test swapping
+    // fakes for production) would keep reusing the old factory's client
+    // for an unchanged host. A port change is also caught by the
+    // (host, port) key in _clientFor, but clearing here keeps the two
+    // invalidation paths consistent.
+    if (!identical(oldWidget.clientFactory, widget.clientFactory) ||
+        oldWidget.ntsKePort != widget.ntsKePort) {
+      _cachedClient = null;
+      _cachedClientKey = null;
+    }
   }
 
-  /// Returns the cached [NtsBurstClient] for `(host, port)`,
-  /// constructing and caching a new one if the target changed since
-  /// the last call. Caching across same-target calls is what keeps
-  /// repeated bursts in this panel honest: without it every run pays
-  /// the full NTS-KE handshake cost in front of the burst window.
+  /// Returns the cached [NtsBurstClient] for `(host, port)`, obtaining
+  /// a new one from [BurstProbePanel.clientFactory] if the target
+  /// changed since the last call. Caching across same-target calls is
+  /// what keeps repeated bursts in this panel honest: without it every
+  /// run pays the full NTS-KE handshake cost in front of the burst
+  /// window.
   NtsBurstClient _clientFor(String host, int port) {
     final key = '$host:$port';
     if (_cachedClient == null || _cachedClientKey != key) {
-      _cachedClient = NtsBurstClient(
-        spec: nts.NtsServerSpec(host: host, port: port),
-      );
+      _cachedClient = widget.clientFactory(host, port);
       _cachedClientKey = key;
     }
     return _cachedClient!;
