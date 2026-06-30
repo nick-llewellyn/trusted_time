@@ -34,10 +34,9 @@ Widget _harness({
 /// hosts a [CircularProgressIndicator] whose indefinite animation would
 /// make `pumpAndSettle` time out. A no-delay parallel burst resolves
 /// in a handful of frames; the generous upper bound only guards
-/// against slower CI or an extra await
-/// creeping into the burst path, and the trailing expectation turns
-/// "still running" into a deterministic failure rather than a silent
-/// early return mid-flight.
+/// against slower CI or an extra await creeping into the burst path,
+/// and the trailing expectation turns "still running" into a
+/// deterministic failure rather than a silent early return mid-flight.
 Future<void> _runBurstAndSettle(WidgetTester tester) async {
   await tester.tap(find.text('Run Burst'));
   await tester.pump(); // commit running = true
@@ -306,6 +305,33 @@ void main() {
         expect(find.text('4 (4 ok, 0 failed)'), findsOneWidget);
         // hasResult branch rendered the aggregated stats.
         expect(find.text('Min RTT'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'a whole-burst failure renders the failure message',
+      (tester) async {
+        await tester.pumpWidget(
+          _harness(
+            hosts: const ['mmo1.nts.netnod.se'],
+            clientFactory: testClientFactory(
+              nowFn: () => 1000000000,
+              // Every query throws, so the burst returns with no
+              // successful samples (hasResult == false).
+              rtts: const [-1, -1, -1, -1],
+              serverOffsetMicros: 5000,
+            ),
+          ),
+        );
+
+        await _runBurstAndSettle(tester);
+
+        expect(
+          find.text('Whole burst failed; no aggregated stats available.'),
+          findsOneWidget,
+        );
+        // Count line still reflects the failures.
+        expect(find.text('4 (0 ok, 4 failed)'), findsOneWidget);
       },
     );
 
