@@ -30,8 +30,6 @@ dependencies:
   cupertino_icons: ^1.0.8
   path_provider: ^2.1.5
   nts: ^5.0.0
-  battery_plus: ^7.0.0
-
 dev_dependencies:
   integration_test:
     sdk: flutter

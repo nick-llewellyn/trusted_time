@@ -8,13 +8,12 @@ import 'burst_test_helpers.dart';
 /// (Slider, DropdownButtonFormField, etc.) have the inherited theme /
 /// directionality they require for layout.
 ///
-/// [batteryProbe] and [clientFactory] default to the production
-/// implementations so the form-state tests stay untouched; the
-/// burst-flow tests inject deterministic fakes to drive a burst end to
-/// end without the `battery_plus` method channel or the NTS network.
+/// [clientFactory] defaults to the production implementation so the
+/// form-state tests stay untouched; the burst-flow tests inject a
+/// deterministic fake to drive a burst end to end without the NTS
+/// network.
 Widget _harness({
   required Iterable<String> hosts,
-  BatteryProbe? batteryProbe,
   NtsBurstClientFactory? clientFactory,
 }) {
   return MaterialApp(
@@ -22,7 +21,6 @@ Widget _harness({
       body: SingleChildScrollView(
         child: BurstProbePanel(
           candidateHosts: hosts,
-          batteryProbe: batteryProbe ?? defaultBatteryProbe,
           clientFactory: clientFactory ?? defaultNtsBurstClientFactory,
         ),
       ),
@@ -34,12 +32,11 @@ Widget _harness({
 /// in-flight indicator clears, then asserts the burst actually
 /// finished. Deliberately avoids `pumpAndSettle`: the running button
 /// hosts a [CircularProgressIndicator] whose indefinite animation would
-/// make `pumpAndSettle` time out. A no-delay parallel burst plus the
-/// two battery-probe microtasks resolve in a handful of frames; the
-/// generous upper bound only guards against slower CI or an extra await
-/// creeping into the burst path, and the trailing expectation turns
-/// "still running" into a deterministic failure rather than a silent
-/// early return mid-flight.
+/// make `pumpAndSettle` time out. A no-delay parallel burst resolves
+/// in a handful of frames; the generous upper bound only guards
+/// against slower CI or an extra await creeping into the burst path,
+/// and the trailing expectation turns "still running" into a
+/// deterministic failure rather than a silent early return mid-flight.
 Future<void> _runBurstAndSettle(WidgetTester tester) async {
   await tester.tap(find.text('Run Burst'));
   await tester.pump(); // commit running = true
@@ -283,16 +280,11 @@ void main() {
 
     testWidgets(
       'runs a burst through the injected client and surfaces aggregated '
-      'stats with a bracketing battery delta',
+      'stats',
       (tester) async {
-        // Two distinct battery readings so the panel's before/after
-        // snapshots produce a non-zero, signed delta (80% → 78%).
-        final batteryLevels = <int>[80, 78];
-        var batteryCall = 0;
         await tester.pumpWidget(
           _harness(
             hosts: const ['time.cloudflare.com'],
-            batteryProbe: () async => batteryLevels[batteryCall++],
             clientFactory: testClientFactory(
               nowFn: () => 1000000000,
               rtts: const [10000, 20000, 30000, 40000],
@@ -313,19 +305,15 @@ void main() {
         expect(find.text('4 (4 ok, 0 failed)'), findsOneWidget);
         // hasResult branch rendered the aggregated stats.
         expect(find.text('Min RTT'), findsOneWidget);
-        // Battery delta brackets the burst window.
-        expect(find.text('-2 pp (80% → 78%)'), findsOneWidget);
       },
     );
 
     testWidgets(
-      'a whole-burst failure renders the budget placeholders and still '
-      'shows a battery delta',
+      'a whole-burst failure renders the failure message',
       (tester) async {
         await tester.pumpWidget(
           _harness(
             hosts: const ['mmo1.nts.netnod.se'],
-            batteryProbe: () async => 55,
             clientFactory: testClientFactory(
               nowFn: () => 1000000000,
               // Every query throws, so the burst returns with no
@@ -342,12 +330,8 @@ void main() {
           find.text('Whole burst failed; no aggregated stats available.'),
           findsOneWidget,
         );
-        // Radio window / DNS phase / KE handshake all degrade to the
-        // "no successful queries" placeholder.
-        expect(find.text('(no successful queries)'), findsNWidgets(3));
-        // Battery delta is sampled by the panel itself, so it brackets
-        // the window even when every query failed (0 pp here).
-        expect(find.text('0 pp (55% → 55%)'), findsOneWidget);
+        // Count line still reflects the failures.
+        expect(find.text('4 (0 ok, 4 failed)'), findsOneWidget);
       },
     );
 
@@ -363,7 +347,6 @@ void main() {
         await tester.pumpWidget(
           _harness(
             hosts: const ['time.cloudflare.com'],
-            batteryProbe: () async => 50,
             clientFactory: testClientFactory(
               nowFn: () => 1000000000,
               rtts: const [10000, 20000, 30000, 40000],
@@ -394,7 +377,6 @@ void main() {
 
         Widget build(NtsBurstClientFactory factory) => _harness(
               hosts: const ['time.cloudflare.com'],
-              batteryProbe: () async => 50,
               clientFactory: factory,
             );
 
