@@ -771,6 +771,10 @@ final class TrustedTimeImpl {
   @visibleForTesting
   int get debugValidateCycleCount => _validateCycleCount;
 
+  /// Whether the desktop in-isolate periodic background-sync timer is armed.
+  @visibleForTesting
+  bool get debugDesktopBgTimerActive => _desktopBgTimer != null;
+
   /// Drives the foreground-resume validate path deterministically in
   /// tests without a real [WidgetsBinding] lifecycle dispatch. [elapsed]
   /// overrides the monotonic reading used to measure background duration.
