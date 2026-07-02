@@ -17,19 +17,20 @@ Implementation that does not uphold this contract is a defect. This specificatio
 
 ## Implementation status
 
-This contract is written in the present tense to describe the **target end state** under [ADR 0007](../adr/0007-hybrid-trust-model.md). Some guarantees are live on the current trunk; others are the acceptance criteria for the tiered-trust work tracked as `trusted_time-m8t`. Where the two diverge, the divergence is flagged inline with a **[Target — `trusted_time-m8t`]** marker.
+This contract is written in the present tense to describe the **target end state** under [ADR 0007](../adr/0007-hybrid-trust-model.md). As of the tiered-trust work landing in PRs #46–#49 (trust-mode config surface through public-API tightening), the contract's guarantees are live on trunk. The single remaining divergence — the cold-start Pre-Sync rescue — is flagged inline with a **[Target — `trusted_time-m8t`]** marker.
 
 **Live on trunk today:**
 
 - `NtsAuthLevel` is the binary `{verified, none}` shape; the pre-2.1.0 `advisory` value is removed.
 - `requireSecure: true` fails closed: `getTime` throws `TrustedTimeSecurityException` when the current anchor is not `verified`.
-- `package:nts` is pinned at `^5.2.0` (PR #44). The trust primitives the target consumes — `TrustMode.bundledOnly`, `TrustMode.custom`, and an `NtsClient` `customRoots` parameter — were introduced in `nts 5.1.0` (PR #42) and are wired into `TrustedTimeConfig` as of `trusted_time-rjt`: `usePlatformTrust` and `customRootCerts` resolve through `effectiveTrustMode` to `bundledOnly` (the effective default), `platformOnly`, or `custom`.
+- `package:nts` is pinned at `^5.2.0` (PR #44). The trust primitives this contract consumes — `TrustMode.bundledOnly`, `TrustMode.custom`, and an `NtsClient` `customRoots` parameter — were introduced in `nts 5.1.0` (PR #42) and are wired into `TrustedTimeConfig` as of `trusted_time-rjt`: `usePlatformTrust` and `customRootCerts` resolve through `effectiveTrustMode` to `bundledOnly` (the effective default), `platformOnly`, or `custom`.
+- Per-sample `TrustBackend → NtsAuthLevel` mapping (PR #47). `NtsSource` maps each handshake's reported backend via `authLevelForTrustBackend`: `webpkiRoots` and `custom` yield `verified`; `platform` (and the Android hybrid fallback) yield `none`.
+- Tier-aware truth-box admission in `MarzulloEngine` (PR #48). `verified` samples define the truth box; `none` samples are admitted to consensus only when their intervals intersect it. The legacy weakest-link reduction is retired.
+- The `degradedTier` `IntegrityEvent` reason (PR #48). A member of `TamperReason`, emitted when a cycle's Tier 1 quorum cannot form.
 
 **Target — `trusted_time-m8t` (not yet on trunk):**
 
-- Per-sample `TrustBackend → NtsAuthLevel` mapping. Today `NtsSource` labels **every** successful NTS sample `verified`, regardless of which trust store authenticated the chain.
-- Tier-aware truth-box admission in `MarzulloEngine`. Today the engine uses a **weakest-link** reduction: a single `none` participant collapses the consensus `authLevel` to `none`. The truth-box model — NTS defines the box, NTP/HTTPS are admitted only when they intersect it — is the target, not current behaviour.
-- The `degradedTier` `IntegrityEvent` reason. Not yet a member of `TamperReason`.
+- The cold-start Pre-Sync clock-skew rescue (see [Pre-Sync rescue](#pre-sync-rescue-target)). The `verificationTimeMs` primitive is present in the pinned `package:nts`; the engine orchestration that supplies it is not yet implemented.
 
 ## Definitions
 
@@ -90,7 +91,7 @@ These properties are orthogonal and compose at the consensus layer:
 
 - An authenticated sample whose clock is wrong appears as an outlier in the Marzullo sweep and is filtered out.
 - Multiple authenticated samples that agree define a credible time interval.
-- An unauthenticated sample whose value is correct still cannot be admitted to the truth box. Per ADR 0007's tier-aware admission, it may be admitted to the *wider* consensus only if its interval intersects the authenticated truth box, but it cannot itself anchor that box. **[Target — `trusted_time-m8t`]** On the current trunk the engine instead applies a weakest-link reduction: an unauthenticated participant downgrades the consensus `authLevel` to `none` rather than being intersection-gated. The intersection model described here is the ADR 0007 target.
+- An unauthenticated sample whose value is correct still cannot be admitted to the truth box. Per ADR 0007's tier-aware admission, it may be admitted to the *wider* consensus only if its interval intersects the authenticated truth box, but it cannot itself anchor that box. This is the admission model `MarzulloEngine` implements (PR #48).
 
 The library's authentication contract is the precondition for the accuracy contract. Without authenticated samples, there is no truth box; without a truth box, no accuracy guarantee can be made. This is the architectural intent of ADR 0007.
 
@@ -139,7 +140,7 @@ The library's public API surfaces this contract through several mechanisms.
 
 Consumer indicates that the returned time must be cryptographically authenticated. The library is required to:
 
-- Return a time value only if the current anchor is `verified`. **On trunk today** this requires the anchor's `ConsensusResult.authLevel` to be `verified`, which under the engine's weakest-link reduction means *every* quorum participant was `verified` — a single `none` participant collapses the anchor to `none`. **[Target — `trusted_time-m8t`]** Under ADR 0007 this tightens to a truth box *defined by* `verified` samples, with Tier 2/3 samples admitted only when their intervals intersect it.
+- Return a time value only if the current anchor is `verified` — that is, the anchor's `ConsensusResult.authLevel` is `verified`, which under ADR 0007's truth-box admission means the cycle's truth box was *defined by* `verified` samples, with Tier 2/3 samples admitted only when their intervals intersected it.
 - Throw `TrustedTimeSecurityException` if no `verified` sample is available.
 - Never silently substitute a `none` sample's value when `requireSecure: true`.
 
@@ -153,12 +154,10 @@ This is the relaxed-mode path and is appropriate for consumers whose use case is
 
 ### `TrustedTime.authLevel`
 
-Consumer can inspect the authentication level of the current anchor without committing to a fetch. The value is the active anchor's `ConsensusResult.authLevel`. **On trunk today** that is the *weakest-link* reduction across the quorum:
+Consumer can inspect the authentication level of the current anchor without committing to a fetch. The value is the active anchor's `ConsensusResult.authLevel`, which under ADR 0007's truth-box admission reflects a Tier-1-defined box:
 
-- `NtsAuthLevel.verified` only when **every** participating sample is `verified`.
-- `NtsAuthLevel.none` otherwise — any single unauthenticated participant downgrades the anchor.
-
-**[Target — `trusted_time-m8t`]** Under ADR 0007's truth-box admission the level instead reflects a Tier-1-defined box: `verified` when the box was anchored by NTS (`verified`) samples and held per the intersection rules above.
+- `NtsAuthLevel.verified` when the cycle's truth box was anchored by NTS (`verified`) samples and held per the intersection rules above.
+- `NtsAuthLevel.none` when no truth box could form (a degraded cycle) — regardless of how many unauthenticated samples participated.
 
 ### `TrustedTime.isSecure`
 
@@ -166,17 +165,17 @@ Consumer can inspect whether the current anchor is cryptographically authenticat
 
 ### Integrity-event stream
 
-**[Target — `trusted_time-m8t`]** The library will emit an `IntegrityEvent` of reason `degradedTier` when a sync cycle's NTS quorum cannot form. This signals to the consumer that, for the current cycle, the truth box could not be defined by authenticated samples and the consensus fell back to best-effort sources. Consumers reading this stream can adapt — for example, a security-sensitive client may pause anchor updates until a verified quorum returns.
+The library emits an `IntegrityEvent` of reason `degradedTier` when a sync cycle's NTS quorum cannot form. This signals to the consumer that, for the current cycle, the truth box could not be defined by authenticated samples and the consensus fell back to best-effort sources. Consumers reading this stream can adapt — for example, a security-sensitive client may pause anchor updates until a verified quorum returns.
 
-`degradedTier` is named in [ADR 0007](../adr/0007-hybrid-trust-model.md) §2 but is **not yet a member of `TamperReason`** on trunk. Until it lands, `onIntegrityLost` emits only the existing reasons (`systemClockJumped`, `timezoneChanged`, `deviceRebooted`, `forcedNtpSync`, `unknown`), and the quorum-degradation signal is unavailable.
+`degradedTier` is named in [ADR 0007](../adr/0007-hybrid-trust-model.md) §2 and is a member of `TamperReason` on trunk (PR #48). `onIntegrityLost` emits it alongside the existing reasons (`systemClockJumped`, `timezoneChanged`, `deviceRebooted`, `forcedNtpSync`, `unknown`).
 
-Once landed, emission of `degradedTier` is informational. It does not, by itself, invalidate the contract: a consumer using `requireSecure: true` will still see `TrustedTimeSecurityException` rather than receiving a degraded value. The event exists for consumers who want operational visibility into authentication state without polling.
+Emission of `degradedTier` is informational. It does not, by itself, invalidate the contract: a consumer using `requireSecure: true` will still see `TrustedTimeSecurityException` rather than receiving a degraded value. The event exists for consumers who want operational visibility into authentication state without polling.
 
 ## Implementation requirements
 
 To uphold this contract, the implementation must:
 
-> **[Status]** Requirements 1 and 3 are the core of `trusted_time-m8t` and are *not yet met on trunk*: `NtsSource` currently labels every successful NTS sample `verified` without consulting the trust backend. Requirements 2, 4, 5, and 6 describe invariants the implementation must preserve as the per-sample mapping lands.
+> **[Status]** All six requirements are met on trunk. Requirement 1 landed with the trust-mode resolver work (`trusted_time-rjt` / PR #46), which routes the `verified` path through `TrustMode.bundledOnly` (or `custom`) by default; requirement 3 landed with the per-sample `TrustBackend → NtsAuthLevel` mapping (PR #47); requirements 2, 4, 5, and 6 are invariants the implementation preserves.
 
 1. **Configure the underlying NTS client (`package:nts`) to validate exclusively against bundled trust anchors** on the path that produces `verified` samples. The platform-store-backed validation modes of `package:nts` are not permitted on this path. If a `package:nts` mode that mixes bundled and platform validation must be used (e.g., for compatibility with a specific deployment surface), the library wraps the result and labels it `NtsAuthLevel.none` regardless of `package:nts`'s success report.
 2. **Pin the bundled trust anchor set** to a known, audited source (e.g., `webpki-roots` at a pinned version) and document the version, source, and update cadence in the package's release notes.
@@ -226,7 +225,7 @@ A change that alters the conditions under which `NtsAuthLevel.verified` is emitt
 
 This section adds the consumer-persona framing for the tiered trust model whose end-to-end implementation is documented in [`doc/design/tiered-trust-implementation.md`](../design/tiered-trust-implementation.md). The two personas are not separate code paths — the same library implements both — but they configure the engine differently and read its outputs with different expectations.
 
-> **[Partially implemented — `trusted_time-rjt` / `trusted_time-m8t`]** The persona *config surface* below (`usePlatformTrust`, `customRootCerts`) is **live on trunk** as of `trusted_time-rjt`, which also flipped the effective default to `bundledOnly` and removed the earlier single `ntsTrustMode` field. The *engine behaviour* these personas reference — tier classification, truth-box admission, and the `degradedTier` event — is **not yet wired** (tracked by `trusted_time-m8t` and downstream tickets), so those points remain marked **[Target — `trusted_time-m8t`]** inline.
+> **[Implemented — PRs #46–#49]** The persona *config surface* below (`usePlatformTrust`, `customRootCerts`) is **live on trunk** as of `trusted_time-rjt` (PR #46), which also flipped the effective default to `bundledOnly` and removed the earlier single `ntsTrustMode` field. The *engine behaviour* these personas reference — the per-sample trust-backend mapping (PR #47), truth-box admission, and the `degradedTier` event (PR #48) — is **live as well**. The one exception is the cold-start Pre-Sync rescue, which remains pending and keeps its **[Target — `trusted_time-m8t`]** marker inline.
 
 ### Persona: Security-Conscious (Bundled / Custom)
 
@@ -253,9 +252,9 @@ const TrustedTimeConfig(
 
 - Every NTS handshake runs against a library-controlled trust store: bundled `webpki-roots` (default) or `customRootCerts`. The platform store is not consulted.
 - Successful NTS samples carry `NtsAuthLevel.verified` and form the Tier 1 truth box.
-- **[Target — `trusted_time-m8t`]** Marzullo's truth-box construction is anchored exclusively by Tier 1 samples. Tier 2/3 contribute to consensus only when their intervals intersect the truth box. On trunk today the reduction is weakest-link, not truth-box-gated.
+- Marzullo's truth-box construction is anchored exclusively by Tier 1 samples. Tier 2/3 contribute to consensus only when their intervals intersect the truth box.
 - `requireSecure: true` is honoured strictly: if the cycle's Tier 1 quorum fails to form, `getTime(requireSecure: true)` throws `TrustedTimeSecurityException`.
-- **[Target — `trusted_time-m8t`]** The `degradedTier` `IntegrityEvent` fires when Tier 1 quorum fails; consumers can read it from `onIntegrityLost` and pause anchor consumption. `TamperReason.degradedTier` is not yet a member of the enum on trunk.
+- The `degradedTier` `IntegrityEvent` fires when Tier 1 quorum fails; consumers can read it from `onIntegrityLost` and pause anchor consumption.
 - **[Target — `trusted_time-m8t`]** **Cold-start clock skew is rescued, not refused.** If the device boots with a grossly wrong clock and NTS-KE fails in its TLS phase, the engine runs a bounded unauthenticated Pre-Sync to coax the handshake into the certificate's validity window (see [Cold-start bootstrapping and the NTS circular dependency](#cold-start-bootstrapping-and-the-nts-circular-dependency)). This persona **allows** the rescue: it is operational-only and never relaxes the `verified` boundary. Strict fail-closed is preserved — `requireSecure: true` still throws until a *real* Tier 1 sample lands in the truth box. Refusing the rescue would permanently deny `verified` time to skewed-clock devices for no security gain, since the Pre-Sync sample is itself never `verified`.
 - In TLS-inspecting / managed-network deployments where a corporate CA is required, this persona's NTS sources will fail — the bundled trust store does not include corporate CAs by design. The contract is satisfied by failing closed, not by misrepresenting platform-validated samples as `verified`.
 
