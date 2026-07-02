@@ -353,10 +353,21 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         request.httpMethod = "HEAD"
         request.timeoutInterval = 10
 
+        // BGTask completion must be signaled exactly once. Cancelling the
+        // URLSession task from the expiration handler still fires its
+        // completion callback (NSURLErrorCancelled), so both paths funnel
+        // through this main-confined guard for scheduling + completion.
+        var completed = false
+        let complete: (Bool) -> Void = { [weak self] ok in
+            if completed { return }
+            completed = true
+            self?.scheduleNextBgSync()
+            task.setTaskCompleted(success: ok)
+        }
+
         let dataTask = URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
             DispatchQueue.main.async {
                 self?.backgroundChannel?.invokeMethod("onBackgroundSync", arguments: nil)
-                self?.scheduleNextBgSync()
                 let ok: Bool
                 if error != nil {
                     ok = false
@@ -365,14 +376,15 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
                 } else {
                     ok = false
                 }
-                task.setTaskCompleted(success: ok)
+                complete(ok)
             }
         }
 
-        task.expirationHandler = { [weak self] in
+        task.expirationHandler = {
             dataTask.cancel()
-            self?.scheduleNextBgSync()
-            task.setTaskCompleted(success: false)
+            DispatchQueue.main.async {
+                complete(false)
+            }
         }
 
         dataTask.resume()
