@@ -533,11 +533,14 @@ abstract final class TrustedTime {
   /// to a Dart [Timer.periodic] inside the running isolate. On web,
   /// this is a no-op (browsers suspend background tabs).
   ///
-  /// **Prerequisite for real headless refresh** (Android/iOS): call
+  /// **Prerequisites for real headless refresh** (Android/iOS): call
   /// [registerBackgroundCallback] first with a host-app
-  /// `@pragma('vm:entry-point')` function. Without it, background fires
-  /// fall back to a connectivity-only HTTPS HEAD probe that does not
-  /// refresh the anchor — see ADR 0002.
+  /// `@pragma('vm:entry-point')` function. On iOS, additionally wire
+  /// `TrustedTimePlugin.setPluginRegistrantCallback` in the AppDelegate
+  /// so plugins can be registered onto the headless engine (Android
+  /// auto-registers plugins on engine creation). If either is missing,
+  /// background fires fall back to a connectivity-only HTTPS HEAD probe
+  /// that does not refresh the anchor — see ADR 0002.
   static Future<void> enableBackgroundSync({
     Duration interval = const Duration(hours: 24),
   }) {

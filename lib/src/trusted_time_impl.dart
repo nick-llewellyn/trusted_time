@@ -331,6 +331,12 @@ final class TrustedTimeImpl {
   /// refresh when the host has registered a callback via
   /// `TrustedTime.registerBackgroundCallback`; otherwise it falls back to
   /// a connectivity-only probe that does not refresh the anchor (ADR 0002).
+  /// On iOS the host must additionally wire
+  /// `TrustedTimePlugin.setPluginRegistrantCallback` in its AppDelegate so
+  /// plugins can be registered onto the headless engine; without it the
+  /// fire also falls back to the connectivity probe. Android needs no
+  /// equivalent — the v2 embedding auto-registers plugins on engine
+  /// creation.
   ///
   /// **Desktop** (Linux/macOS/Windows): a [Timer.periodic] inside the
   /// running isolate re-syncs at [interval].
