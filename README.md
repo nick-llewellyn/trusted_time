@@ -31,7 +31,7 @@ A tamper-proof UTC clock for Flutter. `trusted_time` anchors network-verified ti
 | Linux    | `CLOCK_BOOTTIME` | Timer.periodic | NTP, HTTPS, NTS | timerfd |
 | Web/WASM | `performance.now()` | — | HTTPS only | visibilitychange |
 
-> **Android background sync note:** The WorkManager job validates network connectivity only. The trust anchor is refreshed on the next foreground app launch. This is intentional — full headless anchor refresh is planned for v2.1.0.
+> **Mobile background sync note:** On Android and iOS, background fires perform a real headless anchor refresh **if** the host app registers a background callback via `TrustedTime.registerBackgroundCallback` (plus, on iOS, the `AppDelegate` plugin-registrant hook — see [Enable background sync](#enable-background-sync)). Without registration, the job falls back to a connectivity-only probe and the anchor is refreshed on the next foreground launch.
 
 > **Web/WASM note:** Browsers don't support UDP/TCP sockets, so Web platforms use HTTPS `Date` headers from multiple endpoints. The library automatically configures Web-compatible sources when running in browsers or WASM.
 
@@ -199,6 +199,35 @@ await TrustedTime.enableBackgroundSync(
 ```
 
 On Android this schedules a WorkManager `PeriodicWorkRequest`. On iOS it registers a `BGAppRefreshTask`. On desktop it uses a `Timer.periodic` within the Dart isolate. Web is not supported.
+
+**Headless anchor refresh (Android/iOS):** for a background fire to perform a real anchor refresh (rather than a connectivity-only probe), register a top-level `@pragma('vm:entry-point')` callback before `runApp`:
+
+```dart
+import 'dart:async';
+
+@pragma('vm:entry-point')
+void trustedTimeBackgroundCallback() {
+  unawaited(TrustedTime.runBackgroundSync());
+}
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback);
+  runApp(const MyApp());
+}
+```
+
+On iOS, additionally wire the plugin registrant onto the headless engine in your `AppDelegate` (required so `flutter_secure_storage` can persist the refreshed anchor):
+
+```swift
+import trusted_time
+
+TrustedTimePlugin.setPluginRegistrantCallback { engine in
+  GeneratedPluginRegistrant.register(with: engine)
+}
+```
+
+Background refresh bounds the staleness of the fallback anchor: if a sync fails at app start or re-entry (transient network failure, time servers unreachable, quorum miss), warm-restore falls back to the most recent persisted anchor — with background refresh that anchor is at most one background interval old, regardless of how long the app was closed. Why sync in the background at all when foreground sync exists? See [ADR 0002](doc/adr/0002-headless-background-sync.md).
 
 ### NTS (Network Time Security)
 

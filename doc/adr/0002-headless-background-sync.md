@@ -1,9 +1,35 @@
 # ADR 0002: Real headless background anchor refresh
 
-- Status: **Accepted**
-- Date: 2026-04-29
-- Tracking issue: `trusted_time-e0v`
+- Status: **Accepted — implemented on trunk (PRs #65–#67)**
+- Date: 2026-04-29 (ported to `integration/bleeding-edge`: 2026-07-02)
+- Tracking issue: `trusted_time-e0v` (mismatch audit: `trusted_time-41d`)
 - Depends on: ADR 0001 (NTS integration), `package:nts` ≥ 1.3.0
+
+> **[Implementation note — 2026-07-02]** The original implementation of
+> this ADR landed pre-pivot under the `trusted_time_nts` namespace and
+> survives only on `archive/legacy-fork-main`, which shares no git history
+> with the current trunk. It was ported to `integration/bleeding-edge` as a
+> manual re-implementation across PRs #65 (Dart core), #66 (native headless
+> dispatch), and #67 (example wiring + docs). Two things changed in the
+> port:
+>
+> 1. **Tiered-trust reconciliation (ADR 0007).** Tier classification and
+>    truth-box admission live inside `SyncEngine.sync()`, so a background
+>    cycle produces an anchor with the same `authLevel`/`confidence`
+>    semantics as a foreground cycle run against the same config.
+>    Tier-degradation integrity events raised during a headless run are
+>    not observable (no foreground monitor is attached); the degraded
+>    state is still fully reflected in the persisted anchor's fields,
+>    which the next foreground warm-restore reads.
+> 2. **Value re-framing.** The justification for carrying this feature is
+>    **staleness-bounding resilience**, not accuracy: background refresh
+>    caps the age of the fallback anchor when a foreground sync fails at
+>    app start/re-entry (transient network failure, NTS unreachable,
+>    quorum miss), makes sustained adversarial NTS-blocking more expensive
+>    to maintain across background cycles, and can re-anchor after a
+>    reboot while backgrounded. Foreground/start sync remains the primary
+>    path; the marginal accuracy gain of a fresher anchor alone would not
+>    have justified the battery and trust-surface cost.
 
 ## Context
 
