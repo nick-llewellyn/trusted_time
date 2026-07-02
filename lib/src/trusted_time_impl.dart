@@ -326,13 +326,21 @@ final class TrustedTimeImpl {
 
   /// Enables background synchronization to keep trust anchors fresh.
   ///
-  /// **Android Limitation**: Due to platform constraints, Android background sync
-  /// performs connectivity checks but does not invoke the Dart-side sync immediately.
-  /// Trust anchors are refreshed on the next application foreground launch.
-  /// This limitation will be addressed in a future release using headless FlutterEngine.
+  /// **Android/iOS**: delegates to the native scheduler (WorkManager /
+  /// BGTaskScheduler). A background fire performs a real headless anchor
+  /// refresh when the host has registered a callback via
+  /// `TrustedTime.registerBackgroundCallback`; otherwise it falls back to
+  /// a connectivity-only probe that does not refresh the anchor (ADR 0002).
+  /// On iOS the host must additionally wire
+  /// `TrustedTimePlugin.setPluginRegistrantCallback` in its AppDelegate so
+  /// plugins can be registered onto the headless engine; without it the
+  /// fire also falls back to the connectivity probe. Android needs no
+  /// equivalent — the v2 embedding auto-registers plugins on engine
+  /// creation.
   ///
-  /// **iOS**: Full background sync support with immediate anchor refresh.
-  /// **Desktop**: Uses platform timers for immediate background refresh.
+  /// **Desktop** (Linux/macOS/Windows): a [Timer.periodic] inside the
+  /// running isolate re-syncs at [interval].
+  /// **Web**: no-op (browsers suspend background tabs).
   Future<void> enableBackgroundSync(Duration interval) async {
     if (kIsWeb) return;
     if (defaultTargetPlatform == TargetPlatform.android ||
