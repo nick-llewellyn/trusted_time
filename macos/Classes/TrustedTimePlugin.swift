@@ -216,9 +216,15 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         do {
             try BGTaskScheduler.shared.submit(req)
         } catch {
+            // Log the NSError domain and code explicitly rather than relying
+            // on localizedDescription, which is not guaranteed to include the
+            // BGTaskSchedulerErrorCode (1 = unavailable, 2 =
+            // tooManyPendingTaskRequests, 3 = notPermitted).
+            let nsError = error as NSError
             NSLog(
                 "[TrustedTime] BGTaskScheduler.submit failed for identifier "
-                + "'\(bgTaskId)': \(error.localizedDescription)"
+                + "'\(bgTaskId)': \(nsError.domain) code \(nsError.code) "
+                + "(\(nsError.localizedDescription))"
             )
         }
     }

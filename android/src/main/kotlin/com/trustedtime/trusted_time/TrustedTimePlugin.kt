@@ -223,17 +223,20 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
     private fun runConnectivityFallback(): Result = try {
         val url = java.net.URL("https://www.google.com")
         val conn = url.openConnection() as java.net.HttpURLConnection
-        conn.requestMethod = "HEAD"
-        conn.connectTimeout = 5000
-        conn.readTimeout = 5000
-        conn.connect()
-        // HttpURLConnection.connect() does not throw on non-2xx responses,
-        // so a captive portal returning 302/403 would otherwise be reported
-        // as a success and suppress WorkManager's backoff. Gate on the 2xx
-        // range to match the iOS performConnectivityFallback semantics.
-        val code = conn.responseCode
-        conn.disconnect()
-        if (code in 200..299) Result.success() else Result.retry()
+        try {
+            conn.requestMethod = "HEAD"
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+            conn.connect()
+            // HttpURLConnection.connect() does not throw on non-2xx responses,
+            // so a captive portal returning 302/403 would otherwise be reported
+            // as a success and suppress WorkManager's backoff. Gate on the 2xx
+            // range to match the iOS performConnectivityFallback semantics.
+            val code = conn.responseCode
+            if (code in 200..299) Result.success() else Result.retry()
+        } finally {
+            conn.disconnect()
+        }
     } catch (_: Exception) {
         Result.retry()
     }
