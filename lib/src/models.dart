@@ -289,13 +289,17 @@ final class TrustedTimeConfig {
   /// above, not "in preference to".
   ///
   /// Under the Secure Time Contract, samples authenticated via the
-  /// platform store are *intended* to report [NtsAuthLevel.none] rather
-  /// than `verified`, so a platform-mediated path is never
-  /// misrepresented as cryptographically verified. That
-  /// `TrustBackend`-to-[NtsAuthLevel] mapping is not yet live:
-  /// `NtsSource` currently emits `verified` for every successful
-  /// handshake. This field selects only the trust mode today; the
-  /// auth-level downgrade is tracked separately (design Section 3.2).
+  /// platform store report [NtsAuthLevel.none] rather than
+  /// [NtsAuthLevel.verified], so a platform-mediated path is never
+  /// misrepresented as cryptographically verified. `NtsSource` maps
+  /// each handshake's reported [nts.TrustBackend] to its auth level:
+  /// [nts.TrustBackend.webpkiRoots] and [nts.TrustBackend.custom]
+  /// yield `verified`; [nts.TrustBackend.platform] (and the
+  /// Android-only [nts.TrustBackend.platformWithHybridFallback]) yield
+  /// `none` (design Section 3.2). Enabling this field therefore trades
+  /// `verified` samples for platform-mediated `none` samples —
+  /// [TrustedTime.getTime] with `requireSecure: true` will not be
+  /// satisfiable by them.
   ///
   /// Mutually exclusive with a non-empty [customRootCerts]; the
   /// combination throws [ArgumentError]. See [effectiveTrustMode].
