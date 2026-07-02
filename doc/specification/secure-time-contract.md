@@ -225,7 +225,7 @@ A change that alters the conditions under which `NtsAuthLevel.verified` is emitt
 
 This section adds the consumer-persona framing for the tiered trust model whose end-to-end implementation is documented in [`doc/design/tiered-trust-implementation.md`](../design/tiered-trust-implementation.md). The two personas are not separate code paths — the same library implements both — but they configure the engine differently and read its outputs with different expectations.
 
-> **[Implemented — `trusted_time-rjt` / PRs #47–#49]** The persona *config surface* below (`usePlatformTrust`, `customRootCerts`) is **live on trunk** as of `trusted_time-rjt`, which also flipped the effective default to `bundledOnly` and removed the earlier single `ntsTrustMode` field. The *engine behaviour* these personas reference — the per-sample trust-backend mapping (PR #47), truth-box admission, and the `degradedTier` event (PR #48) — is **live as well**. The one exception is the cold-start Pre-Sync rescue, which remains pending and keeps its **[Target — `trusted_time-m8t`]** marker inline.
+> **[Implemented — PRs #46–#49]** The persona *config surface* below (`usePlatformTrust`, `customRootCerts`) is **live on trunk** as of `trusted_time-rjt` (PR #46), which also flipped the effective default to `bundledOnly` and removed the earlier single `ntsTrustMode` field. The *engine behaviour* these personas reference — the per-sample trust-backend mapping (PR #47), truth-box admission, and the `degradedTier` event (PR #48) — is **live as well**. The one exception is the cold-start Pre-Sync rescue, which remains pending and keeps its **[Target — `trusted_time-m8t`]** marker inline.
 
 ### Persona: Security-Conscious (Bundled / Custom)
 
