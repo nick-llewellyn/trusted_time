@@ -17,7 +17,7 @@ Implementation that does not uphold this contract is a defect. This specificatio
 
 ## Implementation status
 
-This contract is written in the present tense to describe the **target end state** under [ADR 0007](../adr/0007-hybrid-trust-model.md). As of the tiered-trust work landing in PRs #47–#49, the contract's guarantees are live on trunk. The single remaining divergence — the cold-start Pre-Sync rescue — is flagged inline with a **[Target — `trusted_time-m8t`]** marker.
+This contract is written in the present tense to describe the **target end state** under [ADR 0007](../adr/0007-hybrid-trust-model.md). As of the tiered-trust work landing in PRs #46–#49 (trust-mode config surface through public-API tightening), the contract's guarantees are live on trunk. The single remaining divergence — the cold-start Pre-Sync rescue — is flagged inline with a **[Target — `trusted_time-m8t`]** marker.
 
 **Live on trunk today:**
 
@@ -175,7 +175,7 @@ Emission of `degradedTier` is informational. It does not, by itself, invalidate 
 
 To uphold this contract, the implementation must:
 
-> **[Status]** All six requirements are met on trunk. Requirements 1 and 3 landed with the per-sample `TrustBackend → NtsAuthLevel` mapping (PR #47); requirements 2, 4, 5, and 6 are invariants the implementation preserves.
+> **[Status]** All six requirements are met on trunk. Requirement 1 landed with the trust-mode resolver work (`trusted_time-rjt` / PR #46), which routes the `verified` path through `TrustMode.bundledOnly` (or `custom`) by default; requirement 3 landed with the per-sample `TrustBackend → NtsAuthLevel` mapping (PR #47); requirements 2, 4, 5, and 6 are invariants the implementation preserves.
 
 1. **Configure the underlying NTS client (`package:nts`) to validate exclusively against bundled trust anchors** on the path that produces `verified` samples. The platform-store-backed validation modes of `package:nts` are not permitted on this path. If a `package:nts` mode that mixes bundled and platform validation must be used (e.g., for compatibility with a specific deployment surface), the library wraps the result and labels it `NtsAuthLevel.none` regardless of `package:nts`'s success report.
 2. **Pin the bundled trust anchor set** to a known, audited source (e.g., `webpki-roots` at a pinned version) and document the version, source, and update cadence in the package's release notes.
