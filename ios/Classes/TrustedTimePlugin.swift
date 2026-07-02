@@ -125,13 +125,15 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
             result(nil)
             #endif
         case "notifyBackgroundComplete":
-            #if os(iOS)
-            let success = ((call.arguments as? [String: Any])?["success"] as? Bool) ?? false
-            finishHeadlessSync(success: success)
+            // Explicit no-op on the foreground engine (mirrors the
+            // Android worker's channel scoping). A headless BGTask run
+            // must only be completed via the worker-scoped channel
+            // handler installed in performBackgroundSync; honouring the
+            // foreground isolate's notifyBackgroundComplete here (e.g.
+            // from an app-initiated TrustedTime.runBackgroundSync())
+            // would prematurely tear down an in-flight headless engine
+            // and complete its BGTask.
             result(nil)
-            #else
-            result(nil)
-            #endif
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -202,6 +204,15 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         // .tooManyPendingTaskRequests, .unavailable) shows up in device
         // logs. Silent failure here was the original cause of "background
         // sync never fires and there's nothing in the console" reports.
+        // Submitting a request with the same identifier as an existing
+        // unexecuted request REPLACES that request (documented in
+        // BGTaskScheduler.h and the submit(_:) reference), so repeated
+        // enableBackgroundSync calls update earliestBeginDate in place
+        // and cannot trigger .tooManyPendingTaskRequests by themselves.
+        // That error is only reachable when the host app has exhausted
+        // the global budget (1 refresh + 10 processing tasks) with
+        // *other* identifiers — a condition that cancelling our own
+        // identifier before submitting would not avoid.
         do {
             try BGTaskScheduler.shared.submit(req)
         } catch {
@@ -289,6 +300,19 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
                 binaryMessenger: engine.binaryMessenger
             )
             channel.setMethodCallHandler { [weak self] call, result in
+                // notifyBackgroundComplete is honoured here — on the
+                // headless engine's worker-scoped channel — and ONLY
+                // here. The foreground plugin's `handle` treats it as a
+                // no-op, so a foreground engine in the same process
+                // cannot complete this BGTask or tear down the headless
+                // engine mid-run.
+                if call.method == "notifyBackgroundComplete" {
+                    let success =
+                        ((call.arguments as? [String: Any])?["success"] as? Bool) ?? false
+                    self?.finishHeadlessSync(success: success)
+                    result(nil)
+                    return
+                }
                 self?.handle(call, result: result)
             }
             self.headlessChannel = channel
