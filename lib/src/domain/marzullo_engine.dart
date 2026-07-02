@@ -2,7 +2,6 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import '../../trusted_time.dart';
 
-@immutable
 /// The resolved state of a consensus cycle.
 ///
 /// Encapsulates the verified UTC time, the calculated precision (uncertainty),
