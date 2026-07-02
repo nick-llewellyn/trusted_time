@@ -8,11 +8,14 @@ import 'package:trusted_time/src/domain/time_sample.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
 import 'package:trusted_time/src/models.dart';
 import 'package:trusted_time/src/monotonic_clock.dart';
+import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart' as public_api;
 
 /// Coverage for the headless background-sync unit-of-work
-/// ([runBackgroundSync]) and its public-API wrapper
-/// (`TrustedTime.runBackgroundSync` / `registerBackgroundCallback`).
+/// ([runBackgroundSync]), its public-API wrapper
+/// (`TrustedTime.runBackgroundSync` / `registerBackgroundCallback`), and
+/// the `TrustedTime.enableBackgroundSync` scheduling contract (native
+/// interval clamping and the desktop in-isolate timer fallback).
 ///
 /// **Scope**: these tests pin the Dart-side contract — anchor persistence,
 /// failure semantics, callback-handle registration, and the
@@ -455,6 +458,172 @@ void main() {
       // enableBackgroundSync / registerBackgroundCallback short-circuit
       // before any platform-channel call).
       expect(calls, isEmpty);
+    });
+  });
+
+  group('TrustedTime.enableBackgroundSync', () {
+    const bgChannel = MethodChannel('trusted_time/background');
+    const monotonicChannel = MethodChannel('trusted_time/monotonic');
+    const integrityChannel = MethodChannel('trusted_time/integrity');
+    final calls = <MethodCall>[];
+
+    setUp(() async {
+      calls.clear();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(bgChannel, (call) async {
+            calls.add(call);
+            return null;
+          });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(monotonicChannel, (call) async {
+            if (call.method == 'getUptimeMs') return 1000;
+            return null;
+          });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(integrityChannel, (call) async => null);
+      // A live engine is required so the public wrapper can reach
+      // TrustedTimeImpl.instance. Empty source pools keep the bootstrap
+      // sync network-free (it fails quorum, which initialize tolerates),
+      // and backgroundSyncInterval stays null so no scheduling happens
+      // until the test drives it explicitly.
+      await public_api.TrustedTime.initialize(
+        config: const public_api.TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      calls.clear();
+    });
+
+    tearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+      TrustedTimeImpl.instance.dispose();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(bgChannel, null);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(monotonicChannel, null);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(integrityChannel, null);
+    });
+
+    test('forwards intervalHours to the native scheduler on Android', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+
+      await public_api.TrustedTime.enableBackgroundSync(
+        interval: const Duration(hours: 24),
+      );
+
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'enableBackgroundSync');
+      expect(calls.single.arguments, {'intervalHours': 24});
+      expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
+    });
+
+    test('routes iOS through the native scheduler as well', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+
+      await public_api.TrustedTime.enableBackgroundSync(
+        interval: const Duration(hours: 12),
+      );
+
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'enableBackgroundSync');
+      expect(calls.single.arguments, {'intervalHours': 12});
+      expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
+    });
+
+    test('clamps sub-hour intervals up to 1 hour for the native '
+        'scheduler', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+
+      await public_api.TrustedTime.enableBackgroundSync(
+        interval: const Duration(minutes: 30),
+      );
+
+      expect(calls.single.arguments, {'intervalHours': 1});
+    });
+
+    test('clamps intervals above one week down to 168 hours', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+
+      await public_api.TrustedTime.enableBackgroundSync(
+        interval: const Duration(hours: 400),
+      );
+
+      expect(calls.single.arguments, {'intervalHours': 168});
+    });
+
+    test('arms an in-isolate periodic timer on desktop with no channel '
+        'traffic', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+
+      await public_api.TrustedTime.enableBackgroundSync(
+        interval: const Duration(hours: 1),
+      );
+
+      expect(calls, isEmpty);
+      final firstTimer = TrustedTimeImpl.instance.debugDesktopBgTimer;
+      expect(firstTimer, isNotNull);
+      expect(firstTimer!.isActive, isTrue);
+
+      // Re-enabling replaces (not stacks) the timer and stays channel-free:
+      // the first timer must be cancelled and a distinct one armed.
+      await public_api.TrustedTime.enableBackgroundSync(
+        interval: const Duration(hours: 2),
+      );
+      expect(calls, isEmpty);
+      final secondTimer = TrustedTimeImpl.instance.debugDesktopBgTimer;
+      expect(secondTimer, isNotNull);
+      expect(secondTimer, isNot(same(firstTimer)));
+      expect(firstTimer.isActive, isFalse);
+      expect(secondTimer!.isActive, isTrue);
+    });
+
+    test(
+      'swallows native scheduler errors instead of surfacing them',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        var schedulerInvoked = false;
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(bgChannel, (call) async {
+              schedulerInvoked = true;
+              throw PlatformException(code: 'SCHEDULER_UNAVAILABLE');
+            });
+
+        await expectLater(
+          public_api.TrustedTime.enableBackgroundSync(
+            interval: const Duration(hours: 24),
+          ),
+          completes,
+        );
+
+        // Distinguishes "error swallowed" from "never tried to schedule":
+        // the native scheduler must have been reached before the error
+        // was absorbed.
+        expect(schedulerInvoked, isTrue);
+      },
+    );
+
+    test('is a no-op under an active test override (no channel call, '
+        'no timer)', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final mock = public_api.TrustedTimeMock(
+        initial: DateTime.utc(2026, 6, 1, 12),
+      );
+      public_api.TrustedTime.overrideForTesting(mock);
+      addTearDown(() {
+        public_api.TrustedTime.resetOverride();
+        mock.dispose();
+      });
+
+      await public_api.TrustedTime.enableBackgroundSync(
+        interval: const Duration(hours: 24),
+      );
+
+      expect(calls, isEmpty);
+      expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
     });
   });
 }
