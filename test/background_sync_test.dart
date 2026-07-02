@@ -189,6 +189,29 @@ void main() {
       expect(result, isA<BackgroundSyncFailure>());
       expect(await store.load(), original);
     });
+
+    test('returns failure (not a throw) for an invalid trust config', () async {
+      // effectiveTrustMode throws ArgumentError from SyncEngine's late-final
+      // source-list initializer, so both sync() and a naive dispose() in the
+      // finally block would rethrow it — overriding the intended
+      // BackgroundSyncFailure return. Guards the try/catch(dispose) shape in
+      // runBackgroundSync.
+      final store = InMemoryAnchorStorage();
+      final result = await runBackgroundSync(
+        config: const TrustedTimeConfig(
+          usePlatformTrust: true,
+          customRootCerts: [1, 2, 3],
+        ),
+        store: store,
+        clock: _FakeMonotonicClock(5000),
+      );
+      expect(result, isA<BackgroundSyncFailure>());
+      expect(
+        (result as BackgroundSyncFailure).reason,
+        contains('mutually exclusive'),
+      );
+      expect(await store.load(), isNull);
+    });
   });
 
   group('TrustedTime.registerBackgroundCallback', () {

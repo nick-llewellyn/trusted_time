@@ -122,6 +122,15 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
       elapsed: stopwatch.elapsed,
     );
   } finally {
-    engine.dispose();
+    // dispose() iterates the engine's lazily-built source list. If sync()
+    // failed because that `late final` initializer threw (e.g. an invalid
+    // TrustedTimeConfig raising ArgumentError from effectiveTrustMode),
+    // reading it here re-runs the initializer and rethrows — which would
+    // override the BackgroundSyncFailure return above. Swallow it: the
+    // original error is already captured in the returned failure result,
+    // and no sources were built, so there is nothing to release.
+    try {
+      engine.dispose();
+    } catch (_) {}
   }
 }

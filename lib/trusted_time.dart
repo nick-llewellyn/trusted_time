@@ -708,8 +708,9 @@ abstract final class TrustedTime {
       });
     } on MissingPluginException {
       // Channel is absent on desktop/web and in unit tests that have not
-      // mocked it. The anchor is already persisted; native cleanup is a
-      // best-effort signal only.
+      // mocked it. The sync itself has already run to completion — with the
+      // anchor persisted only on success and when config.persistState is
+      // set — so native cleanup is a best-effort signal only.
     } catch (e, s) {
       // Surfacing other failures (channel wired but handler errored, etc.)
       // matters operationally — without this signal the native worker
