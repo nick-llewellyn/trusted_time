@@ -9,33 +9,58 @@ import 'burst/burst_probe_panel.dart';
 import 'nts_sources.dart';
 import 'sync_telemetry.dart';
 
+/// Builds the NTS-exclusive stress-test configuration.
+///
+/// NTP and HTTPS sources are disabled so the engine relies solely on
+/// cryptographically authenticated samples. minQuorumRatio is 0.4, which
+/// (combined with MarzulloEngine's hard floor of requiredQuorum >= 2) means
+/// at least three samples must arrive in a cycle before consensus is
+/// possible, and at least two of those three must overlap.
+///
+/// Shared between the foreground engine ([main]) and the headless
+/// background callback ([trustedTimeBackgroundCallback]) so a background
+/// fire refreshes the anchor against the same source policy the foreground
+/// engine uses. The pool is shuffled per call so warming-pipeline ordering
+/// effects still surface across launches, but every source is used every
+/// cycle so diagnostic comparisons are not confounded by random subset
+/// selection.
+TrustedTimeConfig buildStressConfig() {
+  final ntsSubset = (List<String>.of(curatedNtsPool)..shuffle(Random()))
+      .toList(growable: false);
+  return TrustedTimeConfig(
+    ntpServers: const [],
+    httpsSources: const [],
+    ntsServers: ntsSubset,
+    minimumQuorum: 2,
+    minQuorumRatio: 0.4,
+    refreshInterval: const Duration(seconds: 30),
+    persistState: true,
+  );
+}
+
+/// Top-level entrypoint invoked from a headless [FlutterEngine] when the OS
+/// scheduler (Android `WorkManager` / iOS `BGAppRefreshTask`) fires the
+/// background sync. The `@pragma('vm:entry-point')` annotation is mandatory
+/// — it keeps this symbol alive through release-mode tree-shaking so the
+/// callback handle persisted in `SharedPreferences`/`UserDefaults` resolves.
+@pragma('vm:entry-point')
+void trustedTimeBackgroundCallback() {
+  // The host callback signature is `void Function()`, so it cannot await
+  // the returned Future. `unawaited(...)` makes the fire-and-forget intent
+  // explicit and keeps `unawaited_futures` clean if a host copy/pastes
+  // this pattern into an async context.
+  unawaited(TrustedTime.runBackgroundSync(config: buildStressConfig()));
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Shuffle the pool so warming-pipeline ordering effects still
-  // surface across launches, but use every source every cycle so
-  // diagnostic comparisons are not confounded by random subset
-  // selection.
-  final ntsSubset = (List<String>.of(curatedNtsPool)..shuffle(Random()))
-      .toList(growable: false);
+  await TrustedTime.initialize(config: buildStressConfig());
 
-  // NTS-exclusive stress test configuration. NTP and HTTPS sources are
-  // disabled so the engine relies solely on cryptographically
-  // authenticated samples. minQuorumRatio is 0.4, which (combined with
-  // MarzulloEngine's hard floor of requiredQuorum >= 2) means at least
-  // three samples must arrive in a cycle before consensus is possible,
-  // and at least two of those three must overlap.
-  await TrustedTime.initialize(
-    config: TrustedTimeConfig(
-      ntpServers: const [],
-      httpsSources: const [],
-      ntsServers: ntsSubset,
-      minimumQuorum: 2,
-      minQuorumRatio: 0.4,
-      refreshInterval: const Duration(seconds: 30),
-      persistState: true,
-    ),
-  );
+  // Pre-register the background callback so subsequent calls to
+  // `enableBackgroundSync` perform a real headless anchor refresh rather
+  // than the back-compat HTTPS-HEAD connectivity fallback.
+  await TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback);
 
   // Register telemetry after init so the recorder receives every
   // subsequent sync cycle (refreshes, Force Resync, integrity-triggered
