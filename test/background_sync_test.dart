@@ -518,7 +518,7 @@ void main() {
       expect(calls, hasLength(1));
       expect(calls.single.method, 'enableBackgroundSync');
       expect(calls.single.arguments, {'intervalHours': 24});
-      expect(TrustedTimeImpl.instance.debugDesktopBgTimerActive, isFalse);
+      expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
     });
 
     test('routes iOS through the native scheduler as well', () async {
@@ -529,8 +529,9 @@ void main() {
       );
 
       expect(calls, hasLength(1));
+      expect(calls.single.method, 'enableBackgroundSync');
       expect(calls.single.arguments, {'intervalHours': 12});
-      expect(TrustedTimeImpl.instance.debugDesktopBgTimerActive, isFalse);
+      expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
     });
 
     test('clamps sub-hour intervals up to 1 hour for the native '
@@ -563,22 +564,31 @@ void main() {
       );
 
       expect(calls, isEmpty);
-      expect(TrustedTimeImpl.instance.debugDesktopBgTimerActive, isTrue);
+      final firstTimer = TrustedTimeImpl.instance.debugDesktopBgTimer;
+      expect(firstTimer, isNotNull);
+      expect(firstTimer!.isActive, isTrue);
 
-      // Re-enabling replaces (not stacks) the timer and stays channel-free.
+      // Re-enabling replaces (not stacks) the timer and stays channel-free:
+      // the first timer must be cancelled and a distinct one armed.
       await public_api.TrustedTime.enableBackgroundSync(
         interval: const Duration(hours: 2),
       );
       expect(calls, isEmpty);
-      expect(TrustedTimeImpl.instance.debugDesktopBgTimerActive, isTrue);
+      final secondTimer = TrustedTimeImpl.instance.debugDesktopBgTimer;
+      expect(secondTimer, isNotNull);
+      expect(secondTimer, isNot(same(firstTimer)));
+      expect(firstTimer.isActive, isFalse);
+      expect(secondTimer!.isActive, isTrue);
     });
 
     test(
       'swallows native scheduler errors instead of surfacing them',
       () async {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        var schedulerInvoked = false;
         TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
             .setMockMethodCallHandler(bgChannel, (call) async {
+              schedulerInvoked = true;
               throw PlatformException(code: 'SCHEDULER_UNAVAILABLE');
             });
 
@@ -588,6 +598,11 @@ void main() {
           ),
           completes,
         );
+
+        // Distinguishes "error swallowed" from "never tried to schedule":
+        // the native scheduler must have been reached before the error
+        // was absorbed.
+        expect(schedulerInvoked, isTrue);
       },
     );
 
@@ -608,7 +623,7 @@ void main() {
       );
 
       expect(calls, isEmpty);
-      expect(TrustedTimeImpl.instance.debugDesktopBgTimerActive, isFalse);
+      expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
     });
   });
 }
