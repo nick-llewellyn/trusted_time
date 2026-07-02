@@ -203,6 +203,8 @@ On Android this schedules a WorkManager `PeriodicWorkRequest`. On iOS it registe
 **Headless anchor refresh (Android/iOS):** for a background fire to perform a real anchor refresh (rather than a connectivity-only probe), register a top-level `@pragma('vm:entry-point')` callback before `runApp`:
 
 ```dart
+import 'dart:async';
+
 @pragma('vm:entry-point')
 void trustedTimeBackgroundCallback() {
   unawaited(TrustedTime.runBackgroundSync());
