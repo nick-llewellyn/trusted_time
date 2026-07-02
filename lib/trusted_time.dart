@@ -528,10 +528,10 @@ abstract final class TrustedTime {
   /// Schedules OS-level background tasks to keep the trust anchor fresh.
   ///
   /// Leverages platform-native schedulers (WorkManager on Android,
-  /// BGTaskScheduler on iOS/macOS) to perform periodic maintenance
-  /// while the app is backgrounded. On desktop, falls back to a Dart
-  /// [Timer.periodic]. On web, this is a no-op (browsers suspend
-  /// background tabs).
+  /// BGTaskScheduler on iOS) to perform periodic maintenance while the
+  /// app is backgrounded. On desktop (Linux/macOS/Windows), falls back
+  /// to a Dart [Timer.periodic] inside the running isolate. On web,
+  /// this is a no-op (browsers suspend background tabs).
   ///
   /// **Prerequisite for real headless refresh** (Android/iOS): call
   /// [registerBackgroundCallback] first with a host-app
