@@ -554,6 +554,107 @@ void main() {
       // before any platform-channel call).
       expect(calls, isEmpty);
     });
+
+    test('awaits onResult before sending notifyBackgroundComplete', () async {
+      // The teardown-race contract: work done inside onResult must be
+      // fully complete before the native completion signal is sent,
+      // because the Android worker destroys the headless engine on
+      // receipt of that signal. Ordering is pinned by recording events
+      // from both the hook and the channel mock into one list.
+      final events = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            events.add('channel:${call.method}');
+            return null;
+          });
+
+      TrustedTimeBackgroundResult? observed;
+      final result = await public_api.TrustedTime.runBackgroundSync(
+        config: _offlineConfig(
+          persistState: false,
+          sources: [
+            _FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
+            _FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
+          ],
+        ),
+        onResult: (r) async {
+          // A real event-loop turn, mimicking async file I/O in the hook.
+          await Future<void>.delayed(Duration.zero);
+          observed = r;
+          events.add('hook:onResult');
+        },
+      );
+
+      expect(result.isSuccess, isTrue);
+      expect(observed, same(result));
+      expect(events, ['hook:onResult', 'channel:notifyBackgroundComplete']);
+    });
+
+    test('onResult receives the failure result on a failing run', () async {
+      TrustedTimeBackgroundResult? observed;
+      final result = await public_api.TrustedTime.runBackgroundSync(
+        config: _offlineConfig(
+          persistState: false,
+          sources: [
+            _FakeSource(
+              idValue: 'a',
+              groupIdValue: 'g1',
+              utc: consensusUtc,
+              shouldThrow: true,
+            ),
+            _FakeSource(
+              idValue: 'b',
+              groupIdValue: 'g2',
+              utc: consensusUtc,
+              shouldThrow: true,
+            ),
+          ],
+        ),
+        onResult: (r) async => observed = r,
+      );
+      expect(result, isA<BackgroundSyncFailure>());
+      expect(observed, same(result));
+    });
+
+    test('a throwing onResult hook is swallowed: sync outcome and '
+        'completion signal are unaffected', () async {
+      final result = await public_api.TrustedTime.runBackgroundSync(
+        config: _offlineConfig(
+          persistState: false,
+          sources: [
+            _FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
+            _FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
+          ],
+        ),
+        onResult: (_) async => throw StateError('observer exploded'),
+      );
+      expect(result.isSuccess, isTrue);
+      // The completion signal must still be sent, with the sync's own
+      // outcome — not the observer's failure.
+      expect(calls, hasLength(1));
+      expect(calls.single.method, 'notifyBackgroundComplete');
+      expect((calls.single.arguments as Map)['success'], isTrue);
+    });
+
+    test('onResult observes the synthetic result under an active '
+        'TrustedTimeMock override', () async {
+      final mockTime = DateTime.utc(2026, 6, 1, 12);
+      final mock = public_api.TrustedTimeMock(initial: mockTime);
+      public_api.TrustedTime.overrideForTesting(mock);
+      addTearDown(() {
+        public_api.TrustedTime.resetOverride();
+        mock.dispose();
+      });
+
+      TrustedTimeBackgroundResult? observed;
+      final result = await public_api.TrustedTime.runBackgroundSync(
+        onResult: (r) async => observed = r,
+      );
+      expect(observed, same(result));
+      expect(observed, isA<BackgroundSyncSuccess>());
+      // Still zero channel traffic on the override path.
+      expect(calls, isEmpty);
+    });
   });
 
   group('TrustedTime.enableBackgroundSync', () {

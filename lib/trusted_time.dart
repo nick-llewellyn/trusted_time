@@ -634,6 +634,20 @@ abstract final class TrustedTime {
   /// Automatically notifies the native plugin of completion so the headless
   /// engine can be torn down inside the OS budget.
   ///
+  /// **Post-sync work must go in [onResult], not after the returned
+  /// future.** On Android the native worker destroys the headless
+  /// [FlutterEngine] as soon as it receives the completion signal, which
+  /// this method sends internally *before* returning. Any code the caller
+  /// runs after `await runBackgroundSync(...)` therefore races engine
+  /// teardown and is liable to be killed mid-execution — silently, for
+  /// async work such as file or channel I/O. [onResult] is awaited
+  /// *before* the completion signal is sent, so work done inside it (e.g.
+  /// appending to an on-disk log) is guaranteed to finish while the
+  /// engine is still alive. An error thrown from [onResult] is logged and
+  /// swallowed: observer-side failures must not turn a completed sync
+  /// into a failed background fire, nor delay the native completion
+  /// signal beyond the OS budget.
+  ///
   /// When a [TrustedTimeMock] is active via [overrideForTesting], this method
   /// short-circuits before any network I/O, secure-storage write, or
   /// platform-channel traffic, and returns a deterministic
@@ -646,6 +660,7 @@ abstract final class TrustedTime {
   /// Returns a [TrustedTimeBackgroundResult] describing the outcome.
   static Future<TrustedTimeBackgroundResult> runBackgroundSync({
     TrustedTimeConfig config = const TrustedTimeConfig(),
+    Future<void> Function(TrustedTimeBackgroundResult result)? onResult,
   }) async {
     // Honor the test-mock override before any side-effecting work. Mirrors
     // the early-return pattern in initialize / now / enableBackgroundSync /
@@ -655,7 +670,7 @@ abstract final class TrustedTime {
     final override = _override;
     if (override != null) {
       final nowMs = override.nowUnixMs;
-      return BackgroundSyncSuccess(
+      final synthetic = BackgroundSyncSuccess(
         anchor: TrustAnchor(
           networkUtcMs: nowMs,
           // Mock has no uptime / wall / uncertainty surface; synthesize zero
@@ -666,9 +681,19 @@ abstract final class TrustedTime {
         ),
         elapsed: Duration.zero,
       );
+      // The hook contract ("onResult observes every outcome") holds under
+      // the mock too, so host code exercised in tests behaves as it will
+      // in production.
+      await _invokeOnResult(onResult, synthetic);
+      return synthetic;
     }
     WidgetsFlutterBinding.ensureInitialized();
     final result = await bg.runBackgroundSync(config: config);
+    // Awaited BEFORE the completion signal below: the native worker
+    // destroys the headless engine as soon as it receives that signal, so
+    // this is the last point where caller-side async work is guaranteed
+    // to run to completion (see dartdoc).
+    await _invokeOnResult(onResult, result);
     try {
       await _bgChannel.invokeMethod<void>('notifyBackgroundComplete', {
         'success': result.isSuccess,
@@ -692,6 +717,29 @@ abstract final class TrustedTime {
       );
     }
     return result;
+  }
+
+  /// Runs the caller's [runBackgroundSync] `onResult` hook, logging and
+  /// swallowing any error it throws.
+  ///
+  /// Observer-side failures must neither turn a completed sync into a
+  /// failed background fire nor block the native completion signal.
+  static Future<void> _invokeOnResult(
+    Future<void> Function(TrustedTimeBackgroundResult result)? onResult,
+    TrustedTimeBackgroundResult result,
+  ) async {
+    if (onResult == null) return;
+    try {
+      await onResult(result);
+    } catch (e, s) {
+      developer.log(
+        'TrustedTime.runBackgroundSync: onResult hook threw',
+        name: 'trusted_time',
+        level: 900,
+        error: e,
+        stackTrace: s,
+      );
+    }
   }
 
   static const _bgChannel = MethodChannel('trusted_time/background');
