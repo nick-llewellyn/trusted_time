@@ -59,21 +59,37 @@ void trustedTimeBackgroundCallback() {
   unawaited(_runAndLogBackgroundSync());
 }
 
-/// Runs one headless background sync and appends a single summary line to
-/// [BackgroundSyncFileLog], then lets the isolate be torn down.
+/// Runs one headless background sync, appending a `BEGIN` line before the
+/// sync and one result line when it completes, then lets the isolate be
+/// torn down.
 ///
 /// [TrustedTime.runBackgroundSync] already persists the anchor (on success,
 /// when `persistState` is set) and signals native completion via the method
-/// channel; this wrapper adds only the example's own observability. The
-/// entire body is guarded: a logging failure must never turn a successful
-/// sync into a failed background fire, and any thrown error is itself
-/// recorded rather than left to escape the isolate.
+/// channel; this wrapper adds only the example's own observability.
+///
+/// Two teardown-race defences, both required:
+///
+/// - The `BEGIN` line is written and awaited *before* the sync starts, so
+///   an OS-dispatched fire is durably recorded even if everything after it
+///   is lost. Without it, a fire whose result line is truncated leaves no
+///   trace at all — indistinguishable from the OS never dispatching.
+/// - The result line is written inside the `onResult` hook, which
+///   [TrustedTime.runBackgroundSync] awaits *before* it sends the native
+///   completion signal. On Android the worker destroys the headless engine
+///   as soon as that signal arrives, so any append performed after the
+///   outer `await` returns would race the teardown and usually lose.
+///
+/// The whole body is guarded: a logging failure must never turn a
+/// successful sync into a failed background fire, and any thrown error is
+/// itself recorded rather than left to escape the isolate.
 Future<void> _runAndLogBackgroundSync() async {
   try {
-    final result = await TrustedTime.runBackgroundSync(
+    await BackgroundSyncFileLog.append('FIRE      BEGIN');
+    await TrustedTime.runBackgroundSync(
       config: buildStressConfig(),
+      onResult: (result) =>
+          BackgroundSyncFileLog.append(_formatBackgroundResult(result)),
     );
-    await BackgroundSyncFileLog.append(_formatBackgroundResult(result));
   } catch (e) {
     await BackgroundSyncFileLog.append('FIRE      threw    error=$e');
   }
