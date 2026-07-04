@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'anchor_store.dart';
 import 'models.dart';
 import 'monotonic_clock.dart';
+import 'nts_bootstrap.dart';
 import 'sync_engine.dart';
 
 /// Outcome of a single headless background-sync invocation.
@@ -74,6 +75,14 @@ final class BackgroundSyncFailure extends TrustedTimeBackgroundResult {
 /// [SyncEngine.sync], optionally writes the result to [AnchorStorage], and
 /// returns.
 ///
+/// It does, however, run the shared NTS bootstrap ([ensureNtsRuntime])
+/// before building the engine. The OS scheduler runs this callback in a
+/// fresh Dart isolate that does not inherit the foreground isolate's
+/// flutter_rust_bridge initialisation, so the background path must
+/// initialise the NTS FFI itself — otherwise every NTS source throws
+/// instantly and an NTS-only config can never reach quorum
+/// (trusted_time-y81).
+///
 /// Because tier classification and truth-box admission (Secure Time
 /// Contract / ADR 0007) live inside [SyncEngine.sync], a background cycle
 /// produces a [TrustAnchor] with exactly the same `authLevel` and
@@ -93,21 +102,35 @@ final class BackgroundSyncFailure extends TrustedTimeBackgroundResult {
 /// persisted value via the standard warm-restore path.
 ///
 /// All optional parameters exist for testability — production callers should
-/// pass `config` only; the [store] and [clock] defaults wire to the real
-/// secure-storage and platform-channel implementations.
+/// pass `config` only; the [store], [clock], and [ntsInit] defaults wire to
+/// the real secure-storage, platform-channel, and NTS-runtime
+/// implementations. [ntsInit] overrides the NTS bootstrap's initialiser so a
+/// unit test can prove the bootstrap runs without touching the real FFI.
 Future<TrustedTimeBackgroundResult> runBackgroundSync({
   TrustedTimeConfig config = const TrustedTimeConfig(),
   @visibleForTesting AnchorStorage? store,
   @visibleForTesting MonotonicClock? clock,
+  @visibleForTesting NtsInitFn? ntsInit,
 }) async {
   final stopwatch = Stopwatch()..start();
   final anchorStore = store ?? AnchorStore();
   final monotonicClock = clock ?? PlatformMonotonicClock();
-  final engine = SyncEngine(config: config, clock: monotonicClock);
+  // Bootstrap the NTS Rust FFI for this (headless) isolate before the
+  // engine builds any NtsSource. The OS scheduler runs this callback in a
+  // fresh Dart isolate that does not inherit the foreground isolate's
+  // flutter_rust_bridge initialisation, so without this every NTS source
+  // would throw instantly and an NTS-only config could never reach quorum
+  // (trusted_time-y81). Shared with TrustedTime.initialize via
+  // ensureNtsRuntime, which also degrades to an NTS-disabled config if the
+  // bootstrap genuinely fails.
+  final effectiveConfig = ntsInit == null
+      ? await ensureNtsRuntime(config)
+      : await ensureNtsRuntime(config, init: ntsInit);
+  final engine = SyncEngine(config: effectiveConfig, clock: monotonicClock);
 
   try {
     final anchor = await engine.sync();
-    if (config.persistState) {
+    if (effectiveConfig.persistState) {
       await anchorStore.save(anchor);
     }
     stopwatch.stop();

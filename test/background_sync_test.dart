@@ -215,6 +215,101 @@ void main() {
       );
       expect(await store.load(), isNull);
     });
+
+    // Regression coverage for trusted_time-y81: the headless isolate is a
+    // fresh Dart isolate that does not inherit the foreground isolate's
+    // flutter_rust_bridge initialisation, so runBackgroundSync must run the
+    // shared NTS bootstrap itself before the engine builds any NtsSource.
+    // The production defect (background NTS sync reaching 0 eligible samples
+    // and RETRYing forever) went undetected because every existing test
+    // injects fake sources with empty ntsServers, so the bootstrap gate was
+    // never exercised. These tests drive that gate via the injectable
+    // [ntsInit] seam so the real FFI is never touched.
+    group('NTS runtime bootstrap (y81)', () {
+      final consensusUtc = DateTime.utc(2026, 3, 1, 12);
+
+      List<TimeSource> quorumFakes() => [
+        _FakeSource(idValue: 'fake-a', groupIdValue: 'g1', utc: consensusUtc),
+        _FakeSource(
+          idValue: 'fake-b',
+          groupIdValue: 'g2',
+          utc: consensusUtc.add(const Duration(milliseconds: 5)),
+        ),
+      ];
+
+      test(
+        'initialises the NTS runtime when ntsServers is non-empty',
+        () async {
+          var initCalls = 0;
+          final result = await runBackgroundSync(
+            config: _offlineConfig(
+              persistState: false,
+              ntsServers: const ['nts.example.test'],
+              sources: quorumFakes(),
+            ),
+            clock: _FakeMonotonicClock(5000),
+            ntsInit: () async => initCalls++,
+          );
+          // The fakes still form quorum; the key assertion is that the
+          // background path bootstrapped the NTS FFI exactly once before
+          // building the engine.
+          expect(initCalls, 1);
+          expect(result.isSuccess, isTrue);
+        },
+      );
+
+      test('skips the NTS runtime when ntsServers is empty', () async {
+        var initCalls = 0;
+        final result = await runBackgroundSync(
+          config: _offlineConfig(persistState: false, sources: quorumFakes()),
+          clock: _FakeMonotonicClock(5000),
+          ntsInit: () async => initCalls++,
+        );
+        // Zero-overhead-when-unused: no ntsServers means no bootstrap.
+        expect(initCalls, 0);
+        expect(result.isSuccess, isTrue);
+      });
+
+      test('a genuine init failure degrades to NTS-disabled and still '
+          'succeeds via other sources', () async {
+        final store = InMemoryAnchorStorage();
+        final result = await runBackgroundSync(
+          config: _offlineConfig(
+            ntsServers: const ['nts.example.test'],
+            sources: quorumFakes(),
+          ),
+          store: store,
+          clock: _FakeMonotonicClock(5000),
+          // A non-StateError (or a StateError whose message does not name
+          // flutter_rust_bridge) is a real init failure: the bootstrap must
+          // strip ntsServers rather than abort the whole cycle.
+          ntsInit: () async => throw Exception('native asset missing'),
+        );
+        expect(result.isSuccess, isTrue);
+        expect(await store.load(), isNotNull);
+      });
+
+      test('treats an already-initialised StateError as success', () async {
+        final store = InMemoryAnchorStorage();
+        final result = await runBackgroundSync(
+          config: _offlineConfig(
+            ntsServers: const ['nts.example.test'],
+            sources: quorumFakes(),
+          ),
+          store: store,
+          clock: _FakeMonotonicClock(5000),
+          // Mirrors package:nts's process-wide double-init panic wording;
+          // the shared bootstrap must swallow it so a foreground init
+          // followed by a background fire in the same process does not
+          // silently disable NTS.
+          ntsInit: () async => throw StateError(
+            'Should not initialize flutter_rust_bridge twice',
+          ),
+        );
+        expect(result.isSuccess, isTrue);
+        expect(await store.load(), isNotNull);
+      });
+    });
   });
 
   group('TrustedTime.registerBackgroundCallback', () {
@@ -629,13 +724,20 @@ void main() {
 }
 
 /// Builds a network-free config whose only sources are the injected fakes.
+///
+/// [ntsServers] defaults to empty so the config stays fully offline. The
+/// y81 regression tests pass a non-empty list to exercise the NTS bootstrap
+/// gate; the injected fakes still supply quorum, and any real [NtsSource]
+/// built from [ntsServers] is caught per-source by the engine (it throws
+/// "not initialised") without aborting the cycle.
 TrustedTimeConfig _offlineConfig({
   required List<TimeSource> sources,
   bool persistState = true,
+  List<String> ntsServers = const [],
 }) => TrustedTimeConfig(
   ntpServers: const [],
   httpsSources: const [],
-  ntsServers: const [],
+  ntsServers: ntsServers,
   minimumQuorum: 2,
   persistState: persistState,
   additionalSources: sources,

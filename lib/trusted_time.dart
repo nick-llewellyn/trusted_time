@@ -57,6 +57,7 @@ import 'src/background_sync.dart' as bg show runBackgroundSync;
 import 'src/exceptions.dart';
 import 'src/integrity_event.dart';
 import 'src/models.dart';
+import 'src/nts_bootstrap.dart';
 import 'src/trusted_time_estimate.dart';
 import 'src/trusted_time_impl.dart';
 import 'src/trusted_time_mock.dart';
@@ -154,55 +155,13 @@ abstract final class TrustedTime {
     }
 
     // Initialize the flutter_rust_bridge runtime backing package:nts
-    // before any NtsSource is constructed.  Gated on
-    // ntsServers.isNotEmpty to preserve the package's "zero overhead
-    // when unused" guarantee.  NtsRustLib uses a process-wide
-    // singleton: a second init() call within the same process throws
-    // `StateError: Should not initialize flutter_rust_bridge twice`.
-    // That happens whenever the host app re-initialises TrustedTime
-    // (benchmark UIs that cycle the engine through different source
-    // pools, hot-restart in development, etc.). We treat the
-    // "already initialised" StateError as success so re-init flows
-    // do not silently strip ntsServers and leave the engine with
-    // zero sources for the rest of the process lifetime. Other
-    // exceptions (missing native asset, arch mismatch, etc.) are
-    // still treated as real failures and disable NTS for this
-    // configuration.
-    if (config.ntsServers.isNotEmpty) {
-      try {
-        await nts.NtsRustLib.init();
-      } catch (e) {
-        // Detect "already initialised" loosely: any StateError whose
-        // message references flutter_rust_bridge. The exact phrase
-        // "Should not initialize flutter_rust_bridge twice" is the
-        // current upstream wording but is not part of any public API
-        // contract; matching just the package name is robust to
-        // wording / capitalisation drift across frb releases while
-        // still narrow enough not to swallow unrelated StateErrors
-        // from other code paths. The case-insensitive comparison
-        // (lowercasing both sides) is the source of that
-        // capitalisation robustness — without it we would only
-        // accept the canonical lowercase package name as it appears
-        // in upstream's current panic, defeating the safety margin
-        // the loose match was added for. If frb starts throwing
-        // StateError for genuinely new structural failures we will
-        // need to revisit, but the failure mode of an unrecognised
-        // double-init (silently disabling NTS) is significantly
-        // worse than the failure mode of an unrecognised real error
-        // (the engine will surface it at first NTS use).
-        final message = e is StateError ? e.message.toLowerCase() : '';
-        final alreadyInitialised =
-            e is StateError && message.contains('flutter_rust_bridge');
-        if (!alreadyInitialised) {
-          if (kDebugMode) {
-            debugPrint(
-              '[TrustedTime] NTS disabled — NtsRustLib.init failed: $e',
-            );
-          }
-          config = config.copyWith(ntsServers: const []);
-        }
-      }
-    }
+    // before any NtsSource is constructed, degrading to an NTS-disabled
+    // config if the FFI bootstrap genuinely fails. The gating,
+    // already-initialised-as-success, and degrade semantics live in the
+    // shared ensureNtsRuntime helper so the headless background isolate
+    // (runBackgroundSync) performs the identical bootstrap — see
+    // trusted_time-y81.
+    config = await ensureNtsRuntime(config);
 
     await TrustedTimeImpl.init(config);
   }
