@@ -62,6 +62,18 @@ Future<void> main() async {
   // than the back-compat HTTPS-HEAD connectivity fallback.
   await TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback);
 
+  // Verification hook: --dart-define=BG_SYNC_MINUTES=15 auto-schedules the
+  // native periodic background sync at startup (floored to WorkManager's
+  // 15-min minimum), so the recurring headless path can be observed
+  // unattended without tapping the Section 5 switch. A normal launch
+  // (define absent) does nothing here and keeps the switch-driven 24h flow.
+  const bgSyncMinutes = int.fromEnvironment('BG_SYNC_MINUTES', defaultValue: 0);
+  if (bgSyncMinutes > 0) {
+    await TrustedTime.enableBackgroundSync(
+      interval: Duration(minutes: bgSyncMinutes),
+    );
+  }
+
   // Register telemetry after init so the recorder receives every
   // subsequent sync cycle (refreshes, Force Resync, integrity-triggered
   // syncs). The very first bootstrap sync is missed because the engine
@@ -732,8 +744,19 @@ class _HomePageState extends State<HomePage> {
                         _bgSyncEnabled = val;
                       });
                       if (val) {
+                        // Verification hook: --dart-define=BG_SYNC_MINUTES=15
+                        // requests a fast cadence (floored to WorkManager's
+                        // 15-min minimum) so the periodic headless path can be
+                        // observed over a short window. Defaults to 24h — a
+                        // normal launch is unaffected.
+                        const overrideMinutes = int.fromEnvironment(
+                          'BG_SYNC_MINUTES',
+                          defaultValue: 0,
+                        );
                         TrustedTime.enableBackgroundSync(
-                          interval: const Duration(hours: 24),
+                          interval: overrideMinutes > 0
+                              ? Duration(minutes: overrideMinutes)
+                              : const Duration(hours: 24),
                         );
                       }
                     },
