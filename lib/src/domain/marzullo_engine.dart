@@ -91,8 +91,9 @@ final class ConsensusResult {
   /// engine's structural anchor, not the weighted estimate [utc].
   final Set<TimeSample> participants;
 
-  /// The authentication level of the consensus, never the highest level
-  /// present — one verified sample does not lift the anchor.
+  /// The authentication level of the consensus. It is not computed as the
+  /// highest ("best seen") level present — one verified sample does not lift
+  /// the anchor.
   ///
   /// As published by [MarzulloEngine.resolve], this follows the tiered-trust
   /// truth-box policy, not a plain per-sample reduction: it is
