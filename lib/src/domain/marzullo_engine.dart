@@ -94,11 +94,13 @@ final class ConsensusResult {
   /// The weakest-link (minimum) authentication level across the consensus
   /// quorum.
   ///
-  /// This is [NtsAuthLevel.verified] only when *every* participant is
-  /// verified; a single unauthenticated participant collapses it to
+  /// This is [NtsAuthLevel.verified] only when *every* sample in the quorum
+  /// is verified; a single unauthenticated sample collapses it to
   /// [NtsAuthLevel.none]. It is never the highest level present — one
-  /// verified sample does not lift the anchor. See the "weakest link"
-  /// reduction in [MarzulloEngine.resolve].
+  /// verified sample does not lift the anchor. The reduction runs over the
+  /// full quorum (all samples overlapping the consensus window), not the
+  /// narrower [participants] subset that pins the geometric midpoint. See
+  /// the "weakest link" reduction in [MarzulloEngine.resolve].
   final NtsAuthLevel authLevel;
 
   /// Qualitative grade of the consensus established by the [MarzulloEngine].
