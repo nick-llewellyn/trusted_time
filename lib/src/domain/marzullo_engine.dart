@@ -91,16 +91,19 @@ final class ConsensusResult {
   /// engine's structural anchor, not the weighted estimate [utc].
   final Set<TimeSample> participants;
 
-  /// The weakest-link (minimum) authentication level across the consensus
-  /// quorum.
+  /// The authentication level of the consensus, never the highest level
+  /// present — one verified sample does not lift the anchor.
   ///
-  /// This is [NtsAuthLevel.verified] only when *every* sample in the quorum
-  /// is verified; a single unauthenticated sample collapses it to
-  /// [NtsAuthLevel.none]. It is never the highest level present — one
-  /// verified sample does not lift the anchor. The reduction runs over the
-  /// full quorum (all samples overlapping the consensus window), not the
-  /// narrower [participants] subset that pins the geometric midpoint. See
-  /// the "weakest link" reduction in [MarzulloEngine.resolve].
+  /// As published by [MarzulloEngine.resolve], this follows the tiered-trust
+  /// truth-box policy, not a plain per-sample reduction: it is
+  /// [NtsAuthLevel.verified] iff a Tier 1 truth box formed (in which case
+  /// lower-tier samples may be re-admitted into the merged reduction without
+  /// downgrading it), and forced to [NtsAuthLevel.none] on a degraded cycle
+  /// (see [ConsensusResult.degradedTier]). The underlying legacy single-tier
+  /// reduction ([MarzulloEngine.resolve]'s fallback) computes a weakest-link
+  /// minimum over the whole quorum (all samples overlapping the consensus
+  /// window, not the narrower [participants] subset), where a single
+  /// unauthenticated sample collapses it to [NtsAuthLevel.none].
   final NtsAuthLevel authLevel;
 
   /// Qualitative grade of the consensus established by the [MarzulloEngine].
