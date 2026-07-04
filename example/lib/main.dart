@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:nts/nts.dart' show NtsDnsPoolStats, ntsDnsPoolStats;
 import 'package:trusted_time/trusted_time.dart';
+import 'background_sync_file_log.dart';
 import 'benchmark_logger.dart';
 import 'burst/burst_probe_panel.dart';
 import 'nts_sources.dart';
@@ -49,7 +50,61 @@ void trustedTimeBackgroundCallback() {
   // the returned Future. `unawaited(...)` makes the fire-and-forget intent
   // explicit and keeps `unawaited_futures` clean if a host copy/pastes
   // this pattern into an async context.
-  unawaited(TrustedTime.runBackgroundSync(config: buildStressConfig()));
+  //
+  // The work is delegated to an async helper so the outcome can be awaited
+  // and appended to BackgroundSyncFileLog: this callback runs in the
+  // headless isolate, which the foreground telemetry stack never observes,
+  // so the on-disk transcript is the only durable record of a background
+  // fire (readable in-app or via `adb pull`, no logcat needed).
+  unawaited(_runAndLogBackgroundSync());
+}
+
+/// Runs one headless background sync and appends a single summary line to
+/// [BackgroundSyncFileLog], then lets the isolate be torn down.
+///
+/// [TrustedTime.runBackgroundSync] already persists the anchor (on success,
+/// when `persistState` is set) and signals native completion via the method
+/// channel; this wrapper adds only the example's own observability. The
+/// entire body is guarded: a logging failure must never turn a successful
+/// sync into a failed background fire, and any thrown error is itself
+/// recorded rather than left to escape the isolate.
+Future<void> _runAndLogBackgroundSync() async {
+  try {
+    final result = await TrustedTime.runBackgroundSync(
+      config: buildStressConfig(),
+    );
+    await BackgroundSyncFileLog.append(_formatBackgroundResult(result));
+  } catch (e) {
+    await BackgroundSyncFileLog.append('FIRE      threw    error=$e');
+  }
+}
+
+/// Formats a [TrustedTimeBackgroundResult] as one aligned log line for the
+/// on-disk background-sync transcript.
+///
+/// On success the anchor's key fields are surfaced (network UTC, auth
+/// level, confidence, uncertainty) so a reader can confirm not just that a
+/// fire happened but that it reached a real, trustworthy anchor. On failure
+/// the reason string is carried verbatim. The `elapsed` wall-clock duration
+/// is included in both cases as a coarse health signal.
+String _formatBackgroundResult(TrustedTimeBackgroundResult result) {
+  final elapsedMs = result is BackgroundSyncSuccess
+      ? result.elapsed.inMilliseconds
+      : (result as BackgroundSyncFailure).elapsed.inMilliseconds;
+  final elapsed = '${elapsedMs}ms';
+  switch (result) {
+    case BackgroundSyncSuccess(:final anchor):
+      final utc = DateTime.fromMillisecondsSinceEpoch(
+        anchor.networkUtcMs,
+        isUtc: true,
+      ).toIso8601String();
+      return 'FIRE      SUCCESS  elapsed=$elapsed '
+          'utc=$utc auth=${anchor.authLevel.name} '
+          'confidence=${anchor.confidence.name} '
+          '±${anchor.uncertaintyMs}ms';
+    case BackgroundSyncFailure(:final reason):
+      return 'FIRE      FAILURE  elapsed=$elapsed reason=$reason';
+  }
 }
 
 Future<void> main() async {
@@ -764,6 +819,10 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
+            _sectionHeader('Section 5b — Background Sync Log (headless)'),
+            _card(
+              child: const _BackgroundSyncLogPanel(),
+            ),
             _sectionHeader('Section 6 — Sync Telemetry'),
             _card(
               child: _SyncTelemetryPanel(recorder: widget.telemetry),
@@ -894,6 +953,129 @@ class _HomePageState extends State<HomePage> {
         padding: const EdgeInsets.all(16),
         child: SizedBox(width: double.infinity, child: child),
       ),
+    );
+  }
+}
+
+/// Reads the on-disk background-sync transcript
+/// ([BackgroundSyncFileLog]) back into the UI so the headless path is
+/// observable in-app, without a `logcat` capture.
+///
+/// The headless isolate that writes this file is a separate process the
+/// foreground telemetry stack never sees, so this panel is the in-app
+/// window onto it. It loads on mount and on demand (there is no live
+/// stream across the isolate boundary — a background fire happens while
+/// this widget may not even be alive — so an explicit refresh is the
+/// honest model). The resolved file path is shown so the same transcript
+/// can be pulled off-device with `adb pull <path>`.
+class _BackgroundSyncLogPanel extends StatefulWidget {
+  const _BackgroundSyncLogPanel();
+
+  @override
+  State<_BackgroundSyncLogPanel> createState() =>
+      _BackgroundSyncLogPanelState();
+}
+
+class _BackgroundSyncLogPanelState extends State<_BackgroundSyncLogPanel> {
+  List<String> _lines = const [];
+  String? _path;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  Future<void> _reload() async {
+    setState(() => _loading = true);
+    final path = await BackgroundSyncFileLog.resolvePath();
+    final lines = await BackgroundSyncFileLog.readLatest();
+    if (!mounted) return;
+    setState(() {
+      _path = path;
+      _lines = lines;
+      _loading = false;
+    });
+  }
+
+  Future<void> _clear() async {
+    await BackgroundSyncFileLog.clear();
+    await _reload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              _loading
+                  ? 'Loading…'
+                  : '${_lines.length} entr${_lines.length == 1 ? 'y' : 'ies'} '
+                      '(newest first)',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            Row(
+              children: [
+                IconButton(
+                  tooltip: 'Refresh',
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _loading ? null : _reload,
+                ),
+                IconButton(
+                  tooltip: 'Clear log',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: _loading || _lines.isEmpty ? null : _clear,
+                ),
+              ],
+            ),
+          ],
+        ),
+        if (_path != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: SelectableText(
+              'adb pull $_path',
+              style: const TextStyle(fontSize: 11, color: Colors.white54),
+            ),
+          ),
+        Container(
+          width: double.infinity,
+          height: 180,
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.black,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: _lines.isEmpty
+              ? const Center(
+                  child: Text(
+                    'No background fires recorded yet.\n'
+                    'Trigger one, then Refresh.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: _lines.length,
+                  itemBuilder: (context, i) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 1),
+                    child: SelectableText(
+                      _lines[i],
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                        color: Colors.greenAccent,
+                      ),
+                    ),
+                  ),
+                ),
+        ),
+      ],
     );
   }
 }
