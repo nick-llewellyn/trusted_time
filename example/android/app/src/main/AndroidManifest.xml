@@ -1,4 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required in ALL build modes, not just debug/profile: every trusted
+         time source (NTP, HTTPS, NTS) needs network access, including the
+         headless background-sync isolate. Debug and profile builds already
+         receive this permission via their src/debug and src/profile manifest
+         overlays (the Flutter tool needs it for hot reload), which masks its
+         absence here — a release build without it fails every sync. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="trusted_time_example"
         android:name="${applicationName}"
