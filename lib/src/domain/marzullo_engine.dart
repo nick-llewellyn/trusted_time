@@ -91,7 +91,20 @@ final class ConsensusResult {
   /// engine's structural anchor, not the weighted estimate [utc].
   final Set<TimeSample> participants;
 
-  /// The highest common authentication level achieved across the consensus group.
+  /// The authentication level of the consensus. It is not computed as the
+  /// highest ("best seen") level present — one verified sample does not lift
+  /// the anchor.
+  ///
+  /// As published by [MarzulloEngine.resolve], this follows the tiered-trust
+  /// truth-box policy, not a plain per-sample reduction: it is
+  /// [NtsAuthLevel.verified] iff a Tier 1 truth box formed (in which case
+  /// lower-tier samples may be re-admitted into the merged reduction without
+  /// downgrading it), and forced to [NtsAuthLevel.none] on a degraded cycle
+  /// (see [ConsensusResult.degradedTier]). The underlying legacy single-tier
+  /// reduction ([MarzulloEngine.resolve]'s fallback) computes a weakest-link
+  /// minimum over the whole quorum (all samples overlapping the consensus
+  /// window, not the narrower [participants] subset), where a single
+  /// unauthenticated sample collapses it to [NtsAuthLevel.none].
   final NtsAuthLevel authLevel;
 
   /// Qualitative grade of the consensus established by the [MarzulloEngine].
