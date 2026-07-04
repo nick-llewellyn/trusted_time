@@ -51,7 +51,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     #if os(iOS)
     private let bgTaskId = "com.trustedtime.backgroundsync"
     private var bgRegistered = false
-    private var bgIntervalHours = 24
+    private var bgIntervalMinutes = 24 * 60
     private let probeUrl = "https://www.google.com"
     private var backgroundChannel: FlutterMethodChannel?
     private var headlessEngine: FlutterEngine?
@@ -101,8 +101,8 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
             result(Int64(ProcessInfo.processInfo.systemUptime * 1000))
         case "enableBackgroundSync":
             #if os(iOS)
-            let hours = (call.arguments as? [String: Any])?["intervalHours"] as? Int ?? 24
-            bgIntervalHours = hours
+            let minutes = (call.arguments as? [String: Any])?["intervalMinutes"] as? Int ?? (24 * 60)
+            bgIntervalMinutes = minutes
             registerBgSync()
             result(nil)
             #else
@@ -142,7 +142,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     #if os(iOS)
     /// Registers the BGAppRefreshTask once, then schedules the next execution.
     /// Subsequent calls reuse the existing registration; the interval is
-    /// read from [bgIntervalHours] inside the handler closure.
+    /// read from [bgIntervalMinutes] inside the handler closure.
     ///
     /// `BGTaskScheduler.register(...)` returns `false` for two distinct
     /// reasons that the API does not let us distinguish:
@@ -198,7 +198,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
 
     private func scheduleNextBgSync() {
         let req = BGAppRefreshTaskRequest(identifier: bgTaskId)
-        req.earliestBeginDate = Date(timeIntervalSinceNow: Double(bgIntervalHours) * 3600)
+        req.earliestBeginDate = Date(timeIntervalSinceNow: Double(bgIntervalMinutes) * 60)
         // Use do/try/catch instead of try? so the precise BGTaskScheduler
         // error code (e.g. .notPermitted for a missing Info.plist entry,
         // .tooManyPendingTaskRequests, .unavailable) shows up in device

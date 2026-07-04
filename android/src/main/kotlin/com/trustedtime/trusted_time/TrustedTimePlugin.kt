@@ -48,8 +48,8 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         when (call.method) {
             "getUptimeMs" -> result.success(SystemClock.elapsedRealtime())
             "enableBackgroundSync" -> {
-                val hours = call.argument<Int>("intervalHours") ?: 24
-                scheduleBackgroundSync(hours.toLong())
+                val minutes = call.argument<Int>("intervalMinutes") ?: (24 * 60)
+                scheduleBackgroundSync(minutes.toLong())
                 result.success(null)
             }
             "setBackgroundCallbackHandle" -> {
@@ -78,8 +78,15 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         }
     }
 
-    private fun scheduleBackgroundSync(intervalHours: Long) {
-        val request = PeriodicWorkRequestBuilder<BackgroundSyncWorker>(intervalHours, TimeUnit.HOURS)
+    private fun scheduleBackgroundSync(intervalMinutes: Long) {
+        // WorkManager rejects periodic intervals below its hard 15-minute
+        // floor (PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS). The Dart
+        // layer already clamps to this floor; re-clamp here so a direct
+        // channel call (or a future caller) can never construct an
+        // unschedulable request.
+        val floorMinutes = PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS / 60_000L
+        val minutes = maxOf(intervalMinutes, floorMinutes)
+        val request = PeriodicWorkRequestBuilder<BackgroundSyncWorker>(minutes, TimeUnit.MINUTES)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .build()
         WorkManager.getInstance(context)

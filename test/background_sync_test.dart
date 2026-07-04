@@ -603,18 +603,21 @@ void main() {
           .setMockMethodCallHandler(integrityChannel, null);
     });
 
-    test('forwards intervalHours to the native scheduler on Android', () async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    test(
+      'forwards intervalMinutes to the native scheduler on Android',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
 
-      await public_api.TrustedTime.enableBackgroundSync(
-        interval: const Duration(hours: 24),
-      );
+        await public_api.TrustedTime.enableBackgroundSync(
+          interval: const Duration(hours: 24),
+        );
 
-      expect(calls, hasLength(1));
-      expect(calls.single.method, 'enableBackgroundSync');
-      expect(calls.single.arguments, {'intervalHours': 24});
-      expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
-    });
+        expect(calls, hasLength(1));
+        expect(calls.single.method, 'enableBackgroundSync');
+        expect(calls.single.arguments, {'intervalMinutes': 24 * 60});
+        expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
+      },
+    );
 
     test('routes iOS through the native scheduler as well', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
@@ -625,29 +628,40 @@ void main() {
 
       expect(calls, hasLength(1));
       expect(calls.single.method, 'enableBackgroundSync');
-      expect(calls.single.arguments, {'intervalHours': 12});
+      expect(calls.single.arguments, {'intervalMinutes': 12 * 60});
       expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
     });
 
-    test('clamps sub-hour intervals up to 1 hour for the native '
-        'scheduler', () async {
+    test('forwards a sub-hour interval at minute resolution (above the '
+        'floor)', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
 
       await public_api.TrustedTime.enableBackgroundSync(
         interval: const Duration(minutes: 30),
       );
 
-      expect(calls.single.arguments, {'intervalHours': 1});
+      expect(calls.single.arguments, {'intervalMinutes': 30});
     });
 
-    test('clamps intervals above one week down to 168 hours', () async {
+    test('clamps intervals below the 15-minute WorkManager floor', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+
+      await public_api.TrustedTime.enableBackgroundSync(
+        interval: const Duration(minutes: 10),
+      );
+
+      expect(calls.single.arguments, {'intervalMinutes': 15});
+    });
+
+    test('clamps intervals above one week down to 168 hours worth of '
+        'minutes', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
 
       await public_api.TrustedTime.enableBackgroundSync(
         interval: const Duration(hours: 400),
       );
 
-      expect(calls.single.arguments, {'intervalHours': 168});
+      expect(calls.single.arguments, {'intervalMinutes': 168 * 60});
     });
 
     test('arms an in-isolate periodic timer on desktop with no channel '

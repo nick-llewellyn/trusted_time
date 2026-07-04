@@ -500,6 +500,12 @@ abstract final class TrustedTime {
   /// auto-registers plugins on engine creation). If either is missing,
   /// background fires fall back to a connectivity-only HTTPS HEAD probe
   /// that does not refresh the anchor — see ADR 0002.
+  ///
+  /// **Interval granularity**: [interval] is applied at minute resolution.
+  /// Android's [WorkManager] enforces a hard 15-minute minimum on periodic
+  /// work; any shorter [interval] is clamped up to 15 minutes. Sub-minute
+  /// precision is not meaningful for OS-scheduled background work and is
+  /// discarded. The upper bound is one week.
   static Future<void> enableBackgroundSync({
     Duration interval = const Duration(hours: 24),
   }) {

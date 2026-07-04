@@ -339,14 +339,21 @@ final class TrustedTimeImpl {
   /// creation.
   ///
   /// **Desktop** (Linux/macOS/Windows): a [Timer.periodic] inside the
-  /// running isolate re-syncs at [interval].
+  /// running isolate re-syncs at [interval] (honoured exactly — no floor).
   /// **Web**: no-op (browsers suspend background tabs).
+  ///
+  /// On Android/iOS [interval] is applied at minute resolution and clamped
+  /// to `[15 min, 1 week]` to respect [WorkManager]'s hard periodic floor;
+  /// the desktop timer path honours [interval] as given.
   Future<void> enableBackgroundSync(Duration interval) async {
     if (kIsWeb) return;
     if (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS) {
-      if (kDebugMode && interval.inHours < 1) {
-        debugPrint('[TrustedTime] Background sync interval below 1h; clamped.');
+      if (kDebugMode && interval.inMinutes < 15) {
+        debugPrint(
+          '[TrustedTime] Background sync interval below the platform '
+          'scheduler floor (15 min); clamped up.',
+        );
       }
       await _invokeBackgroundSync(interval);
     } else {
@@ -790,10 +797,23 @@ final class TrustedTimeImpl {
 
   static const _bgChannel = MethodChannel('trusted_time/background');
 
+  /// Lower bound (minutes) enforced by the platform scheduler. Android's
+  /// [WorkManager] rejects any periodic interval below 15 minutes
+  /// (`PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS`); we mirror that
+  /// floor here so the request the native layer receives is always
+  /// schedulable and the clamp is visible to Dart-side tests.
+  static const int _minBgSyncMinutes = 15;
+
+  /// Upper bound (minutes) = one week, matching the previous 168h cap.
+  static const int _maxBgSyncMinutes = 168 * 60;
+
   Future<void> _invokeBackgroundSync(Duration interval) async {
     try {
       await _bgChannel.invokeMethod<void>('enableBackgroundSync', {
-        'intervalHours': interval.inHours.clamp(1, 168),
+        'intervalMinutes': interval.inMinutes.clamp(
+          _minBgSyncMinutes,
+          _maxBgSyncMinutes,
+        ),
       });
     } catch (e) {
       if (kDebugMode) debugPrint('[TrustedTime] Background sync failed: $e');
