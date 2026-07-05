@@ -1,6 +1,8 @@
 package com.trustedtime.trusted_time
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import androidx.work.*
 import io.flutter.FlutterInjector
@@ -74,6 +76,8 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 // cannot prematurely complete an in-flight background run.
                 result.success(null)
             }
+            "getBackgroundStopReason" ->
+                respondWithBackgroundStopReason(context, result)
             else -> result.notImplemented()
         }
     }
@@ -90,7 +94,7 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .build()
         WorkManager.getInstance(context)
-            .enqueueUniquePeriodicWork("trusted_time_sync", ExistingPeriodicWorkPolicy.UPDATE, request)
+            .enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, request)
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -103,8 +107,62 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         internal const val PREFS = "trusted_time_prefs"
         internal const val KEY_HANDLE = "tt_bg_callback_handle"
         internal const val BG_CHANNEL = "trusted_time/background"
+        internal const val WORK_NAME = "trusted_time_sync"
     }
 }
+
+/**
+ * Answers `getBackgroundStopReason` with the unique periodic work's state
+ * and [WorkInfo.getStopReason] — the reason the OS stopped the *previous*
+ * run attempt (WorkManager 2.9+; the platform populates real stop reasons
+ * on API 31+, earlier releases report STOP_REASON_NOT_STOPPED).
+ *
+ * Shared by the foreground plugin handler and the worker's scoped headless
+ * handler: the worker replaces the plugin's handler on [BG_CHANNEL] for the
+ * headless engine, so without the worker-side branch a background fire —
+ * the caller that actually wants this diagnostic — would get
+ * notImplemented. The WorkManager query completes asynchronously; the
+ * listener hops to the main looper because [MethodChannel.Result] must be
+ * invoked on the platform thread.
+ */
+private fun respondWithBackgroundStopReason(
+    context: Context,
+    result: MethodChannel.Result,
+) {
+    val future = WorkManager.getInstance(context)
+        .getWorkInfosForUniqueWork(TrustedTimePlugin.WORK_NAME)
+    future.addListener(
+        {
+            try {
+                val info = future.get().firstOrNull()
+                if (info == null) {
+                    result.success(null)
+                } else {
+                    result.success(
+                        mapOf(
+                            "state" to info.state.name,
+                            "stopReason" to info.stopReason,
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                result.error("STOP_REASON_UNAVAILABLE", e.message ?: e.toString(), null)
+            }
+        },
+        { runnable -> Handler(Looper.getMainLooper()).post(runnable) },
+    )
+}
+
+/**
+ * Outcome of a headless background sync as reported by the Dart isolate
+ * via `notifyBackgroundComplete`.
+ *
+ * Distinguishing retryable from permanent failures lets the worker return
+ * `Result.failure()` for errors that would fail identically on every
+ * attempt (e.g. an invalid config), ending the current interval's retry
+ * chain while leaving the periodic schedule intact.
+ */
+private enum class SyncVerdict { SUCCESS, FAILED_RETRYABLE, FAILED_PERMANENT }
 
 /**
  * Periodic worker that performs the actual anchor refresh.
@@ -137,7 +195,13 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
     private suspend fun runHeadlessSync(
         callbackInfo: FlutterCallbackInformation,
     ): Result {
-        val deferred = CompletableDeferred<Boolean>()
+        // The deferred carries the Dart isolate's verdict, not just a
+        // boolean: SUCCESS, FAILED_RETRYABLE (transient — quorum/timeout;
+        // WorkManager should re-attempt this interval with backoff), or
+        // FAILED_PERMANENT (non-transient — e.g. invalid config; retrying
+        // would fail identically, so give up on this interval and wait
+        // for the next periodic fire).
+        val deferred = CompletableDeferred<SyncVerdict>()
         // Captured outside the try so the finally can tear down whatever
         // was created even when initialization itself throws partway
         // (e.g. executeDartCallback failing after the engine exists).
@@ -175,17 +239,32 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
                 )
                 workerChannel = channel
                 channel.setMethodCallHandler { call, result ->
-                    if (call.method == "notifyBackgroundComplete") {
-                        val success = call.argument<Boolean>("success") ?: false
-                        // CompletableDeferred.complete returns false (rather than
-                        // throwing) when the deferred has already been resolved,
-                        // which makes duplicate notifyBackgroundComplete calls or
-                        // a late call racing with teardown safe. We discard the
-                        // boolean intentionally — only the first signal counts.
-                        deferred.complete(success)
-                        result.success(null)
-                    } else {
-                        result.notImplemented()
+                    when (call.method) {
+                        "notifyBackgroundComplete" -> {
+                            val success = call.argument<Boolean>("success") ?: false
+                            // Absent flag (older Dart side) defaults to retryable,
+                            // preserving the previous always-retry behaviour.
+                            val retryable = call.argument<Boolean>("retryable") ?: true
+                            val verdict = when {
+                                success -> SyncVerdict.SUCCESS
+                                retryable -> SyncVerdict.FAILED_RETRYABLE
+                                else -> SyncVerdict.FAILED_PERMANENT
+                            }
+                            // CompletableDeferred.complete returns false (rather than
+                            // throwing) when the deferred has already been resolved,
+                            // which makes duplicate notifyBackgroundComplete calls or
+                            // a late call racing with teardown safe. We discard the
+                            // boolean intentionally — only the first signal counts.
+                            deferred.complete(verdict)
+                            result.success(null)
+                        }
+                        // The headless Dart isolate queries the previous
+                        // attempt's stop reason at the start of each fire;
+                        // this handler shadows the plugin's on the headless
+                        // engine, so the branch must exist here too.
+                        "getBackgroundStopReason" ->
+                            respondWithBackgroundStopReason(applicationContext, result)
+                        else -> result.notImplemented()
                     }
                 }
                 val args = DartExecutor.DartCallback(
@@ -201,8 +280,13 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
             // the OS. The wait runs off-main on the worker's coroutine
             // dispatcher (Dispatchers.Default by default for
             // CoroutineWorker), so a long Dart sync does not block Main.
-            val success = withTimeoutOrNull(9 * 60 * 1000L) { deferred.await() }
-            if (success == true) Result.success() else Result.retry()
+            // A timeout (null) is a budget kill, not a Dart verdict, so it
+            // stays retryable.
+            when (withTimeoutOrNull(9 * 60 * 1000L) { deferred.await() }) {
+                SyncVerdict.SUCCESS -> Result.success()
+                SyncVerdict.FAILED_PERMANENT -> Result.failure()
+                SyncVerdict.FAILED_RETRYABLE, null -> Result.retry()
+            }
         } catch (e: CancellationException) {
             // Preserve cooperative cancellation: WorkManager cancelling
             // the worker must propagate, not be converted into a retry.

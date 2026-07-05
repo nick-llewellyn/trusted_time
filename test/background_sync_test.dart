@@ -87,6 +87,7 @@ void main() {
         ),
         store: store,
         clock: _FakeMonotonicClock(5000),
+        retryDelays: const [],
       );
       expect(result, isA<BackgroundSyncFailure>());
       expect(result.isSuccess, isFalse);
@@ -187,6 +188,7 @@ void main() {
         ),
         store: store,
         clock: _FakeMonotonicClock(7000),
+        retryDelays: const [],
       );
 
       expect(result, isA<BackgroundSyncFailure>());
@@ -213,7 +215,105 @@ void main() {
         (result as BackgroundSyncFailure).reason,
         contains('mutually exclusive'),
       );
+      expect(result.retryable, isFalse);
       expect(await store.load(), isNull);
+    });
+
+    // Coverage for the in-run retry loop added after the doze
+    // maintenance-window failure mode was observed on-device: the OS wakes
+    // the device, reports the network CONNECTED, and fires the worker, but
+    // the just-woken radio serves degraded latency so the first quorum
+    // attempt fails while a retry seconds later succeeds. The loop retries
+    // TrustedTimeSyncException per the retryDelays schedule with a fresh
+    // engine per attempt, and fails immediately on non-transient errors.
+    group('in-run retry', () {
+      test('retries a transient quorum failure and succeeds within the '
+          'same run', () async {
+        final store = InMemoryAnchorStorage();
+        // Both sources fail on the first attempt (quorum failure), then
+        // succeed — mimicking the settled-radio second attempt.
+        final a = _FakeSource(
+          idValue: 'a',
+          groupIdValue: 'g1',
+          utc: consensusUtc,
+          failuresBeforeSuccess: 1,
+        );
+        final b = _FakeSource(
+          idValue: 'b',
+          groupIdValue: 'g2',
+          utc: consensusUtc.add(const Duration(milliseconds: 5)),
+          failuresBeforeSuccess: 1,
+        );
+        final result = await runBackgroundSync(
+          config: _offlineConfig(sources: [a, b]),
+          store: store,
+          clock: _FakeMonotonicClock(5000),
+          retryDelays: const [Duration.zero],
+        );
+        expect(result, isA<BackgroundSyncSuccess>());
+        expect(a.calls, 2);
+        expect(b.calls, 2);
+        expect(await store.load(), isNotNull);
+      });
+
+      test(
+        'exhausts the retry schedule and reports the last failure',
+        () async {
+          final a = _FakeSource(
+            idValue: 'a',
+            groupIdValue: 'g1',
+            utc: consensusUtc,
+            shouldThrow: true,
+          );
+          final b = _FakeSource(
+            idValue: 'b',
+            groupIdValue: 'g2',
+            utc: consensusUtc,
+            shouldThrow: true,
+          );
+          final result = await runBackgroundSync(
+            config: _offlineConfig(persistState: false, sources: [a, b]),
+            clock: _FakeMonotonicClock(5000),
+            retryDelays: const [Duration.zero, Duration.zero],
+          );
+          expect(result, isA<BackgroundSyncFailure>());
+          // retryDelays.length + 1 attempts, each against a fresh engine so
+          // per-source cooldowns from a failed attempt cannot short-circuit
+          // the next one into "all sources in cooldown".
+          expect(a.calls, 3);
+          expect(b.calls, 3);
+          expect((result as BackgroundSyncFailure).reason, contains('quorum'));
+          // Exhausted transient failures stay retryable: the OS
+          // scheduler's own backoff remains the outer safety net.
+          expect(result.retryable, isTrue);
+        },
+      );
+
+      test('a non-transient error fails immediately without consuming the '
+          'retry schedule', () async {
+        // The invalid config throws ArgumentError from the engine's source
+        // list initializer. With a long retry delay armed, completing
+        // promptly proves the ArgumentError bypassed the retry loop.
+        final sw = Stopwatch()..start();
+        final result = await runBackgroundSync(
+          config: const TrustedTimeConfig(
+            usePlatformTrust: true,
+            customRootCerts: [1, 2, 3],
+          ),
+          clock: _FakeMonotonicClock(5000),
+          retryDelays: const [Duration(seconds: 30)],
+        );
+        sw.stop();
+        expect(result, isA<BackgroundSyncFailure>());
+        expect(
+          (result as BackgroundSyncFailure).reason,
+          contains('mutually exclusive'),
+        );
+        // Non-transient verdict crosses to the OS scheduler too: Android
+        // maps retryable=false to Result.failure() for this interval.
+        expect(result.retryable, isFalse);
+        expect(sw.elapsed, lessThan(const Duration(seconds: 5)));
+      });
     });
 
     // Regression coverage for trusted_time-y81: the headless isolate is a
@@ -455,6 +555,7 @@ void main() {
         final args = calls.single.arguments as Map;
         expect(args['success'], isTrue);
         expect(args.containsKey('reason'), isFalse);
+        expect(args.containsKey('retryable'), isFalse);
       },
     );
 
@@ -478,6 +579,7 @@ void main() {
             ),
           ],
         ),
+        retryDelays: const [],
       );
       expect(result.isSuccess, isFalse);
       expect(calls, hasLength(1));
@@ -486,6 +588,28 @@ void main() {
       expect(args['success'], isFalse);
       expect(args['reason'], isA<String>());
       expect((args['reason'] as String).isNotEmpty, isTrue);
+      // Transient (quorum) failure: the Android worker should keep
+      // Result.retry() semantics for this interval.
+      expect(args['retryable'], isTrue);
+    });
+
+    test('notifies native with retryable=false for a non-transient '
+        'failure', () async {
+      // Invalid trust config throws ArgumentError inside the engine —
+      // the classification that must reach the native worker so it
+      // returns Result.failure() instead of Result.retry().
+      final result = await public_api.TrustedTime.runBackgroundSync(
+        config: const public_api.TrustedTimeConfig(
+          usePlatformTrust: true,
+          customRootCerts: [1, 2, 3],
+        ),
+        retryDelays: const [],
+      );
+      expect(result.isSuccess, isFalse);
+      expect(calls, hasLength(1));
+      final args = calls.single.arguments as Map;
+      expect(args['success'], isFalse);
+      expect(args['retryable'], isFalse);
     });
 
     test('swallows MissingPluginException when channel is unmocked', () async {
@@ -611,6 +735,7 @@ void main() {
           ],
         ),
         onResult: (r) async => observed = r,
+        retryDelays: const [],
       );
       expect(result, isA<BackgroundSyncFailure>());
       expect(observed, same(result));
@@ -654,6 +779,82 @@ void main() {
       expect(observed, isA<BackgroundSyncSuccess>());
       // Still zero channel traffic on the override path.
       expect(calls, isEmpty);
+    });
+  });
+
+  group('TrustedTime.getBackgroundStopReason', () {
+    const channel = MethodChannel('trusted_time/background');
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    test('maps a platform reply onto BackgroundSyncStopInfo', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            expect(call.method, 'getBackgroundStopReason');
+            return {'state': 'ENQUEUED', 'stopReason': 3};
+          });
+
+      final info = await public_api.TrustedTime.getBackgroundStopReason();
+      expect(info, isNotNull);
+      expect(info!.state, 'ENQUEUED');
+      expect(info.stopReason, 3);
+      expect(info.stopReasonName, 'TIMEOUT');
+    });
+
+    test('returns null when the platform reports no scheduled work', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async => null);
+
+      expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
+    });
+
+    test('returns null instead of surfacing platform errors', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            throw PlatformException(code: 'STOP_REASON_UNAVAILABLE');
+          });
+
+      expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
+    });
+
+    test('returns null when the channel is unmocked (no platform)', () async {
+      expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
+    });
+
+    test('returns null under an active TrustedTimeMock override', () async {
+      final mock = public_api.TrustedTimeMock(initial: DateTime.utc(2026));
+      public_api.TrustedTime.overrideForTesting(mock);
+      addTearDown(() {
+        public_api.TrustedTime.resetOverride();
+        mock.dispose();
+      });
+      var channelTouched = false;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            channelTouched = true;
+            return {'state': 'ENQUEUED', 'stopReason': 0};
+          });
+
+      expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
+      expect(channelTouched, isFalse);
+    });
+
+    test('stopReasonName covers WorkManager sentinels and unknowns', () {
+      const notStopped = BackgroundSyncStopInfo(
+        state: 'ENQUEUED',
+        stopReason: -256,
+      );
+      expect(notStopped.stopReasonName, 'NOT_STOPPED');
+      const unknown = BackgroundSyncStopInfo(
+        state: 'ENQUEUED',
+        stopReason: -512,
+      );
+      expect(unknown.stopReasonName, 'UNKNOWN');
+      const future = BackgroundSyncStopInfo(state: 'RUNNING', stopReason: 42);
+      expect(future.stopReasonName, 'STOP_REASON_42');
     });
   });
 
@@ -866,19 +1067,26 @@ class _FakeMonotonicClock implements MonotonicClock {
 }
 
 /// A deterministic [TimeSource] centred on a fixed UTC instant with a
-/// ±15ms uncertainty interval, optionally scripted to throw.
+/// ±15ms uncertainty interval, optionally scripted to throw — always
+/// ([shouldThrow]) or for the first [failuresBeforeSuccess] queries only
+/// (modelling a transient outage that recovers, e.g. a just-woken radio).
 class _FakeSource implements TimeSource {
   _FakeSource({
     required this.idValue,
     required this.groupIdValue,
     required this.utc,
     this.shouldThrow = false,
+    this.failuresBeforeSuccess = 0,
   });
 
   final String idValue;
   final String groupIdValue;
   final DateTime utc;
   final bool shouldThrow;
+  final int failuresBeforeSuccess;
+
+  /// Total [getTime] invocations, across engine instances.
+  int calls = 0;
 
   @override
   String get id => idValue;
@@ -888,7 +1096,10 @@ class _FakeSource implements TimeSource {
 
   @override
   Future<TimeSample> getTime() async {
-    if (shouldThrow) throw Exception('source down');
+    calls++;
+    if (shouldThrow || calls <= failuresBeforeSuccess) {
+      throw Exception('source down');
+    }
     final mid = utc.millisecondsSinceEpoch;
     return TimeSample(
       interval: TimeInterval(startMs: mid - 15, endMs: mid + 15),

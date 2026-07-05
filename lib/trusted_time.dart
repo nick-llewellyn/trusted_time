@@ -51,6 +51,7 @@ import 'package:timezone/timezone.dart' as tz;
 import 'src/background_sync.dart'
     show
         BackgroundSyncFailure,
+        BackgroundSyncStopInfo,
         BackgroundSyncSuccess,
         TrustedTimeBackgroundResult;
 import 'src/background_sync.dart' as bg show runBackgroundSync;
@@ -67,6 +68,7 @@ import 'src/sources/nts_auth_level.dart';
 export 'src/background_sync.dart'
     show
         BackgroundSyncFailure,
+        BackgroundSyncStopInfo,
         BackgroundSyncSuccess,
         TrustedTimeBackgroundResult;
 export 'src/exceptions.dart';
@@ -657,10 +659,18 @@ abstract final class TrustedTime {
   /// invoke the registered background callback from accidentally exercising
   /// the real sync engine.
   ///
+  /// **In-run retry**: a transient sync failure ([TrustedTimeSyncException])
+  /// is retried up to twice within the same run (after 10 s and 20 s waits)
+  /// before the failure is reported, because the OS scheduler's own retry
+  /// can be deferred for hours under doze while this run still has minutes
+  /// of budget left. Non-transient errors (e.g. an invalid config) fail
+  /// immediately. [retryDelays] overrides that schedule for tests only.
+  ///
   /// Returns a [TrustedTimeBackgroundResult] describing the outcome.
   static Future<TrustedTimeBackgroundResult> runBackgroundSync({
     TrustedTimeConfig config = const TrustedTimeConfig(),
     Future<void> Function(TrustedTimeBackgroundResult result)? onResult,
+    @visibleForTesting List<Duration>? retryDelays,
   }) async {
     // Honor the test-mock override before any side-effecting work. Mirrors
     // the early-return pattern in initialize / now / enableBackgroundSync /
@@ -688,7 +698,10 @@ abstract final class TrustedTime {
       return synthetic;
     }
     WidgetsFlutterBinding.ensureInitialized();
-    final result = await bg.runBackgroundSync(config: config);
+    final result = await bg.runBackgroundSync(
+      config: config,
+      retryDelays: retryDelays,
+    );
     // Awaited BEFORE the completion signal below: the native worker
     // destroys the headless engine as soon as it receives that signal, so
     // this is the last point where caller-side async work is guaranteed
@@ -697,7 +710,14 @@ abstract final class TrustedTime {
     try {
       await _bgChannel.invokeMethod<void>('notifyBackgroundComplete', {
         'success': result.isSuccess,
-        if (result is BackgroundSyncFailure) 'reason': result.reason,
+        if (result is BackgroundSyncFailure) ...{
+          'reason': result.reason,
+          // Android maps retryable=false to Result.failure() (skip this
+          // interval; the periodic chain continues) instead of
+          // Result.retry() — re-running a non-transient failure such as
+          // an invalid config would fail identically every time.
+          'retryable': result.retryable,
+        },
       });
     } on MissingPluginException {
       // Channel is absent on desktop/web and in unit tests that have not
@@ -717,6 +737,55 @@ abstract final class TrustedTime {
       );
     }
     return result;
+  }
+
+  /// Queries the OS scheduler for the state of the background-sync work
+  /// and the reason the *previous* run attempt was stopped.
+  ///
+  /// Android-only: reads WorkManager's `WorkInfo` for the unique periodic
+  /// work registered by [enableBackgroundSync] and surfaces
+  /// `WorkInfo.getStopReason()` (populated with real values on API 31+;
+  /// earlier releases report `NOT_STOPPED`). Intended as a diagnostic to be
+  /// logged at the start of a background fire, answering "was the last
+  /// attempt killed by timeout / quota / device state?" without shell
+  /// access to `dumpsys jobscheduler`.
+  ///
+  /// Returns `null` when no answer is available: on iOS, desktop, and web
+  /// (no handler for this method, or the channel itself is absent), when
+  /// no background work has been scheduled yet, and under a
+  /// [TrustedTimeMock] override. Platform-side query failures are logged
+  /// and also surface as `null` — this is a best-effort diagnostic and
+  /// must never turn a healthy fire into a failed one.
+  static Future<BackgroundSyncStopInfo?> getBackgroundStopReason() async {
+    if (_override != null) return null;
+    WidgetsFlutterBinding.ensureInitialized();
+    try {
+      final raw = await _bgChannel.invokeMapMethod<String, Object?>(
+        'getBackgroundStopReason',
+      );
+      if (raw == null) return null;
+      final state = raw['state'];
+      final stopReason = raw['stopReason'];
+      if (state is! String || stopReason is! int) return null;
+      return BackgroundSyncStopInfo(state: state, stopReason: stopReason);
+    } on MissingPluginException {
+      // Channel absent (desktop/web, unmocked unit tests) or the platform
+      // answered notImplemented (iOS has no WorkManager analogue). Either
+      // way: no scheduler-side stop reason to report.
+      return null;
+    } on PlatformException catch (e, s) {
+      // Genuine Android-side query failures (the plugin's
+      // STOP_REASON_UNAVAILABLE error). Non-fatal for a diagnostic
+      // accessor.
+      developer.log(
+        'TrustedTime.getBackgroundStopReason: platform query failed',
+        name: 'trusted_time',
+        level: 900,
+        error: e,
+        stackTrace: s,
+      );
+      return null;
+    }
   }
 
   /// Runs the caller's [runBackgroundSync] `onResult` hook, logging and
