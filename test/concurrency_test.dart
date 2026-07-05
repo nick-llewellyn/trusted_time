@@ -132,6 +132,41 @@ class WideIntervalSource implements TimeSource {
   }
 }
 
+/// Test source whose sample carries an explicit [TimeSample.receivedAtMs]
+/// alongside a controlled interval, so the receipt-normalization tests
+/// can construct populations that only overlap after the engine shifts
+/// them to a common reference instant (or, with null stamps, verify the
+/// engine leaves them unshifted).
+class ReceiptStampedSource implements TimeSource {
+  ReceiptStampedSource(
+    this.id,
+    this.delay,
+    this.startMs,
+    this.endMs,
+    this.receivedAtMs, [
+    this.groupId = 'test-group',
+  ]);
+  @override
+  final String id;
+  final Duration delay;
+  final int startMs;
+  final int endMs;
+  final int? receivedAtMs;
+  @override
+  final String groupId;
+
+  @override
+  Future<TimeSample> getTime() async {
+    await Future.delayed(delay);
+    return TimeSample(
+      interval: TimeInterval(startMs: startMs, endMs: endMs),
+      sourceId: id,
+      groupId: groupId,
+      receivedAtMs: receivedAtMs,
+    );
+  }
+}
+
 /// Test source that throws [TransientSourceError] on every [getTime]
 /// call. Records its call count so tests can assert whether the engine
 /// has escalated it to the regular cooldown path (after which it stops
@@ -1803,6 +1838,145 @@ void main() {
             'would have reached 2 at sample 3 and the recorded count '
             'would be 3',
       );
+    });
+  });
+
+  group('SyncEngine receipt normalization', () {
+    // Samples estimate the true time at their own receipt instant, so
+    // two accurate sources whose responses land seconds apart produce
+    // intervals that do not overlap at all in absolute terms — the
+    // exact failure signature seen on a just-woken radio, where the
+    // first response rides a stalling link. The engine shifts every
+    // stamped sample to the latest receipt instant before Marzullo
+    // intersection (SyncEngine._normalizedToLatestReceipt), so receipt
+    // spread alone can no longer break quorum.
+
+    test('samples received seconds apart reach quorum after '
+        'normalization', () async {
+      // Both sources estimate the same true time with ±50 ms
+      // uncertainty, but s2's response arrives 3 s after s1's. In
+      // absolute terms the intervals are disjoint ([999950,1000050]
+      // vs [1002950,1003050]); normalized to s2's receipt instant,
+      // s1's interval shifts forward by 3000 ms and they coincide.
+      final s1 = ReceiptStampedSource(
+        's1',
+        const Duration(milliseconds: 10),
+        999950,
+        1000050,
+        1000000,
+        'g1',
+      );
+      final s2 = ReceiptStampedSource(
+        's2',
+        const Duration(milliseconds: 30),
+        1002950,
+        1003050,
+        1003000,
+        'g2',
+      );
+
+      final engine = SyncEngine(
+        config: const TrustedTimeConfig(
+          minimumQuorum: 2,
+          minGroupCount: 1,
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+        ).copyWith(additionalSources: [s1, s2]),
+        clock: MockMonotonicClock(),
+      );
+
+      final anchor = await engine.sync();
+      // Consensus forms at the shared reference (s2's receipt), where
+      // both normalized intervals are [1002950,1003050].
+      expect(anchor.networkUtcMs, closeTo(1003000, 60));
+    });
+
+    test(
+      'unstamped samples are consumed unshifted (legacy behaviour)',
+      () async {
+        // Same disjoint intervals but no receipt stamps: the engine has
+        // no basis to normalize, so the cycle must still fail quorum
+        // exactly as before the receivedAtMs field existed.
+        final s1 = ReceiptStampedSource(
+          's1',
+          const Duration(milliseconds: 10),
+          999950,
+          1000050,
+          null,
+          'g1',
+        );
+        final s2 = ReceiptStampedSource(
+          's2',
+          const Duration(milliseconds: 30),
+          1002950,
+          1003050,
+          null,
+          'g2',
+        );
+
+        final engine = SyncEngine(
+          config: const TrustedTimeConfig(
+            minimumQuorum: 2,
+            minGroupCount: 1,
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+          ).copyWith(additionalSources: [s1, s2]),
+          clock: MockMonotonicClock(),
+        );
+
+        await expectLater(
+          engine.sync(),
+          throwsA(isA<TrustedTimeSyncException>()),
+        );
+      },
+    );
+
+    test('mixed population: stamped samples normalize, unstamped pass '
+        'through', () async {
+      // s1 and s2 are stamped 2 s apart and normalize onto each other;
+      // s3 is unstamped but its absolute interval already overlaps the
+      // normalized pair at the reference instant, so all three
+      // participate.
+      final s1 = ReceiptStampedSource(
+        's1',
+        const Duration(milliseconds: 10),
+        999950,
+        1000050,
+        1000000,
+        'g1',
+      );
+      final s2 = ReceiptStampedSource(
+        's2',
+        const Duration(milliseconds: 30),
+        1001950,
+        1002050,
+        1002000,
+        'g2',
+      );
+      final s3 = ReceiptStampedSource(
+        's3',
+        const Duration(milliseconds: 50),
+        1001940,
+        1002060,
+        null,
+        'g3',
+      );
+
+      final engine = SyncEngine(
+        config: const TrustedTimeConfig(
+          minimumQuorum: 3,
+          minGroupCount: 1,
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+        ).copyWith(additionalSources: [s1, s2, s3]),
+        clock: MockMonotonicClock(),
+      );
+
+      final anchor = await engine.sync();
+      expect(anchor.networkUtcMs, closeTo(1002000, 60));
     });
   });
 

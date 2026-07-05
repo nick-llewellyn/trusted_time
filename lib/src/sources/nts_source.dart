@@ -219,6 +219,10 @@ final class NtsSource implements TimeSource, Warmable {
       ),
       sourceId: id,
       groupId: groupId,
+      // Local receipt instant, so the engine can normalize samples
+      // received at different points in the cycle to one reference
+      // instant before Marzullo intersection.
+      receivedAtMs: DateTime.now().millisecondsSinceEpoch,
       // Whole round-trip delay δ (RTT), kept separate from the interval
       // half-width so root distance (Λ = E + δ/2) is computable. The
       // interval math above is unchanged.

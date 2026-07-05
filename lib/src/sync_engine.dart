@@ -518,11 +518,12 @@ final class SyncEngine {
             }
           }
 
-          final result = _engine.resolve(samples);
+          final (normalized, refMs) = _normalizedToLatestReceipt(samples);
+          final result = _engine.resolve(normalized);
           if (result != null) {
             // Stability Check: Escalates quorum requirements if high variance
             // is detected, ensuring we don't anchor to a jittery consensus.
-            final varianceDetected = samples.any(
+            final varianceDetected = normalized.any(
               (s) =>
                   (s.interval.midpoint - result.utc.millisecondsSinceEpoch)
                       .abs() >
@@ -530,12 +531,23 @@ final class SyncEngine {
             );
             final requiredStability = varianceDetected ? 3 : 2;
 
-            if (lastStabilityInterval == result.interval) {
+            // Compare intervals relative to the normalization reference:
+            // the reference advances as later samples arrive, so the
+            // absolute consensus interval shifts by the receipt delta
+            // between resolves even when the consensus itself is stable.
+            final absoluteInterval = result.interval;
+            final relativeInterval = absoluteInterval == null
+                ? null
+                : TimeInterval(
+                    startMs: absoluteInterval.startMs - refMs,
+                    endMs: absoluteInterval.endMs - refMs,
+                  );
+            if (lastStabilityInterval == relativeInterval) {
               stableCount++;
             } else {
               stableCount = 1;
             }
-            lastStabilityInterval = result.interval;
+            lastStabilityInterval = relativeInterval;
 
             if (stableCount >= requiredStability) {
               // Early Exit: If configured, we return as soon as a stable quorum
@@ -645,7 +657,8 @@ final class SyncEngine {
           //    short-circuits instead of running on after sync() returns.
           if (!completer.isCompleted &&
               samples.length >= _config.minimumQuorum) {
-            final result = _engine.resolve(samples);
+            final (normalized, _) = _normalizedToLatestReceipt(samples);
+            final result = _engine.resolve(normalized);
             if (result != null) {
               await _completeSync(
                 result,
@@ -865,7 +878,8 @@ final class SyncEngine {
 
     // All sources responded but we haven't reached stability.
     // Try one final resolve with all samples before failing.
-    final finalResult = _engine.resolve(samples);
+    final (normalized, _) = _normalizedToLatestReceipt(samples);
+    final finalResult = _engine.resolve(normalized);
     if (finalResult != null && samples.length >= _config.minimumQuorum) {
       unawaited(
         _completeSync(finalResult, samples, elapsedMs ?? 0, completer, guard),
@@ -883,6 +897,46 @@ final class SyncEngine {
         ),
       );
     }
+  }
+
+  /// Shifts every sample carrying a receipt timestamp so all intervals
+  /// estimate the true time at one shared reference instant — the
+  /// latest receipt in the population — before Marzullo intersection.
+  ///
+  /// Each sample's interval brackets the true time *at its own receipt
+  /// instant*. When a cycle's queries complete seconds apart (typical
+  /// on a just-woken radio, where the first responses ride a stalling
+  /// link), intersecting the raw intervals under-counts overlap by
+  /// exactly the receipt spread: two perfect ±50 ms samples received
+  /// 3 s apart share no overlap at all and read as disagreeing
+  /// sources. Normalizing to a common instant removes that artificial
+  /// disagreement while leaving genuinely conflicting sources apart.
+  ///
+  /// The latest receipt is chosen (rather than the earliest) so the
+  /// consensus midpoint stays as close as possible to the
+  /// anchor-creation instant that [_createAnchor] pairs it with.
+  /// Samples without a receipt timestamp (legacy fixtures, custom
+  /// sources) pass through unshifted, preserving existing behaviour.
+  ///
+  /// Returns the normalized population together with the reference
+  /// instant used (`0` when no sample carried a receipt timestamp, in
+  /// which case the population is returned as-is). Callers that
+  /// compare successive consensus intervals for stability must
+  /// translate them by `-refMs` first: the reference advances as new
+  /// samples arrive, so absolute intervals shift between resolves even
+  /// when the underlying consensus is unchanged.
+  (List<TimeSample>, int) _normalizedToLatestReceipt(List<TimeSample> samples) {
+    int? refMs;
+    for (final s in samples) {
+      final r = s.receivedAtMs;
+      if (r != null && (refMs == null || r > refMs)) refMs = r;
+    }
+    if (refMs == null) return (samples, 0);
+    final ref = refMs;
+    return (
+      samples.map((s) => s.normalizedTo(ref)).toList(growable: false),
+      ref,
+    );
   }
 
   /// Wraps a source query with timeout and health-tracking logic.

@@ -15,6 +15,7 @@ final class TimeSample {
     this.trustBackend,
     this.delayMs,
     this.dispersionMs = 0,
+    this.receivedAtMs,
   }) : assert(
          delayMs == null || delayMs >= 0,
          'delayMs (δ) must be non-negative',
@@ -81,6 +82,50 @@ final class TimeSample {
   /// Defaults to `0` when a source has no dispersion estimate, so
   /// legacy callers and test fixtures are unaffected.
   final int dispersionMs;
+
+  /// Local wall-clock milliseconds (UNIX epoch) captured when this
+  /// sample was received from the network.
+  ///
+  /// [interval] estimates the true time *at this instant*; samples
+  /// received at different instants within one sync cycle therefore
+  /// estimate different true times, and intersecting their intervals
+  /// directly under-counts overlap by exactly the receipt spread. The
+  /// engine uses [normalizedTo] to shift every sample to one shared
+  /// reference instant before consensus.
+  ///
+  /// Null when the producer did not record a receipt time (legacy
+  /// fixtures, custom [TimeSource] implementations); such samples are
+  /// consumed unshifted, preserving pre-existing behaviour.
+  final int? receivedAtMs;
+
+  /// Returns a copy whose [interval] is shifted so it estimates the
+  /// true time at [refMs] instead of at the receipt instant.
+  ///
+  /// The shift is `refMs - receivedAtMs`, measured on the local clock:
+  /// the sample's server-vs-local *offset* is invariant over the few
+  /// seconds of a sync cycle (clock drift is ppm-scale), so sliding the
+  /// interval along the local timeline preserves its accuracy while
+  /// making it directly comparable with samples received at other
+  /// instants. Returns `this` unchanged when [receivedAtMs] is null
+  /// (nothing to normalize) or already equals [refMs].
+  TimeSample normalizedTo(int refMs) {
+    final receivedAt = receivedAtMs;
+    if (receivedAt == null || receivedAt == refMs) return this;
+    final shift = refMs - receivedAt;
+    return TimeSample(
+      interval: TimeInterval(
+        startMs: interval.startMs + shift,
+        endMs: interval.endMs + shift,
+      ),
+      sourceId: sourceId,
+      groupId: groupId,
+      authLevel: authLevel,
+      trustBackend: trustBackend,
+      delayMs: delayMs,
+      dispersionMs: dispersionMs,
+      receivedAtMs: refMs,
+    );
+  }
 
   /// Helper to get the UTC time (midpoint of the interval).
   DateTime get utc =>

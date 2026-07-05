@@ -184,7 +184,8 @@ final class NtpSource implements TimeSource {
     // confidence grading, so keeping it off the timing path is free.
     final group = await _groupIdFor(addr);
 
-    final utc = DateTime.now().toUtc().add(Duration(milliseconds: offset));
+    final localNow = DateTime.now();
+    final utc = localNow.toUtc().add(Duration(milliseconds: offset));
     final u = sw.elapsedMilliseconds ~/ 2;
 
     return TimeSample(
@@ -196,6 +197,10 @@ final class NtpSource implements TimeSource {
       groupId: group,
       // Whole round-trip delay δ; the interval still uses u = δ/2.
       delayMs: sw.elapsedMilliseconds,
+      // Local receipt instant (same reading the estimate above is
+      // anchored to), so the engine can normalize samples received at
+      // different points in the cycle before Marzullo intersection.
+      receivedAtMs: localNow.millisecondsSinceEpoch,
     );
   }
 }
