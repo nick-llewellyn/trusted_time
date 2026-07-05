@@ -147,6 +147,7 @@ final class SyncEngine {
               : _config.customRootCerts,
           onStratumObserved: (s) =>
               _qualityTracker.setStratum('${TimeSource.prefixNts}$host', s),
+          burstCount: _config.ntsBurstCount,
         ),
       ..._config.additionalSources,
     ];
@@ -188,12 +189,15 @@ final class SyncEngine {
   /// Eagerly invokes [Warmable.warm] on every source that supports it,
   /// in parallel.
   ///
-  /// Intended to be called during application bootstrap so per-source
-  /// setup costs (e.g., the NTS-KE TCP+TLS+key-exchange handshake)
-  /// complete before the first [sync] cycle. Without this, those costs
-  /// fall inside cycle 1's wall clock and contaminate sample
-  /// timestamps with hundreds of milliseconds of skew, preventing
-  /// Marzullo intervals from overlapping.
+  /// Called during application bootstrap so per-source setup costs
+  /// (e.g., the NTS-KE TCP+TLS+key-exchange handshake) complete before
+  /// the first [sync] cycle, and again by [sync] itself as the global
+  /// warming barrier so every cycle's queries — foreground or
+  /// background — launch against fully-warmed state with converged
+  /// start times. Without this, those costs fall inside the cycle's
+  /// wall clock and contaminate sample timestamps with hundreds of
+  /// milliseconds of skew, preventing Marzullo intervals from
+  /// overlapping.
   ///
   /// Each [Warmable.warm] is itself idempotent and memoized, so calling
   /// this method multiple times is safe and cheap. Failures from
@@ -581,16 +585,37 @@ final class SyncEngine {
         }
       });
 
-      // 2. Launch racing queries.
+      // 2. Warming barrier: complete every Warmable's warm() before the
+      // first timed query is issued, so all queries launch against
+      // fully-warmed state (e.g. primed NTS cookie jars) with converged
+      // start times. Without the barrier, each source queries the
+      // moment its own handshake finishes, and the receipt spread
+      // between the fastest and slowest handshake widens the
+      // normalization shifts the consensus must absorb. The barrier is
+      // a completion gate, not a fixed delay: when handshakes are fast
+      // (or already memoized, as after initialize()'s explicit
+      // warmAllSources()) it costs nothing. The 10 s cap only bounds a
+      // pathological hang — warmAllSources() already swallows
+      // per-source failures, so on timeout the cycle proceeds and the
+      // per-source Phase A warm below covers any laggard.
+      await warmAllSources().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {},
+      );
+
+      // 3. Launch racing queries.
       //
       // Each source runs a per-source two-phase sequence concurrently
       // with the others:
       //   Phase A — for sources that implement [Warmable], warm() runs
       //     outside the per-query maxLatency budget, so slow handshakes
       //     (e.g., NTS-KE) do not eat into the timed query window.
-      //     Sources that don't implement Warmable skip Phase A and
-      //     proceed straight to the query, so they are not blocked by
-      //     slower siblings.
+      //     After the barrier above, warm() is memoized and Phase A is
+      //     a no-op for every source the barrier reached; it remains
+      //     the JIT fallback for a source whose handshake outlived the
+      //     barrier cap. Sources that don't implement Warmable skip
+      //     Phase A and proceed straight to the query, so they are not
+      //     blocked by slower siblings.
       //   Phase B — _querySafe() runs the timed getTime() under
       //     _config.maxLatency.
       // warm() is wrapped in Future.sync to capture both synchronous
@@ -613,12 +638,14 @@ final class SyncEngine {
         }());
       }
 
-      // Outer safety timeout. The per-source pipeline runs warm()
-      // outside the maxLatency budget, so this deadline must cover
-      // both phases. Budget = maxLatency (timed query window) + 5s for
-      // a slow NTS-KE handshake (TCP + TLS 1.3 + key exchange,
-      // typically ~1s but up to ~3s on poor networks) + 1s for stream
-      // processing and consensus resolution overhead.
+      // Outer safety timeout. The warming barrier above completes (or
+      // caps out) before this deadline starts counting, so the common
+      // case consumes none of this budget on handshakes. The 5 s
+      // handshake allowance is retained for the residual path where a
+      // handshake outlived the barrier cap and Phase A re-awaits the
+      // same memoized warm() inside this window. Budget = maxLatency
+      // (timed query window) + 5s for that residual NTS-KE completion
+      // + 1s for stream processing and consensus resolution overhead.
       final anchor = await completer.future.timeout(
         _config.maxLatency + const Duration(seconds: 6),
         onTimeout: () async {
