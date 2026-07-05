@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart'
+    show DebugPrintCallback, debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:nts/nts.dart' show NtsDnsPoolStats, ntsDnsPoolStats;
 import 'package:trusted_time/trusted_time.dart';
@@ -82,16 +83,65 @@ void trustedTimeBackgroundCallback() {
 /// The whole body is guarded: a logging failure must never turn a
 /// successful sync into a failed background fire, and any thrown error is
 /// itself recorded rather than left to escape the isolate.
+///
+/// **Debug-build tee.** In debug builds the library's internal
+/// `[TrustedTime]` diagnostics (burst `receipts=[...]` deltas, consensus
+/// `receiptSpread=...`, in-run retry attempts) go through [debugPrint] and
+/// land only in logcat — lost once the ring buffer rolls. While the sync
+/// runs, [debugPrint] is swapped for a wrapper that also queues each
+/// `[TrustedTime]`-prefixed line onto a sequential append chain into the
+/// transcript. The chain is drained inside `onResult` — before
+/// [TrustedTime.runBackgroundSync] sends the native completion signal —
+/// so the tee'd lines cannot lose the engine-teardown race, and they land
+/// ahead of the result line. `kDebugMode` is a compile-time constant, so
+/// release builds carry none of this (and have no debug lines to tee
+/// anyway).
 Future<void> _runAndLogBackgroundSync() async {
+  DebugPrintCallback? originalDebugPrint;
+  var teeChain = Future<void>.value();
+  if (kDebugMode) {
+    final original = originalDebugPrint = debugPrint;
+    debugPrint = (String? message, {int? wrapWidth}) {
+      if (message != null && message.startsWith('[TrustedTime]')) {
+        // Sequential chain (not fire-and-forget) so transcript order
+        // matches emission order and onResult can await one future.
+        teeChain = teeChain.then(
+          (_) => BackgroundSyncFileLog.append('FIRE      DEBUG    $message'),
+        );
+      }
+      original(message, wrapWidth: wrapWidth);
+    };
+  }
   try {
     await BackgroundSyncFileLog.append('FIRE      BEGIN');
+    // Diagnostic: how the OS scheduler last treated this work. On Android
+    // this surfaces WorkManager's WorkInfo.getStopReason() for the
+    // *previous* attempt (e.g. TIMEOUT, DEVICE_STATE, QUOTA), answering
+    // "was the last fire killed?" from the transcript alone. Returns null
+    // on iOS and before the first schedule; best-effort, never fatal.
+    final stopInfo = await TrustedTime.getBackgroundStopReason();
+    if (stopInfo != null) {
+      await BackgroundSyncFileLog.append(
+        'FIRE      STOPINFO state=${stopInfo.state} '
+        'prevStopReason=${stopInfo.stopReasonName}(${stopInfo.stopReason})',
+      );
+    }
     await TrustedTime.runBackgroundSync(
       config: buildStressConfig(),
-      onResult: (result) =>
-          BackgroundSyncFileLog.append(_formatBackgroundResult(result)),
+      onResult: (result) async {
+        // Drain the tee first so debug lines precede the result line and
+        // are durably on disk before the native completion signal.
+        await teeChain;
+        await BackgroundSyncFileLog.append(_formatBackgroundResult(result));
+      },
     );
   } catch (e) {
+    await teeChain;
     await BackgroundSyncFileLog.append('FIRE      threw    error=$e');
+  } finally {
+    if (originalDebugPrint != null) {
+      debugPrint = originalDebugPrint;
+    }
   }
 }
 
