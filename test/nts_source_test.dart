@@ -245,7 +245,7 @@ void main() {
         },
       );
 
-      final before = DateTime.now().millisecondsSinceEpoch;
+      final before = TimeSample.monotonicReceiptNowMs();
       final sample = await source.getTime();
       expect(sample.delayMs, 10);
       expect(

@@ -267,11 +267,13 @@ final class NtsSource implements TimeSource, Warmable {
           final result = await runQuery();
           // Capture the receipt instant here — at each attempt's own
           // completion — so per-attempt receivedAtMs stays accurate
-          // for the engine's receipt normalization.
+          // for the engine's receipt normalization. Stamped on the
+          // monotonic receipt timeline so a wall-clock step mid-burst
+          // cannot corrupt the deltas normalization consumes.
           successes.add(
             _BurstSuccess(
               raw: result,
-              receivedAtMs: DateTime.now().millisecondsSinceEpoch,
+              receivedAtMs: TimeSample.monotonicReceiptNowMs(),
             ),
           );
         } on nts.NtsErrorTimeout catch (e, st) {

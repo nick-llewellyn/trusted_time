@@ -83,8 +83,9 @@ final class TimeSample {
   /// legacy callers and test fixtures are unaffected.
   final int dispersionMs;
 
-  /// Local wall-clock milliseconds (UNIX epoch) captured when this
-  /// sample was received from the network.
+  /// Milliseconds on the process-local monotonic receipt timeline
+  /// ([monotonicReceiptNowMs]) captured when this sample was received
+  /// from the network.
   ///
   /// [interval] estimates the true time *at this instant*; samples
   /// received at different instants within one sync cycle therefore
@@ -93,21 +94,40 @@ final class TimeSample {
   /// engine uses [normalizedTo] to shift every sample to one shared
   /// reference instant before consensus.
   ///
+  /// Only *differences* between receipt stamps are ever consumed, so
+  /// the timeline's zero point is arbitrary — what matters is that all
+  /// producers in one process stamp from the same monotonic basis.
+  /// A monotonic basis (rather than the wall clock) keeps the deltas
+  /// correct even if the system clock steps mid-cycle, which is
+  /// exactly the manipulation this library defends against.
+  ///
   /// Null when the producer did not record a receipt time (legacy
   /// fixtures, custom [TimeSource] implementations); such samples are
   /// consumed unshifted, preserving pre-existing behaviour.
   final int? receivedAtMs;
 
+  static final Stopwatch _receiptStopwatch = Stopwatch()..start();
+
+  /// Current reading of the process-local monotonic receipt timeline.
+  ///
+  /// Backed by [Stopwatch] (the OS monotonic clock), so readings only
+  /// move forward and are immune to system clock steps. Producers use
+  /// this to stamp [receivedAtMs]; the absolute value is meaningless
+  /// across processes or reboots and must only be compared with other
+  /// readings from the same process.
+  static int monotonicReceiptNowMs() => _receiptStopwatch.elapsedMilliseconds;
+
   /// Returns a copy whose [interval] is shifted so it estimates the
   /// true time at [refMs] instead of at the receipt instant.
   ///
-  /// The shift is `refMs - receivedAtMs`, measured on the local clock:
-  /// the sample's server-vs-local *offset* is invariant over the few
-  /// seconds of a sync cycle (clock drift is ppm-scale), so sliding the
-  /// interval along the local timeline preserves its accuracy while
-  /// making it directly comparable with samples received at other
-  /// instants. Returns `this` unchanged when [receivedAtMs] is null
-  /// (nothing to normalize) or already equals [refMs].
+  /// The shift is `refMs - receivedAtMs`, measured on the monotonic
+  /// receipt timeline: the sample's server-vs-local *offset* is
+  /// invariant over the few seconds of a sync cycle (clock drift is
+  /// ppm-scale), so sliding the interval along the local timeline
+  /// preserves its accuracy while making it directly comparable with
+  /// samples received at other instants. Returns `this` unchanged when
+  /// [receivedAtMs] is null (nothing to normalize) or already equals
+  /// [refMs].
   TimeSample normalizedTo(int refMs) {
     final receivedAt = receivedAtMs;
     if (receivedAt == null || receivedAt == refMs) return this;
