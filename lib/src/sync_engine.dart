@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:math';
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
@@ -766,6 +766,24 @@ final class SyncEngine {
       // work if the completer has been resolved (or errored)
       // out-of-band.
       if (completer.isCompleted) return;
+      if (kDebugMode) {
+        // Cross-source receipt spread at consensus time: how far apart
+        // (on the monotonic receipt timeline) the population's samples
+        // arrived, i.e. the exact shift _normalizedToLatestReceipt
+        // absorbed for this resolve. `n/m` counts samples carrying a
+        // receipt stamp out of the population.
+        final receipts = samples
+            .map((s) => s.receivedAtMs)
+            .whereType<int>()
+            .toList(growable: false);
+        final spread = receipts.isEmpty
+            ? 'n/a'
+            : '${receipts.reduce(max) - receipts.reduce(min)}ms';
+        debugPrint(
+          '[TrustedTime] consensus receiptSpread=$spread '
+          '(${receipts.length}/${samples.length} stamped)',
+        );
+      }
       _observer?.onConsensusReached(result);
 
       // Tier-aware admission bookkeeping. A degraded cycle (no Tier 1 truth
