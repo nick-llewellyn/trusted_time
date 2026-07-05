@@ -109,10 +109,17 @@ final class TrustedTimeConfig {
     this.validateBurstCount = 4,
     this.validateInterval = const Duration(hours: 1),
     this.foregroundValidateThreshold = const Duration(minutes: 15),
+    this.ntsBurstCount = 4,
   }) : assert(
          validateBurstCount >= 1,
          'validateBurstCount must be at least 1: the validate tier must '
          'issue at least one NTS query per probe.',
+       ),
+       assert(
+         ntsBurstCount >= 1 && ntsBurstCount <= 4,
+         'ntsBurstCount must be in 1..4: a burst larger than 4 risks '
+         'draining the 8-cookie NTS jar past the point where a full '
+         'retry burst can run without a mid-window re-handshake.',
        );
 
   /// Creates a Web-compatible configuration that only uses HTTPS sources.
@@ -422,6 +429,26 @@ final class TrustedTimeConfig {
   /// must be at least `1`. Has no effect outside the validate tier.
   final int validateBurstCount;
 
+  /// The number of concurrent authenticated queries each [NtsSource]
+  /// issues per establish-tier sync cycle.
+  ///
+  /// Every query in the burst produces an independent measurement; the
+  /// source reduces them to the single lowest-RTT sample — the same
+  /// burst-and-pick-min strategy the validate tier uses via
+  /// [validateBurstCount] — so a transient path delay on one query
+  /// cannot widen the interval the consensus sees. The burst runs
+  /// concurrently against a warmed cookie jar, so it adds no wall time
+  /// beyond the slowest in-flight query, which is itself bounded by
+  /// [maxLatency].
+  ///
+  /// Defaults to `4`; must be in `1..4`. The cap of 4 is derived from
+  /// NTS cookie economics (RFC 8915): the jar holds 8 cookies, each
+  /// concurrent query spends one up-front, and a total-loss burst of 4
+  /// leaves 4 in the jar — enough for a full retry burst without a
+  /// mid-window re-handshake. `1` reproduces the pre-burst single-query
+  /// behaviour exactly.
+  final int ntsBurstCount;
+
   /// How often the validate tier runs its cheap freshness probe while
   /// the app is foregrounded (ADR 0006).
   ///
@@ -520,6 +547,7 @@ final class TrustedTimeConfig {
     int? validateBurstCount,
     Duration? validateInterval,
     Duration? foregroundValidateThreshold,
+    int? ntsBurstCount,
   }) {
     return TrustedTimeConfig(
       ntpServers: ntpServers ?? this.ntpServers,
@@ -553,6 +581,7 @@ final class TrustedTimeConfig {
       validateInterval: validateInterval ?? this.validateInterval,
       foregroundValidateThreshold:
           foregroundValidateThreshold ?? this.foregroundValidateThreshold,
+      ntsBurstCount: ntsBurstCount ?? this.ntsBurstCount,
     );
   }
 
@@ -584,7 +613,8 @@ final class TrustedTimeConfig {
         other.cadenceMode == cadenceMode &&
         other.validateBurstCount == validateBurstCount &&
         other.validateInterval == validateInterval &&
-        other.foregroundValidateThreshold == foregroundValidateThreshold;
+        other.foregroundValidateThreshold == foregroundValidateThreshold &&
+        other.ntsBurstCount == ntsBurstCount;
   }
 
   @override
@@ -614,6 +644,7 @@ final class TrustedTimeConfig {
     validateBurstCount,
     validateInterval,
     foregroundValidateThreshold,
+    ntsBurstCount,
   ]);
 
   @override
@@ -655,6 +686,7 @@ final class TrustedTimeConfig {
         '  validateBurstCount: $validateBurstCount,\n'
         '  validateInterval: $validateInterval,\n'
         '  foregroundValidateThreshold: $foregroundValidateThreshold,\n'
+        '  ntsBurstCount: $ntsBurstCount,\n'
         ')';
   }
 }
