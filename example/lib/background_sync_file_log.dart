@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:path_provider/path_provider.dart';
 
 /// Durable, process-independent transcript of every headless background
@@ -39,6 +40,24 @@ import 'package:path_provider/path_provider.dart';
 class BackgroundSyncFileLog {
   BackgroundSyncFileLog._();
 
+  /// Whether the transcript is written at all in this build.
+  ///
+  /// Debug builds always log — the transcript is the development loop's
+  /// primary window onto the headless path. Release builds default to
+  /// *no* logging (a production install must not accumulate an unbounded
+  /// diagnostic file in the user's documents directory), but a test
+  /// install can opt back in at build time:
+  ///
+  /// ```sh
+  /// flutter run --release --dart-define=BG_SYNC_LOG=true
+  /// ```
+  ///
+  /// Both operands are compile-time constants, so in an ordinary release
+  /// build the writer body below is tree-shaken out entirely rather than
+  /// branch-checked at runtime — same mechanism as the `BG_SYNC_MINUTES`
+  /// verification hook in `main.dart`.
+  static const bool enabled = kDebugMode || bool.fromEnvironment('BG_SYNC_LOG');
+
   /// Sub-directory under `<docs>/` that holds the transcript, keeping the
   /// background-sync log grouped rather than loose in the documents root.
   /// Created on demand by [append]; see the recursive parent-create there.
@@ -72,7 +91,12 @@ class BackgroundSyncFileLog {
   ///
   /// A trailing newline is added, so callers pass a single logical line
   /// without their own terminator.
+  ///
+  /// A no-op when [enabled] is false, so this single choke-point enforces
+  /// the build-time logging policy for every writer (foreground and
+  /// headless alike) — call sites stay unconditional.
   static Future<void> append(String line) async {
+    if (!enabled) return;
     try {
       final path = await resolvePath();
       final file = File(path);

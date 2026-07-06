@@ -1118,12 +1118,20 @@ class _BackgroundSyncLogPanelState extends State<_BackgroundSyncLogPanel> {
             borderRadius: BorderRadius.circular(8),
           ),
           child: _lines.isEmpty
-              ? const Center(
+              ? Center(
                   child: Text(
-                    'No background fires recorded yet.\n'
-                    'Trigger one, then Refresh.',
+                    // Distinguish "logging is compiled out" from "no fires
+                    // yet" — otherwise a release build without the
+                    // BG_SYNC_LOG define looks identical to a build whose
+                    // background path never ran.
+                    BackgroundSyncFileLog.enabled
+                        ? 'No background fires recorded yet.\n'
+                            'Trigger one, then Refresh.'
+                        : 'Transcript logging is disabled in this build.\n'
+                            'Rebuild with --dart-define=BG_SYNC_LOG=true '
+                            'to enable it.',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white38, fontSize: 12),
+                    style: const TextStyle(color: Colors.white38, fontSize: 12),
                   ),
                 )
               : ListView.builder(
