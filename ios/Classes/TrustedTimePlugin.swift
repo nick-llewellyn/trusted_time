@@ -294,11 +294,27 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
             )
             self.headlessEngine = engine
 
+            // The engine must be run BEFORE plugins or channel handlers
+            // are attached: on iOS, FlutterEngine's shell (and therefore
+            // its binaryMessenger) only exists after run(), and
+            // setMessageHandlerOnChannel throws an NSAssertion ("Setting
+            // a message handler before the FlutterEngine has been run")
+            // otherwise. Registering immediately after run() on the same
+            // main-thread turn is safe from MissingPluginException races:
+            // the Dart entrypoint executes on the engine's UI thread and
+            // its first plugin call cannot be serviced before this
+            // main-thread turn completes.
+            let started = engine.run(
+                withEntrypoint: callbackInfo.callbackName,
+                libraryURI: callbackInfo.callbackLibraryPath
+            )
+            if !started {
+                self.finishHeadlessSync(success: false)
+                return
+            }
+
             // Plugins (notably flutter_secure_storage, required for anchor
-            // persistence) and the background method-channel handler must
-            // be wired up BEFORE the Dart entrypoint runs. Otherwise the
-            // entrypoint races against MissingPluginException on plugin
-            // calls or on notifyBackgroundComplete.
+            // persistence) and the background method-channel handler.
             TrustedTimePlugin.pluginRegistrantCallback?(engine)
 
             let channel = FlutterMethodChannel(
@@ -322,14 +338,6 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
                 self?.handle(call, result: result)
             }
             self.headlessChannel = channel
-
-            let started = engine.run(
-                withEntrypoint: callbackInfo.callbackName,
-                libraryURI: callbackInfo.callbackLibraryPath
-            )
-            if !started {
-                self.finishHeadlessSync(success: false)
-            }
         }
     }
 
