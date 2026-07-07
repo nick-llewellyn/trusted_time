@@ -1,3 +1,5 @@
+import 'dart:collection';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show kDebugMode;
@@ -122,9 +124,17 @@ class BackgroundSyncFileLog {
     }
   }
 
-  /// Reads the whole transcript back as a list of lines, newest first,
-  /// capped at [maxLines] (most-recent) to bound UI cost for a transcript
-  /// that grows unbounded across a multi-hour capture.
+  /// Reads the tail of the transcript back as a list of lines, newest
+  /// first, capped at [maxLines] (most-recent) to bound UI cost for a
+  /// transcript that grows unbounded across a multi-hour capture.
+  ///
+  /// The file is streamed line-by-line through a fixed-size ring buffer
+  /// rather than materialized with `readAsLines()`, so peak memory is
+  /// O([maxLines]) no matter how large the transcript has grown — a
+  /// multi-day soak capture on a low-end device costs the same RAM as a
+  /// fresh install. (I/O is still a single sequential pass over the file:
+  /// a true seek-from-end tail is not worth the byte-boundary complexity
+  /// for a diagnostic transcript that grows by one line per fire.)
   ///
   /// Returns an empty list if the file does not exist yet or cannot be
   /// read. Never throws, for the same reason as [append] — the readback
@@ -134,15 +144,21 @@ class BackgroundSyncFileLog {
     try {
       final file = File(await resolvePath());
       if (!await file.exists()) return const [];
-      final lines =
-          (await file.readAsLines()).where((l) => l.trim().isNotEmpty).toList();
+      // Ring buffer of the last [maxLines] non-empty lines: enqueue each
+      // line as it streams past, evicting the oldest once full.
+      final tail = ListQueue<String>(maxLines);
+      final lines = file
+          .openRead()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter());
+      await for (final line in lines) {
+        if (line.trim().isEmpty) continue;
+        if (tail.length == maxLines) tail.removeFirst();
+        tail.addLast(line);
+      }
       // Newest first so the operator sees the most recent fire at the top
       // without scrolling a long unbounded transcript.
-      final reversed = lines.reversed.toList();
-      if (reversed.length > maxLines) {
-        return reversed.sublist(0, maxLines);
-      }
-      return reversed;
+      return tail.toList().reversed.toList();
     } catch (_) {
       return const [];
     }
