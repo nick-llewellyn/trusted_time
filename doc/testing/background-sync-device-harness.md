@@ -7,12 +7,12 @@ below has been verified on the reference devices.
 
 ## Reference devices
 
-- Pixel Tablet, serial `3704105H809EVQ`, Android 16 (API 36).
-  Substitute your own serial in the `adb -s` flags below
+- Android tablet (Pixel Tablet class), Android 16 (API 36).
+  Substitute your own serial for `<serial>` in the `adb -s` flags below
   (`adb devices` to list).
-- Nick's iPad, identifier `658B9D5E-23E5-5964-98C3-3E241A98325C`,
-  iOS 17.5. Substitute your own identifier in the `devicectl --device`
-  flags below (`xcrun devicectl list devices`).
+- iPad, iOS 17.5. Substitute your own identifier for `<identifier>` in
+  the `devicectl --device` flags below
+  (`xcrun devicectl list devices`).
 
 ## Build-time switches
 
@@ -224,7 +224,7 @@ Gotchas learned the hard way:
 Release builds with `BG_SYNC_LOG=true BG_SYNC_MINUTES=15`, both devices
 backgrounded, displays off, on Wi-Fi and charger.
 
-| | Pixel Tablet (Android 16) | Nick's iPad (iOS 17.5) |
+| | Android tablet (Android 16) | iPad (iOS 17.5) |
 |---|---|---|
 | Natural OS-scheduled fires | **10/10 success** | 0 while parked; 1 executed at next app launch |
 | Simulated/forced fires | verified | 1/1 success via lldb hook |

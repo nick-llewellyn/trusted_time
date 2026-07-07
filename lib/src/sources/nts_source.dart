@@ -144,7 +144,8 @@ final class NtsSource implements TimeSource, Warmable {
   ///
   /// [debugQueryOverride] replaces the `client.query` call for tests
   /// that need to script per-attempt outcomes without touching the FFI
-  /// surface; when set, no [nts.NtsClient] is minted.
+  /// surface; when set, no [nts.NtsClient] is minted and [warm] is a
+  /// no-op (there is no real cookie jar to prime).
   NtsSource(
     this._host, {
     int port = 4460,
@@ -208,6 +209,12 @@ final class NtsSource implements TimeSource, Warmable {
 
   @override
   Future<void> warm() {
+    // Honour the [debugQueryOverride] contract: the override scripts the
+    // query path without touching the FFI surface, so warming must not
+    // mint an [nts.NtsClient] either. There is no real cookie jar to
+    // prime when the query itself is scripted, so this is a pure no-op
+    // rather than a memoized task.
+    if (_debugQueryOverride != null) return Future.value();
     return _warmTask ??= _performWarming();
   }
 

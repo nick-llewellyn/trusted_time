@@ -279,6 +279,20 @@ void main() {
       expect(() => NtsSource('h', burstCount: 5), throwsAssertionError);
     });
 
+    test('warm() is a no-op under debugQueryOverride', () async {
+      // The override contract promises the FFI surface is never
+      // touched, so warm() must complete without attempting to mint an
+      // NtsClient, and the subsequent scripted query must run normally.
+      final source = NtsSource(
+        'test.example',
+        debugQueryOverride: () async => rawSample(roundTripMicros: 30000),
+      );
+
+      await source.warm();
+      final sample = await source.getTime();
+      expect(sample.delayMs, 30);
+    });
+
     test('reducer returning a non-input instance is rejected in debug', () {
       final source = NtsSource(
         'test.example',
