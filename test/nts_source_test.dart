@@ -278,5 +278,20 @@ void main() {
       expect(() => NtsSource('h', burstCount: 0), throwsAssertionError);
       expect(() => NtsSource('h', burstCount: 5), throwsAssertionError);
     });
+
+    test('reducer returning a non-input instance is rejected in debug', () {
+      final source = NtsSource(
+        'test.example',
+        burstCount: 2,
+        // Contract violation: returns a derived copy instead of an
+        // input element, so the winner cannot be mapped back to its
+        // raw attempt for stratum attribution.
+        reducer: (samples) =>
+            samples.first.normalizedTo(samples.first.receivedAtMs! + 1),
+        debugQueryOverride: () async => rawSample(roundTripMicros: 30000),
+      );
+
+      expect(source.getTime(), throwsAssertionError);
+    });
   });
 }

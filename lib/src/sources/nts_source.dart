@@ -13,8 +13,12 @@ import 'nts_auth_level.dart';
 ///
 /// Invoked with a non-empty list; every sample comes from the same
 /// host within one [NtsSource.getTime] call, so cross-source
-/// comparability is not a concern. The returned sample must be one of
-/// (or derived from) the inputs.
+/// comparability is not a concern. The returned sample **must be one
+/// of the input instances** (an element of `samples`, compared by
+/// identity): [NtsSource] maps the winner back to its raw attempt to
+/// attribute the server stratum, and a copied or derived instance
+/// breaks that mapping — stratum reporting is then skipped for the
+/// burst (asserted in debug builds).
 typedef NtsBurstReducer = TimeSample Function(List<TimeSample> samples);
 
 /// Default [NtsBurstReducer]: keeps the sample with the smallest
@@ -338,14 +342,24 @@ final class NtsSource implements TimeSource, Warmable {
     // Reduce the burst to one sample (lowest RTT by default) and
     // report stratum once, from the winning attempt, so the quality
     // tracker sees exactly one observation per getTime() call as
-    // before.
+    // before. The identity lookup is the [NtsBurstReducer] contract:
+    // a reducer that returns a copy or derived instance cannot be
+    // mapped back to a raw attempt, so rather than attribute some
+    // other attempt's stratum, reporting is skipped for the burst.
     final samples = successes
         .map((s) => _toTimeSample(s.raw, s.receivedAtMs))
         .toList(growable: false);
     final winner = _reducer(samples);
     final winnerIndex = samples.indexWhere((s) => identical(s, winner));
-    final winningRaw = successes[winnerIndex >= 0 ? winnerIndex : 0].raw;
-    _onStratumObserved?.call(winningRaw.serverStratum);
+    assert(
+      winnerIndex >= 0,
+      'NtsBurstReducer must return one of its input samples '
+      '(identity-preserved); got a copied or derived instance, so the '
+      'winning attempt cannot be identified for stratum attribution.',
+    );
+    if (winnerIndex >= 0) {
+      _onStratumObserved?.call(successes[winnerIndex].raw.serverStratum);
+    }
     return winner;
   }
 
