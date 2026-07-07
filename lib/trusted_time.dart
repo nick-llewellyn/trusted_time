@@ -663,11 +663,14 @@ abstract final class TrustedTime {
   /// the real sync engine.
   ///
   /// **In-run retry**: a transient sync failure ([TrustedTimeSyncException])
-  /// is retried up to twice within the same run (after 10 s and 20 s waits)
-  /// before the failure is reported, because the OS scheduler's own retry
-  /// can be deferred for hours under doze while this run still has minutes
-  /// of budget left. Non-transient errors (e.g. an invalid config) fail
-  /// immediately. [retryDelays] overrides that schedule for tests only.
+  /// is retried within the same run before the failure is reported, on a
+  /// platform-sized schedule — twice on Android (after 10 s and 20 s
+  /// waits, fitting the 9-minute worker budget), once on iOS (after a 2 s
+  /// wait, fitting the ~30 s `BGAppRefreshTask` budget) — because the OS
+  /// scheduler's own retry can be deferred for hours under doze while
+  /// this run still has budget left. Non-transient errors (e.g. an
+  /// invalid config) fail immediately. [retryDelays] overrides that
+  /// schedule for tests only.
   ///
   /// Returns a [TrustedTimeBackgroundResult] describing the outcome.
   static Future<TrustedTimeBackgroundResult> runBackgroundSync({

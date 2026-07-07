@@ -410,6 +410,45 @@ void main() {
         expect(await store.load(), isNotNull);
       });
     });
+
+    // The OS execution budgets differ by an order of magnitude (Android
+    // worker: 9 min; iOS BGAppRefreshTask: ~30 s), so the default in-run
+    // retry schedule is selected per platform. The Android 10s+20s waits
+    // alone would exhaust the iOS budget before the final attempt began.
+    group('default retry schedule platform split', () {
+      test('Android gets the doze-tuned 10s+20s schedule', () {
+        expect(defaultRetryDelaysFor(TargetPlatform.android), const [
+          Duration(seconds: 10),
+          Duration(seconds: 20),
+        ]);
+      });
+
+      test('iOS gets a single short wait that fits the ~30s budget', () {
+        final delays = defaultRetryDelaysFor(TargetPlatform.iOS);
+        expect(delays, const [Duration(seconds: 2)]);
+        // Invariant the schedule exists to protect: total sleep must
+        // leave room for at least one full retry attempt (bounded by the
+        // engine's 10s warming cap + maxLatency + 6s ≈ 20s) inside the
+        // ~30s BGAppRefreshTask budget.
+        final totalSleep = delays.fold(Duration.zero, (a, b) => a + b);
+        expect(totalSleep, lessThan(const Duration(seconds: 10)));
+      });
+
+      test('platforms without an OS budget share the Android schedule', () {
+        for (final platform in [
+          TargetPlatform.linux,
+          TargetPlatform.macOS,
+          TargetPlatform.windows,
+          TargetPlatform.fuchsia,
+        ]) {
+          expect(
+            defaultRetryDelaysFor(platform),
+            defaultRetryDelaysFor(TargetPlatform.android),
+            reason: '$platform should reuse the Android schedule',
+          );
+        }
+      });
+    });
   });
 
   group('TrustedTime.registerBackgroundCallback', () {

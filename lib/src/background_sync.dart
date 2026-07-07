@@ -7,20 +7,47 @@ import 'nts_bootstrap.dart';
 import 'sync_cycle.dart';
 import 'sync_engine.dart';
 
-/// Default delay schedule between in-run retry attempts on a transient
-/// sync failure (a [TrustedTimeSyncException] flagged transient).
+/// Default delay schedules between in-run retry attempts on a transient
+/// sync failure (a [TrustedTimeSyncException] flagged transient), split
+/// by platform because the OS execution budgets differ by an order of
+/// magnitude.
 ///
-/// Sized for the Android doze maintenance-window failure mode: the OS
-/// wakes the device, reports the network as CONNECTED and VALIDATED, and
-/// fires the worker — but the just-woken Wi-Fi radio can serve degraded,
-/// asymmetric latency for its first seconds, so the first quorum attempt
-/// fails even though the very same window would succeed moments later.
-/// Two retries at 10 s and 20 s let the radio settle within the *same*
-/// worker execution (~35 s worst-case wait plus three bounded sync
-/// attempts, well inside the Android worker's 9-minute budget) instead of
-/// surrendering the whole maintenance window to the OS scheduler's
-/// backoff, which under doze can defer the next opportunity by hours.
-const _defaultRetryDelays = [Duration(seconds: 10), Duration(seconds: 20)];
+/// **Android** (9-minute worker budget): sized for the doze
+/// maintenance-window failure mode. The OS wakes the device, reports the
+/// network as CONNECTED and VALIDATED, and fires the worker — but the
+/// just-woken Wi-Fi radio can serve degraded, asymmetric latency for its
+/// first seconds, so the first quorum attempt fails even though the very
+/// same window would succeed moments later. Two retries at 10 s and 20 s
+/// let the radio settle within the *same* worker execution (~35 s
+/// worst-case wait plus three bounded sync attempts, well inside the
+/// budget) instead of surrendering the whole maintenance window to the
+/// OS scheduler's backoff, which under doze can defer the next
+/// opportunity by hours.
+///
+/// **iOS** (~30 s `BGAppRefreshTask` budget, ADR 0002): the Android
+/// schedule's 10 s + 20 s waits alone would exhaust the budget before
+/// the final attempt started, guaranteeing the native expiration handler
+/// fires mid-retry. A single short 2 s pause instead spends the leftover
+/// budget on a retry rather than on sleep: a typical failed attempt
+/// resolves in a few seconds (worst-case it is bounded by the engine's
+/// 10 s warming-barrier cap plus `maxLatency + 6 s`), so one quick
+/// second attempt usually fits where the doze-tuned waits never could.
+/// The radio-settle failure mode those longer waits target is
+/// Android-specific; the residual transient failures on iOS are
+/// momentary network weather at wake, which a short pause covers.
+const _androidRetryDelays = [Duration(seconds: 10), Duration(seconds: 20)];
+const _iosRetryDelays = [Duration(seconds: 2)];
+
+/// The default in-run retry schedule for [platform].
+///
+/// Exposed for tests pinning the platform split; production callers let
+/// [runBackgroundSync] select the schedule from [defaultTargetPlatform].
+/// Platforms without an OS execution budget (the desktop in-isolate
+/// timer fallback, tests on host) share the Android schedule — longer
+/// waits are harmless when nothing enforces a deadline.
+@visibleForTesting
+List<Duration> defaultRetryDelaysFor(TargetPlatform platform) =>
+    platform == TargetPlatform.iOS ? _iosRetryDelays : _androidRetryDelays;
 
 /// Outcome of a single headless background-sync invocation.
 ///
@@ -172,14 +199,19 @@ final class BackgroundSyncFailure extends TrustedTimeBackgroundResult {
 /// failure, sync timeout — network conditions that can clear) is retried
 /// after each delay in [retryDelays] before the run is reported as failed,
 /// because the OS scheduler's own retry can be deferred for hours under
-/// doze while the worker still has minutes of budget left. Each attempt
-/// uses a **fresh** [SyncEngine]: a failed attempt arms per-source
-/// exponential cooldowns inside the engine, which would otherwise make an
-/// immediate retry throw "all sources in cooldown" without touching the
-/// network. Any other error — a [TrustedTimeSyncException] the engine
-/// flagged non-transient (e.g. no sources configured), or an
-/// [ArgumentError] from an invalid [TrustedTimeConfig] — fails
-/// immediately: it would fail identically on every attempt.
+/// doze while the worker still has budget left. When [retryDelays] is not
+/// provided, a platform-appropriate default is selected from
+/// [defaultTargetPlatform]: 10 s + 20 s on Android (9-minute worker
+/// budget, doze radio-settle failure mode) versus a single 2 s wait on
+/// iOS (~30 s `BGAppRefreshTask` budget that the Android waits alone
+/// would exhaust). Each attempt uses a **fresh** [SyncEngine]: a failed
+/// attempt arms per-source exponential cooldowns inside the engine, which
+/// would otherwise make an immediate retry throw "all sources in
+/// cooldown" without touching the network. Any other error — a
+/// [TrustedTimeSyncException] the engine flagged non-transient (e.g. no
+/// sources configured), or an [ArgumentError] from an invalid
+/// [TrustedTimeConfig] — fails immediately: it would fail identically on
+/// every attempt.
 ///
 /// It does, however, run the shared NTS bootstrap ([ensureNtsRuntime])
 /// before building the engine. The OS scheduler runs this callback in a
@@ -228,7 +260,7 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
   final stopwatch = Stopwatch()..start();
   final anchorStore = store ?? AnchorStore();
   final monotonicClock = clock ?? PlatformMonotonicClock();
-  final delays = retryDelays ?? _defaultRetryDelays;
+  final delays = retryDelays ?? defaultRetryDelaysFor(defaultTargetPlatform);
   // Bootstrap the NTS Rust FFI for this (headless) isolate before the
   // engine builds any NtsSource. The OS scheduler runs this callback in a
   // fresh Dart isolate that does not inherit the foreground isolate's
