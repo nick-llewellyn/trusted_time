@@ -432,6 +432,74 @@ void main() {
     );
   });
 
+  group('TrustedTime failed-sync retry classification', () {
+    // Pins the shared transient/non-transient verdict (isTransientSyncError,
+    // also used by runBackgroundSync's in-run retry loop) on the foreground
+    // retry scheduler: a failed cycle arms the retry timer only for
+    // transient failures. Before the unification, every failure — including
+    // an ArgumentError from an invalid config that fails identically on
+    // each attempt — looped through _scheduleRetry forever.
+    tearDown(TrustedTime.resetOverride);
+
+    test('a transient quorum failure arms the retry timer', () async {
+      // Empty source pools make the bootstrap sync throw
+      // TrustedTimeSyncException ("no time sources configured") — the
+      // transient classification, so recovery retries stay armed.
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      addTearDown(TrustedTimeImpl.instance.dispose);
+
+      expect(TrustedTime.isTrusted, isFalse);
+      expect(TrustedTimeImpl.instance.debugRetryTimerActive, isTrue);
+    });
+
+    test('a non-transient failure does not arm the retry timer', () async {
+      // Drive the non-transient class through the shared cycle's banking
+      // step: the engine reaches quorum, but persisting the anchor throws
+      // (secure storage rejects writes). A storage failure is not network
+      // weather — retrying the identical cycle would fail identically —
+      // so the retry timer must stay unarmed.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            if (call.method == 'write') {
+              throw PlatformException(code: 'STORAGE_UNAVAILABLE');
+            }
+            return null;
+          });
+      addTearDown(() {
+        // Restore the file-level null-returning storage mock so sibling
+        // tests keep their persistence-free behaviour.
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(storageChannel, (call) async => null);
+      });
+
+      final box = _MidpointBox(
+        DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
+      );
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          additionalSources: [
+            _BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
+            _BoxedSource(box, id: 'https:b', groupId: 'g2'),
+          ],
+        ),
+      );
+      addTearDown(TrustedTimeImpl.instance.dispose);
+
+      expect(TrustedTime.isTrusted, isFalse);
+      expect(TrustedTimeImpl.instance.debugRetryTimerActive, isFalse);
+    });
+  });
+
   group('TrustedTimeConfig value equality', () {
     test('two non-const instances with identical fields compare equal', () {
       // `new TrustedTimeConfig(...)` (without `const`) defeats Dart's

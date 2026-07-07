@@ -8,6 +8,7 @@ import 'exceptions.dart';
 import 'integrity_event.dart';
 import 'integrity_monitor.dart';
 import 'monotonic_clock.dart';
+import 'sync_cycle.dart';
 import 'sync_engine.dart';
 import 'sources/nts_auth_level.dart';
 import 'infra/sync_observer.dart';
@@ -491,9 +492,17 @@ final class TrustedTimeImpl {
     _refreshTimer?.cancel();
     _refreshTimer = null;
     try {
-      final anchor = await _syncEngine.sync();
+      // Shared query-and-bank unit (sync + persistState-gated save), so
+      // the foreground and background paths produce and persist anchors
+      // identically. Save runs before _applyAnchor: a storage failure
+      // surfaces as a failed cycle rather than leaving in-memory state
+      // ahead of what the next warm restore will read back.
+      final anchor = await performSyncCycle(
+        engine: _syncEngine,
+        store: _store,
+        config: _config,
+      );
       _applyAnchor(anchor);
-      if (_config.persistState) await _store.save(anchor);
       _trusted = true;
       _offlineLastUtcMs = anchor.networkUtcMs;
       _offlineLastWallMs = anchor.wallMs;
@@ -501,7 +510,14 @@ final class TrustedTimeImpl {
     } catch (e) {
       if (kDebugMode) debugPrint('[TrustedTime] Sync failed: $e');
       _trusted = false;
-      _scheduleRetry();
+      // Same transient/non-transient verdict as the background path
+      // (see isTransientSyncError): only network-weather failures are
+      // worth re-attempting. A non-transient error (e.g. ArgumentError
+      // from an invalid config) would fail identically on every attempt,
+      // so arming the retry timer would loop the same failure forever.
+      if (isTransientSyncError(e)) {
+        _scheduleRetry();
+      }
     } finally {
       // Reset together so the bool and Completer stay observably in
       // sync. A future caller that arrives after this point sees
@@ -785,6 +801,14 @@ final class TrustedTimeImpl {
   /// calls by observing cancellation and identity of the old timer.
   @visibleForTesting
   Timer? get debugDesktopBgTimer => _desktopBgTimer;
+
+  /// Whether the failed-sync retry timer is currently armed.
+  ///
+  /// Lets tests pin the transient/non-transient retry verdict: a failed
+  /// cycle arms the retry timer only when the error is classified as
+  /// transient by the shared [isTransientSyncError] predicate.
+  @visibleForTesting
+  bool get debugRetryTimerActive => _retryTimer != null;
 
   /// Drives the foreground-resume validate path deterministically in
   /// tests without a real [WidgetsBinding] lifecycle dispatch. [elapsed]

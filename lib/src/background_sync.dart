@@ -4,6 +4,7 @@ import 'exceptions.dart';
 import 'models.dart';
 import 'monotonic_clock.dart';
 import 'nts_bootstrap.dart';
+import 'sync_cycle.dart';
 import 'sync_engine.dart';
 
 /// Default delay schedule between in-run retry attempts on a transient
@@ -247,34 +248,42 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
     // next attempt throw "all sources in cooldown" without any network I/O.
     final engine = SyncEngine(config: effectiveConfig, clock: monotonicClock);
     try {
-      final anchor = await engine.sync();
-      if (effectiveConfig.persistState) {
-        await anchorStore.save(anchor);
-      }
+      // Shared query-and-bank unit (sync + persistState-gated save) —
+      // the same cycle the foreground engine runs, so a headless anchor
+      // is produced and persisted identically to a foreground one.
+      final anchor = await performSyncCycle(
+        engine: engine,
+        store: anchorStore,
+        config: effectiveConfig,
+      );
       stopwatch.stop();
       return BackgroundSyncSuccess(anchor: anchor, elapsed: stopwatch.elapsed);
-    } on TrustedTimeSyncException catch (e) {
-      lastError = e;
-      if (kDebugMode) {
-        debugPrint(
-          '[TrustedTime] Background sync attempt $attempt/$maxAttempts '
-          'failed: $e',
-        );
-      }
-      if (attempt < maxAttempts) {
-        await Future<void>.delayed(delays[attempt - 1]);
-      }
     } catch (e) {
-      // Non-transient failures (invalid config, unexpected errors) would
-      // fail identically on every attempt; report immediately and flag
-      // the failure as non-retryable so the OS scheduler gives up on
-      // this interval too (Android maps this to Result.failure()).
       lastError = e;
-      lastErrorRetryable = false;
-      if (kDebugMode) {
-        debugPrint('[TrustedTime] Background sync failed: $e');
+      // Shared transient/non-transient verdict (isTransientSyncError,
+      // also used by the foreground retry scheduler). Transient failures
+      // (quorum, timeout) consume the retry schedule; anything else
+      // (invalid config, unexpected errors) would fail identically on
+      // every attempt, so report immediately and flag the failure as
+      // non-retryable so the OS scheduler gives up on this interval too
+      // (Android maps this to Result.failure()).
+      if (isTransientSyncError(e)) {
+        if (kDebugMode) {
+          debugPrint(
+            '[TrustedTime] Background sync attempt $attempt/$maxAttempts '
+            'failed: $e',
+          );
+        }
+        if (attempt < maxAttempts) {
+          await Future<void>.delayed(delays[attempt - 1]);
+        }
+      } else {
+        lastErrorRetryable = false;
+        if (kDebugMode) {
+          debugPrint('[TrustedTime] Background sync failed: $e');
+        }
+        break;
       }
-      break;
     } finally {
       // dispose() iterates the engine's lazily-built source list. If sync()
       // failed because that `late final` initializer threw (e.g. an invalid
