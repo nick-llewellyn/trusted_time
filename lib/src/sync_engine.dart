@@ -447,9 +447,14 @@ final class SyncEngine {
       // very different — adding sources vs. waiting for the
       // exponential cooldown to expire.
       final emptyError = _sources.isEmpty
+          // An empty source configuration fails identically on every
+          // attempt — non-transient, so retry schedulers give up rather
+          // than loop the same failure forever. Cooldown, by contrast,
+          // expires with time, so a retry can plausibly recover.
           ? const TrustedTimeSyncException(
               'No time sources are configured: ntpServers, httpsSources, '
               'ntsServers, and additionalSources are all empty.',
+              transient: false,
             )
           : const TrustedTimeSyncException(
               'All configured time sources are currently in exponential '
@@ -892,8 +897,11 @@ final class SyncEngine {
     // This prevents outliers from corrupting the monotonic clock reference.
     final participantSamples = result.participants;
     if (participantSamples.isEmpty) {
-      throw TrustedTimeSyncException(
+      // Structural invariant violation, not network weather: a retry of
+      // the same cycle would produce the same empty participant set.
+      throw const TrustedTimeSyncException(
         'Consensus result has no participant samples',
+        transient: false,
       );
     }
 

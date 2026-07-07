@@ -6,16 +6,20 @@ import 'sync_engine.dart';
 /// Whether [error] is a transient sync failure that a retry can plausibly
 /// recover from.
 ///
-/// [TrustedTimeSyncException] covers quorum-not-reached and sync-timeout
-/// conditions — network weather that can clear between attempts. Anything
-/// else (e.g. an [ArgumentError] from an invalid [TrustedTimeConfig], or a
-/// storage failure while banking the anchor) would fail identically on
-/// every attempt and must not be retried.
+/// A [TrustedTimeSyncException] flagged [TrustedTimeSyncException.transient]
+/// covers quorum-not-reached, sync-timeout, and all-sources-in-cooldown
+/// conditions — weather that can clear between attempts. Anything else —
+/// a [TrustedTimeSyncException] the engine flagged non-transient (empty
+/// source configuration, consensus with no participants), an
+/// [ArgumentError] from an invalid [TrustedTimeConfig], or a storage
+/// failure while banking the anchor — would fail identically on every
+/// attempt and must not be retried.
 ///
 /// Shared by the foreground retry scheduler (`TrustedTimeImpl`) and the
 /// background in-run retry loop (`runBackgroundSync`) so both paths apply
 /// the same transient/non-transient verdict.
-bool isTransientSyncError(Object error) => error is TrustedTimeSyncException;
+bool isTransientSyncError(Object error) =>
+    error is TrustedTimeSyncException && error.transient;
 
 /// Runs one query-and-bank sync cycle: [SyncEngine.sync] followed by a
 /// [TrustedTimeConfig.persistState]-gated [AnchorStorage.save].

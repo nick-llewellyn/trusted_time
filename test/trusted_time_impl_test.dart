@@ -442,15 +442,19 @@ void main() {
     tearDown(TrustedTime.resetOverride);
 
     test('a transient quorum failure arms the retry timer', () async {
-      // Empty source pools make the bootstrap sync throw
-      // TrustedTimeSyncException ("no time sources configured") — the
-      // transient classification, so recovery retries stay armed.
+      // Sources that throw make the bootstrap sync fail quorum — a
+      // transient TrustedTimeSyncException (network weather), so
+      // recovery retries stay armed.
       await TrustedTime.initialize(
-        config: const TrustedTimeConfig(
-          ntpServers: [],
-          httpsSources: [],
-          ntsServers: [],
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
           persistState: false,
+          additionalSources: [
+            _FailingSource(id: 'ntp:a', groupId: 'g1'),
+            _FailingSource(id: 'https:b', groupId: 'g2'),
+          ],
         ),
       );
       addTearDown(TrustedTimeImpl.instance.dispose);
@@ -458,6 +462,28 @@ void main() {
       expect(TrustedTime.isTrusted, isFalse);
       expect(TrustedTimeImpl.instance.debugRetryTimerActive, isTrue);
     });
+
+    test(
+      'an empty source configuration does not arm the retry timer',
+      () async {
+        // "No time sources are configured" fails identically on every
+        // attempt — the engine flags it non-transient, so retrying would
+        // just loop the same failure (and drain battery in background
+        // contexts). The retry timer must stay unarmed.
+        await TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+          ),
+        );
+        addTearDown(TrustedTimeImpl.instance.dispose);
+
+        expect(TrustedTime.isTrusted, isFalse);
+        expect(TrustedTimeImpl.instance.debugRetryTimerActive, isFalse);
+      },
+    );
 
     test('a non-transient failure does not arm the retry timer', () async {
       // Drive the non-transient class through the shared cycle's banking
@@ -995,6 +1021,20 @@ class _CountingSource implements TimeSource {
       groupId: groupId,
     );
   }
+}
+
+/// A [TimeSource] whose every query throws, driving the engine into a
+/// quorum failure — the transient classification path.
+class _FailingSource implements TimeSource {
+  _FailingSource({required this.id, required this.groupId});
+
+  @override
+  final String id;
+  @override
+  final String groupId;
+
+  @override
+  Future<TimeSample> getTime() async => throw Exception('unreachable host');
 }
 
 /// A [TimeSource] that reports an interval centred on a [_MidpointBox]

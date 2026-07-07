@@ -8,7 +8,7 @@ import 'sync_cycle.dart';
 import 'sync_engine.dart';
 
 /// Default delay schedule between in-run retry attempts on a transient
-/// sync failure ([TrustedTimeSyncException]).
+/// sync failure (a [TrustedTimeSyncException] flagged transient).
 ///
 /// Sized for the Android doze maintenance-window failure mode: the OS
 /// wakes the device, reports the network as CONNECTED and VALIDATED, and
@@ -138,12 +138,13 @@ final class BackgroundSyncFailure extends TrustedTimeBackgroundResult {
 
   /// Whether the OS scheduler should re-attempt this run.
   ///
-  /// `true` for transient failures ([TrustedTimeSyncException]: quorum
-  /// not reached, sync timeout) where network conditions may recover
-  /// before the scheduler's backoff elapses. `false` for non-transient
-  /// errors (e.g. an invalid [TrustedTimeConfig]) that would fail
-  /// identically on every attempt — the same classification the in-run
-  /// retry loop uses, extended across the platform boundary.
+  /// `true` for transient failures (a [TrustedTimeSyncException] flagged
+  /// transient: quorum not reached, sync timeout, all sources in
+  /// cooldown) where conditions may recover before the scheduler's
+  /// backoff elapses. `false` for non-transient errors (e.g. an invalid
+  /// or empty-source [TrustedTimeConfig]) that would fail identically on
+  /// every attempt — the same classification the in-run retry loop uses
+  /// (`isTransientSyncError`), extended across the platform boundary.
   final bool retryable;
 
   @override
@@ -167,16 +168,18 @@ final class BackgroundSyncFailure extends TrustedTimeBackgroundResult {
 /// [SyncEngine.sync], optionally writes the result to [AnchorStorage], and
 /// returns.
 ///
-/// **In-run retry**: a [TrustedTimeSyncException] (quorum failure, sync
-/// timeout — transient network conditions) is retried after each delay in
-/// [retryDelays] before the run is reported as failed, because the OS
-/// scheduler's own retry can be deferred for hours under doze while the
-/// worker still has minutes of budget left. Each attempt uses a **fresh**
-/// [SyncEngine]: a failed attempt arms per-source exponential cooldowns
-/// inside the engine, which would otherwise make an immediate retry throw
-/// "all sources in cooldown" without touching the network. Any other error
-/// (e.g. an [ArgumentError] from an invalid [TrustedTimeConfig]) fails
-/// immediately — it would fail identically on every attempt.
+/// **In-run retry**: a transient [TrustedTimeSyncException] (quorum
+/// failure, sync timeout — network conditions that can clear) is retried
+/// after each delay in [retryDelays] before the run is reported as failed,
+/// because the OS scheduler's own retry can be deferred for hours under
+/// doze while the worker still has minutes of budget left. Each attempt
+/// uses a **fresh** [SyncEngine]: a failed attempt arms per-source
+/// exponential cooldowns inside the engine, which would otherwise make an
+/// immediate retry throw "all sources in cooldown" without touching the
+/// network. Any other error — a [TrustedTimeSyncException] the engine
+/// flagged non-transient (e.g. no sources configured), or an
+/// [ArgumentError] from an invalid [TrustedTimeConfig] — fails
+/// immediately: it would fail identically on every attempt.
 ///
 /// It does, however, run the shared NTS bootstrap ([ensureNtsRuntime])
 /// before building the engine. The OS scheduler runs this callback in a
