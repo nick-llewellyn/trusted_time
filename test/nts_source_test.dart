@@ -154,6 +154,48 @@ void main() {
       expect(sample.receivedAtMs, isNotNull);
     });
 
+    test('RTT tie-break is deterministic by attempt index, not '
+        'completion order', () async {
+      // All attempts tie on RTT, but attempt 0 completes last. The
+      // successes list must still be materialized in attempt-index
+      // order, so lowestRttReducer's "first wins" tie-break selects
+      // attempt 0 — pinning that completion order cannot leak into
+      // the winning sample or its stratum attribution.
+      const tiedRttMicros = 30000;
+      var call = 0;
+      int? observedStratum;
+      final source = NtsSource(
+        'test.example',
+        burstCount: 3,
+        onStratumObserved: (s) => observedStratum = s,
+        debugQueryOverride: () async {
+          final attempt = call++;
+          // Attempt 0 finishes after its siblings.
+          await Future<void>.delayed(
+            Duration(milliseconds: attempt == 0 ? 30 : 1),
+          );
+          // Offset each attempt's timestamp by a full second so the
+          // winner stays identifiable after the µs -> ms conversion.
+          return rawSample(
+            roundTripMicros: tiedRttMicros,
+            utcUnixMicros: 1000000000000 + attempt * 1000000,
+            serverStratum: attempt + 1,
+          );
+        },
+      );
+
+      final sample = await source.getTime();
+      expect(call, 3, reason: 'all burst attempts should have fired');
+      // Attempt 0's timestamp (offset +0) identifies the winner.
+      final midpointMs = (sample.interval.startMs + sample.interval.endMs) ~/ 2;
+      expect(midpointMs, 1000000000000 ~/ 1000);
+      expect(
+        observedStratum,
+        1,
+        reason: 'stratum attribution must follow the attempt-0 winner',
+      );
+    });
+
     test('burstCount=1 preserves single-query behaviour', () async {
       var call = 0;
       final source = NtsSource(

@@ -264,15 +264,19 @@ final class NtsSource implements TimeSource, Warmable {
     // carries its own timeoutMs budget, so a straggler times out
     // inside the same window a single query would have. Every attempt
     // guards its own failure; the burst as a whole succeeds when at
-    // least one attempt lands.
-    final successes = <_BurstSuccess>[];
+    // least one attempt lands. Each attempt returns its result rather
+    // than appending to a shared list, so Future.wait materializes
+    // successes in fixed attempt-index order — completion order must
+    // not leak into the list, or the reducer's "first wins" tie-break
+    // (and thus the winning sample and its stratum attribution) would
+    // be race-dependent when RTT keys tie.
     var transientFailures = 0;
     Object? lastError;
     StackTrace? lastStackTrace;
     Object? lastNonTransientError;
     StackTrace? lastNonTransientStackTrace;
 
-    await Future.wait(
+    final results = await Future.wait(
       List.generate(_burstCount, (_) async {
         try {
           final result = await runQuery();
@@ -281,11 +285,9 @@ final class NtsSource implements TimeSource, Warmable {
           // for the engine's receipt normalization. Stamped on the
           // monotonic receipt timeline so a wall-clock step mid-burst
           // cannot corrupt the deltas normalization consumes.
-          successes.add(
-            _BurstSuccess(
-              raw: result,
-              receivedAtMs: TimeSample.monotonicReceiptNowMs(),
-            ),
+          return _BurstSuccess(
+            raw: result,
+            receivedAtMs: TimeSample.monotonicReceiptNowMs(),
           );
         } on nts.NtsErrorTimeout catch (e, st) {
           // Dns(Saturation) means the bounded DNS resolver pool was at
@@ -302,11 +304,16 @@ final class NtsSource implements TimeSource, Warmable {
             lastError = lastNonTransientError = e;
             lastStackTrace = lastNonTransientStackTrace = st;
           }
+          return null;
         } catch (e, st) {
           lastError = lastNonTransientError = e;
           lastStackTrace = lastNonTransientStackTrace = st;
+          return null;
         }
       }),
+    );
+    final successes = results.whereType<_BurstSuccess>().toList(
+      growable: false,
     );
 
     if (kDebugMode) {
