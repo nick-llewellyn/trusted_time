@@ -792,6 +792,18 @@ abstract final class TrustedTime {
         stackTrace: s,
       );
       return null;
+    } catch (e, s) {
+      // Anything else — e.g. a TypeError from invokeMapMethod when the
+      // platform returns an unexpected map shape. The dartdoc promises
+      // best-effort null on failure, so no error may escape here.
+      developer.log(
+        'TrustedTime.getBackgroundStopReason: unexpected error',
+        name: 'trusted_time',
+        level: 900,
+        error: e,
+        stackTrace: s,
+      );
+      return null;
     }
   }
 

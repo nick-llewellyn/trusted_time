@@ -863,6 +863,19 @@ void main() {
       expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
     });
 
+    test(
+      'returns null when the platform reply has an unexpected shape',
+      () async {
+        // A List where a Map is expected makes invokeMapMethod's internal
+        // cast throw a TypeError; the best-effort contract requires that
+        // to surface as null rather than escaping to the caller.
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (call) async => [1, 2, 3]);
+
+        expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
+      },
+    );
+
     test('returns null under an active TrustedTimeMock override', () async {
       final mock = public_api.TrustedTimeMock(initial: DateTime.utc(2026));
       public_api.TrustedTime.overrideForTesting(mock);
