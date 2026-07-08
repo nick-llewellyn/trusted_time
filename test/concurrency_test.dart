@@ -338,7 +338,14 @@ class WarmingTestSource implements TimeSource, Warmable {
       WarmingEvent(id, WarmingPhase.warmStart, clock.elapsedMilliseconds),
     );
     if (throwSyncFromWarm) {
-      throw StateError('synchronous warm failure: $id');
+      // Memoize the failure before throwing so repeat calls return the
+      // same failed Future instead of re-emitting warmStart and
+      // re-throwing synchronously. ignore() keeps the cached future from
+      // tripping the unhandled-async-error trap when no later call
+      // awaits it.
+      final error = StateError('synchronous warm failure: $id');
+      _warmTask = Future<void>.error(error)..ignore();
+      throw error;
     }
     return _warmTask = _doWarm();
   }
