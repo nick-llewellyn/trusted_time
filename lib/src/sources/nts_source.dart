@@ -321,8 +321,9 @@ final class NtsSource implements TimeSource, Warmable {
           .map((s) => (s.raw.roundTripMicros / 1000).toStringAsFixed(1))
           .join(', ');
       // Per-attempt receipt deltas relative to the burst's earliest
-      // receipt, in completion order — surfaces the intra-burst receipt
-      // spread that the engine's normalization absorbs.
+      // receipt, in attempt-index order (failed attempts filtered) —
+      // surfaces the intra-burst receipt spread that the engine's
+      // normalization absorbs.
       var receipts = '';
       if (successes.isNotEmpty) {
         final earliest = successes

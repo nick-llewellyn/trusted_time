@@ -835,9 +835,11 @@ final class TrustedTimeImpl {
     // Round *up* to the next whole minute rather than truncating:
     // background sync is battery-sensitive OS work, so a leftover-seconds
     // interval (e.g. 15m59s) must never schedule *more* frequently than
-    // the caller requested.
-    final minutes = (interval.inMicroseconds / Duration.microsecondsPerMinute)
-        .ceil();
+    // the caller requested. Pure integer ceiling division — no double
+    // conversion, so no precision loss for very large Durations.
+    final minutes =
+        (interval.inMicroseconds + Duration.microsecondsPerMinute - 1) ~/
+        Duration.microsecondsPerMinute;
     try {
       await _bgChannel.invokeMethod<void>('enableBackgroundSync', {
         'intervalMinutes': minutes.clamp(_minBgSyncMinutes, _maxBgSyncMinutes),
