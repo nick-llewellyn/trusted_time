@@ -139,8 +139,13 @@ class BackgroundSyncFileLog {
   /// Returns an empty list if the file does not exist yet or cannot be
   /// read. Never throws, for the same reason as [append] — the readback
   /// panel treats "no log" and "unreadable log" identically as "nothing
-  /// to show yet".
+  /// to show yet". A non-positive [maxLines] is treated as a cap of
+  /// zero and returns an empty list without touching the file (rather
+  /// than tripping the ring buffer's eviction on an empty queue, or —
+  /// for negative values — never evicting at all and silently breaking
+  /// the O([maxLines]) memory bound).
   static Future<List<String>> readLatest({int maxLines = 200}) async {
+    if (maxLines <= 0) return const [];
     try {
       final file = File(await resolvePath());
       if (!await file.exists()) return const [];
