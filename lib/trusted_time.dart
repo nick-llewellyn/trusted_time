@@ -504,13 +504,14 @@ abstract final class TrustedTime {
   /// that does not refresh the anchor — see ADR 0002.
   ///
   /// **Interval granularity**: [interval] is applied at minute resolution.
-  /// On both Android and iOS the Dart layer clamps the interval to
-  /// `[15 min, 1 week]` before it reaches the platform scheduler. The
-  /// 15-minute floor mirrors Android [WorkManager]'s hard minimum on
-  /// periodic work and is applied on iOS too, for cross-platform
-  /// consistency (BGTaskScheduler treats the interval as a hint anyway).
-  /// Sub-minute precision is not meaningful for OS-scheduled background
-  /// work and is discarded.
+  /// On both Android and iOS the Dart layer rounds fractional minutes
+  /// **up** to the next whole minute (never scheduling more frequently
+  /// than requested — this is battery-sensitive OS work) and clamps the
+  /// result to `[15 min, 1 week]` before it reaches the platform
+  /// scheduler. The 15-minute floor mirrors Android [WorkManager]'s hard
+  /// minimum on periodic work and is applied on iOS too, for
+  /// cross-platform consistency (BGTaskScheduler treats the interval as
+  /// a hint anyway).
   static Future<void> enableBackgroundSync({
     Duration interval = const Duration(hours: 24),
   }) {

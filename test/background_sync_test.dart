@@ -984,6 +984,18 @@ void main() {
       expect(calls.single.arguments, {'intervalMinutes': 30});
     });
 
+    test('rounds leftover seconds up to the next whole minute', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+
+      await public_api.TrustedTime.enableBackgroundSync(
+        interval: const Duration(minutes: 15, seconds: 59),
+      );
+
+      // Truncation would yield 15 and schedule *more* frequently than
+      // requested; battery-sensitive OS work must round up instead.
+      expect(calls.single.arguments, {'intervalMinutes': 16});
+    });
+
     test('clamps intervals below the 15-minute WorkManager floor', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
 

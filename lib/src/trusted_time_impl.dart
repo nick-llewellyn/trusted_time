@@ -832,12 +832,15 @@ final class TrustedTimeImpl {
   static const int _maxBgSyncMinutes = 168 * 60;
 
   Future<void> _invokeBackgroundSync(Duration interval) async {
+    // Round *up* to the next whole minute rather than truncating:
+    // background sync is battery-sensitive OS work, so a leftover-seconds
+    // interval (e.g. 15m59s) must never schedule *more* frequently than
+    // the caller requested.
+    final minutes = (interval.inMicroseconds / Duration.microsecondsPerMinute)
+        .ceil();
     try {
       await _bgChannel.invokeMethod<void>('enableBackgroundSync', {
-        'intervalMinutes': interval.inMinutes.clamp(
-          _minBgSyncMinutes,
-          _maxBgSyncMinutes,
-        ),
+        'intervalMinutes': minutes.clamp(_minBgSyncMinutes, _maxBgSyncMinutes),
       });
     } catch (e) {
       if (kDebugMode) debugPrint('[TrustedTime] Background sync failed: $e');

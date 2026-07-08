@@ -293,7 +293,8 @@ void main() {
       expect(sample.delayMs, 30);
     });
 
-    test('reducer returning a non-input instance is rejected in debug', () {
+    test('reducer returning a non-input instance is rejected in '
+        'debug', () async {
       final source = NtsSource(
         'test.example',
         burstCount: 2,
@@ -305,7 +306,9 @@ void main() {
         debugQueryOverride: () async => rawSample(roundTripMicros: 30000),
       );
 
-      expect(source.getTime(), throwsAssertionError);
+      // The assertion fires inside getTime()'s awaited work, so the
+      // expectation must await the Future to reliably observe it.
+      await expectLater(source.getTime(), throwsAssertionError);
     });
   });
 }
