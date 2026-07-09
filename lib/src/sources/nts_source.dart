@@ -305,6 +305,15 @@ final class NtsSource implements TimeSource, Warmable {
             lastStackTrace = lastNonTransientStackTrace = st;
           }
           return null;
+        } on TransientSourceError catch (e, st) {
+          // An already-wrapped transient error — e.g. thrown directly by
+          // a [debugQueryOverride] script, or by a future refactor that
+          // classifies timeouts earlier — must keep its transient
+          // semantics so an all-transient burst still bypasses cooldown.
+          transientFailures++;
+          lastError = e;
+          lastStackTrace = st;
+          return null;
         } catch (e, st) {
           lastError = lastNonTransientError = e;
           lastStackTrace = lastNonTransientStackTrace = st;

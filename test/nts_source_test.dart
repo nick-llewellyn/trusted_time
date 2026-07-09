@@ -272,6 +272,61 @@ void main() {
       await expectLater(source.getTime(), throwsA(isA<TransientSourceError>()));
     });
 
+    test(
+      'pre-wrapped TransientSourceError keeps transient classification',
+      () async {
+        // A TransientSourceError thrown directly by the query (rather than
+        // being wrapped by the dnsSaturation branch) must still count as
+        // transient, so an all-transient burst bypasses cooldown instead of
+        // being classified as a hard failure.
+        final source = NtsSource(
+          'test.example',
+          burstCount: 2,
+          debugQueryOverride: () async {
+            throw const TransientSourceError('already-wrapped transient');
+          },
+        );
+
+        await expectLater(
+          source.getTime(),
+          throwsA(isA<TransientSourceError>()),
+        );
+      },
+    );
+
+    test('pre-wrapped transient sibling cannot mask a hard failure', () async {
+      // Attempt 0 fails hard immediately; attempt 1 throws a pre-wrapped
+      // TransientSourceError later. If the wrapper were routed through
+      // the generic (non-transient) catch, its later assignment would
+      // overwrite the hard error and the burst would incorrectly
+      // propagate as transient — bypassing cooldown despite the hard
+      // failure. The hard error must take precedence.
+      var call = 0;
+      final source = NtsSource(
+        'test.example',
+        burstCount: 2,
+        debugQueryOverride: () async {
+          final attempt = call++;
+          if (attempt == 0) {
+            throw const nts.NtsError.timeout(phase: nts.TimeoutPhase.connect);
+          }
+          await Future.delayed(const Duration(milliseconds: 20));
+          throw const TransientSourceError('already-wrapped transient');
+        },
+      );
+
+      await expectLater(
+        source.getTime(),
+        throwsA(
+          isA<nts.NtsErrorTimeout>().having(
+            (e) => e.phase,
+            'phase',
+            nts.TimeoutPhase.connect,
+          ),
+        ),
+      );
+    });
+
     test('per-attempt receivedAtMs is captured at each completion', () async {
       var call = 0;
       final source = NtsSource(

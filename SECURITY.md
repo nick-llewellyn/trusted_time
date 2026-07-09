@@ -17,7 +17,7 @@ The following versions of **TrustedTime** currently receive security updates:
 
 TrustedTime is designed to provide high-integrity time synchronization in adversarial environments. Our security model addresses the following threats:
 
-> **In depth:** the full threat model — the end-to-end trust chain (network → consensus → anchor persistence → monotonic projection), the background-sync hand-off, adversary tiers, residual risks (offline tampering, anchor replay, rooted devices), and integrator guidance — is documented in [`doc/security/threat-model.md`](doc/security/threat-model.md).
+> **In-depth:** the full threat model — the end-to-end trust chain (network → consensus → anchor persistence → monotonic projection), the background-sync hand-off, adversary tiers, residual risks (offline tampering, anchor replay, rooted devices), and integrator guidance — is documented in [`doc/security/threat-model.md`](doc/security/threat-model.md).
 
 ### 1. Local Tampering (System Clock Manipulation)
 *   **Defense**: The engine anchors network-verified time to the device's hardware monotonic clock. Once an anchor is established, the output of `TrustedTime.now()` is immune to changes in the system wall clock.
