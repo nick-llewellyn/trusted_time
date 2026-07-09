@@ -924,6 +924,11 @@ final class SyncEngine {
     }
 
     final uptimeMs = await _clock.uptimeMs();
+    // Stamp the boot-session identity so warm restore can compare it
+    // against the device's current boot ID. Null on platforms without a
+    // boot concept (web), where the anchor cannot outlive the session
+    // anyway.
+    final bootId = await _clock.getBootId();
     final wallMs = DateTime.now().millisecondsSinceEpoch;
 
     return TrustAnchor(
@@ -933,6 +938,7 @@ final class SyncEngine {
       uncertaintyMs: result.uncertaintyMs,
       authLevel: result.authLevel,
       confidence: result.confidence,
+      bootId: bootId,
     );
   }
 

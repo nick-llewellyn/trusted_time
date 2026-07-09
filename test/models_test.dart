@@ -45,6 +45,35 @@ void main() {
       final anchor = TrustAnchor.fromJson(json);
       expect(anchor.authLevel, NtsAuthLevel.none);
       expect(anchor.confidence, ConfidenceLevel.none);
+      // Pre-boot-ID anchors deserialize with a null bootId, which the
+      // warm-restore reboot check treats as rebooted (fail closed).
+      expect(anchor.bootId, isNull);
+    });
+
+    test('bootId survives a toJson/fromJson round-trip', () {
+      const anchor = TrustAnchor(
+        networkUtcMs: 1000000,
+        uptimeMs: 50000,
+        wallMs: 1000000,
+        uncertaintyMs: 10,
+        bootId: 'f81d4fae-7dec-11d0-a765-00a0c91e6bf6',
+      );
+
+      final restored = TrustAnchor.fromJson(anchor.toJson());
+      expect(restored.bootId, 'f81d4fae-7dec-11d0-a765-00a0c91e6bf6');
+    });
+
+    test('null bootId is omitted from JSON and round-trips as null', () {
+      const anchor = TrustAnchor(
+        networkUtcMs: 1000000,
+        uptimeMs: 50000,
+        wallMs: 1000000,
+        uncertaintyMs: 10,
+      );
+
+      final json = anchor.toJson();
+      expect(json.containsKey('bootId'), isFalse);
+      expect(TrustAnchor.fromJson(json).bootId, isNull);
     });
   });
 

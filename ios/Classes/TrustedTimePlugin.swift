@@ -100,6 +100,8 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         switch call.method {
         case "getUptimeMs":
             result(Int64(ProcessInfo.processInfo.systemUptime * 1000))
+        case "getBootId":
+            result(TrustedTimePlugin.bootSessionId())
         case "enableBackgroundSync":
             #if os(iOS)
             let minutes = (call.arguments as? [String: Any])?["intervalMinutes"] as? Int ?? (24 * 60)
@@ -163,6 +165,31 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    /// Identifier for the current boot session, or nil if unavailable.
+    ///
+    /// Prefers `kern.bootsessionuuid` (a fresh UUID per boot, present on
+    /// iOS and modern macOS). Falls back to `kern.boottime` — the boot
+    /// instant in epoch seconds/microseconds — which is stable within a
+    /// boot session and differs across reboots. Returning nil makes the
+    /// Dart side fail closed (anchor treated as rebooted).
+    static func bootSessionId() -> String? {
+        var size = 0
+        if sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 0 {
+            var buf = [CChar](repeating: 0, count: size)
+            if sysctlbyname("kern.bootsessionuuid", &buf, &size, nil, 0) == 0 {
+                let uuid = String(cString: buf).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !uuid.isEmpty { return uuid }
+            }
+        }
+        var bootTime = timeval()
+        var tvSize = MemoryLayout<timeval>.size
+        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
+        if sysctl(&mib, 2, &bootTime, &tvSize, nil, 0) == 0 {
+            return "boottime:\(bootTime.tv_sec).\(bootTime.tv_usec)"
+        }
+        return nil
     }
 
     #if os(iOS)

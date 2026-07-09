@@ -190,8 +190,18 @@ final class IntegrityMonitor {
 
   /// Verification check for reboots during warm-start (cache restoration).
   ///
-  /// A reboot is confirmed if the current hardware uptime is less than the
-  /// uptime recorded when the cached anchor was established.
+  /// A reboot is confirmed by boot-session *identity*: the anchor is only
+  /// honoured when its recorded [TrustAnchor.bootId] matches the device's
+  /// current boot ID. The uptime inequality (`currentUptime <
+  /// anchor.uptimeMs`) is kept as a secondary tripwire, but identity is
+  /// what defeats the wait-out attack — reboot, then leave the device
+  /// powered on until the new uptime exceeds the anchor's recorded value.
+  ///
+  /// Fails closed on missing identity: an anchor without a boot ID, or a
+  /// platform that cannot supply one, is treated as rebooted. Web is the
+  /// deliberate exception — it has no boot concept and its monotonic
+  /// source resets per page load, so the uptime inequality already
+  /// invalidates cross-session anchors there.
   ///
   /// Returns the reboot verdict alongside the freshly-sampled uptime so
   /// that callers can reuse it (e.g., to compute the elapsed-time gap on
@@ -200,8 +210,19 @@ final class IntegrityMonitor {
     TrustAnchor previousAnchor,
   ) async {
     final currentUptime = await _clock.uptimeMs();
+    final uptimeRegressed = currentUptime < previousAnchor.uptimeMs;
+    if (kIsWeb) {
+      // No boot-session concept on web; performance.now() is
+      // session-relative, so the inequality alone is sufficient there.
+      return (rebooted: uptimeRegressed, currentUptimeMs: currentUptime);
+    }
+    final currentBootId = await _clock.getBootId();
+    final identityMismatch =
+        currentBootId == null ||
+        previousAnchor.bootId == null ||
+        previousAnchor.bootId != currentBootId;
     return (
-      rebooted: currentUptime < previousAnchor.uptimeMs,
+      rebooted: uptimeRegressed || identityMismatch,
       currentUptimeMs: currentUptime,
     );
   }

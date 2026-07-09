@@ -17,6 +17,8 @@ import 'package:trusted_time/src/infra/dns_budget.dart';
 class MockMonotonicClock implements MonotonicClock {
   @override
   Future<int> uptimeMs() async => 100000;
+  @override
+  Future<String?> getBootId() async => 'boot-test';
 }
 
 /// Monotonic clock that deliberately holds the first [uptimeMs] call
@@ -56,6 +58,9 @@ class MockMonotonicClock implements MonotonicClock {
 class GatedMonotonicClock implements MonotonicClock {
   final Completer<void> _secondCallStarted = Completer<void>();
   int callCount = 0;
+
+  @override
+  Future<String?> getBootId() async => 'boot-test';
 
   @override
   Future<int> uptimeMs() async {

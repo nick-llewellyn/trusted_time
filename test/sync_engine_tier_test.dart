@@ -18,6 +18,8 @@ import 'package:trusted_time/src/sync_engine.dart';
 class _MockClock implements MonotonicClock {
   @override
   Future<int> uptimeMs() async => 100000;
+  @override
+  Future<String?> getBootId() async => 'boot-test';
 }
 
 /// A [TimeSource] whose sample interval, auth level, and trust backend are

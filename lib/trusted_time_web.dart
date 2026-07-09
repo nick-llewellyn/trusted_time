@@ -33,6 +33,12 @@ class TrustedTimeWebPlugin {
     if (call.method == 'getUptimeMs') {
       return web.window.performance.now().floor();
     }
+    if (call.method == 'getBootId') {
+      // No boot-session concept on web. The session-relative monotonic
+      // source above already prevents anchors from surviving a page
+      // load, and the warm-restore check special-cases web.
+      return null;
+    }
     throw PlatformException(
       code: 'UNIMPLEMENTED',
       message: '${call.method} not implemented on web',

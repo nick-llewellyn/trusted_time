@@ -154,10 +154,16 @@ The persisted payload is small and fully enumerable — the anchor JSON
   clock is not an input, so changing it (Settings, `adb`, NITZ spoof)
   does not move trusted time.
 - **Reboot detection on warm restore.** Before a persisted anchor is
-  honoured, `checkRebootOnWarmStart` verifies the current uptime is not
-  lower than the anchor's recorded uptime. A reboot resets the
-  monotonic counter, invalidating the projection basis — the anchor is
-  discarded and a fresh network sync is required.
+  honoured, `checkRebootOnWarmStart` compares the anchor's recorded
+  boot-session identifier against the device's current boot ID
+  (`/proc/sys/kernel/random/boot_id` on Android/Linux,
+  `kern.bootsessionuuid`/`kern.boottime` on iOS/macOS, the kernel
+  boot counter on Windows). Any mismatch — including a missing boot ID
+  on either side — is treated as a reboot: the anchor is discarded and
+  a fresh network sync is required (fail closed). The legacy uptime
+  inequality (`current < anchor.uptimeMs`) is retained as a secondary
+  tripwire. Web has no boot concept; its monotonic source is
+  session-relative, so anchors cannot survive a page load there.
 - **Adaptive drift monitor.** While running, the `IntegrityMonitor`
   compares Δuptime against Δwall-clock (baseline every 5 min,
   tightening to 30 s after an anomaly). Divergence beyond 5 s emits
@@ -201,10 +207,35 @@ the uptime is plausible, and — notably — it would pass an HMAC too,
 since the tag was legitimately generated. A MAC proves authenticity,
 not freshness. Blocking replay requires binding anchors to session
 state: a boot-count or monotonic write counter in the signed payload,
-or key rotation on reboot. The reboot check gives a weak version of
-this for free (an anchor from a previous boot is discarded), and a
-replay that regresses time far enough may trip the drift monitor
-indirectly, but a targeted same-boot replay is not detected.
+or key rotation on reboot. Boot-ID binding (R5) gives the cross-boot
+half of this for free (an anchor from a previous boot session is
+discarded on identity mismatch), and a replay that regresses time far
+enough may trip the drift monitor indirectly, but a targeted same-boot
+replay is not detected.
+
+### R5 — Reboot wait-out (T3) — **mitigated by boot-ID binding**
+
+The original reboot check was an uptime inequality only
+(`currentUptime < anchor.uptimeMs`), which detects a counter reset but
+not boot *identity*. A deliberate attacker could defeat it: (1) go
+offline so no fresh sync replaces the anchor, (2) reboot, (3) leave the
+device powered on until the new uptime exceeds the anchor's recorded
+`uptimeMs`, (4) launch the app. The gate passed, `elapsedSinceAnchor`
+computed near zero, and `now()` served trusted time backdated by the
+entire off-duration. The drift monitor did not catch it because the
+attacker also controls the wall clock (set it back by the off-duration
+so Δuptime and Δwall agree), and the runtime `deviceRebooted` event
+never fired because the process was dead across the reboot.
+
+**Mitigation (adopted):** `TrustAnchor` records the boot-session
+identifier at capture, and `checkRebootOnWarmStart` compares identity —
+`rebooted = anchor.bootId != currentBootId` — rather than relying on
+the inequality. Anchors without a boot ID (pre-upgrade persistence, or
+a platform that cannot supply one) fail closed as rebooted. The uptime
+subtraction is retained only for computing `elapsedSinceAnchor` on the
+confirmed-same-boot path. Residual exposure is reduced to an attacker
+who can forge the boot ID itself, which requires kernel-level control
+(R4.2).
 
 ### R3 — Structural NTS coverage gaps (environmental)
 
@@ -262,7 +293,8 @@ library and belongs to the consuming application's backend design.
 | System wall-clock manipulation | T2 | ✅ monotonic anchoring + drift monitor | ✅ |
 | Offline storage edit / backup forgery | T3 | ⚠️ encryption only (R1) | ✅ |
 | Same-boot anchor replay | T3 | ❌ (R2) | ❌ needs freshness counter |
-| Cross-boot anchor replay | T3 | ✅ reboot check | ✅ |
+| Cross-boot anchor replay | T3 | ✅ boot-ID binding | ✅ |
+| Reboot wait-out (uptime overtake) | T3 | ✅ boot-ID binding (R5) | ✅ |
 | Root: code exec in app context | T4 | ❌ (R4.1, R4.3) | ❌ |
 | Root: kernel clock lies | T4 | ❌ (R4.2) | ❌ |
 
