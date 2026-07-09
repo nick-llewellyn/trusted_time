@@ -116,9 +116,12 @@ Future<void> _runAndLogBackgroundSync() async {
     await BackgroundSyncFileLog.append('FIRE      BEGIN');
     // Diagnostic: how the OS scheduler last treated this work. On Android
     // this surfaces WorkManager's WorkInfo.getStopReason() for the
-    // *previous* attempt (e.g. TIMEOUT, DEVICE_STATE, QUOTA), answering
-    // "was the last fire killed?" from the transcript alone. Returns null
-    // on iOS and before the first schedule; best-effort, never fatal.
+    // *previous* attempt (e.g. TIMEOUT, DEVICE_STATE, QUOTA); on iOS it
+    // reports whether the previous BGTask attempt was terminated by the
+    // expiration handler (state=EXPIRED(<instant>), TIMEOUT). Either way
+    // it answers "was the last fire killed?" from the transcript alone —
+    // pairing any orphaned FIRE BEGIN with its cause. Returns null before
+    // the first schedule; best-effort, never fatal.
     final stopInfo = await TrustedTime.getBackgroundStopReason();
     if (stopInfo != null) {
       await BackgroundSyncFileLog.append(

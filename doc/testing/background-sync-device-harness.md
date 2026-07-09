@@ -69,6 +69,17 @@ queues writes onto a sequential `Future` chain that is drained before the
 isolate signals completion to the native side, so lines cannot be lost to
 isolate teardown and always precede the `SUCCESS`/`FAILURE` line.
 
+The `STOPINFO` line reports how the OS treated the *previous* attempt.
+On Android it carries WorkManager's `WorkInfo` state and stop reason as
+shown above. On iOS it appears only when the previous BGTask attempt was
+terminated by the BGTaskScheduler expiration handler — the expired run's
+isolate dies before writing its own result line, so its `FIRE BEGIN` is
+left orphaned; the next fire then attributes it:
+
+```
+FIRE      STOPINFO state=EXPIRED(2026-07-07T17:14:05Z) prevStopReason=TIMEOUT(3)
+```
+
 Read it back on Android (works even with no process alive):
 
 ```bash

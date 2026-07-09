@@ -60,6 +60,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     private var pendingTaskCompleted = false
 
     fileprivate static let kHandleKey = "com.trustedtime.trusted_time.bgCallbackHandle"
+    fileprivate static let kLastExpiredKey = "com.trustedtime.trusted_time.bgLastExpiredAt"
     fileprivate static var pluginRegistrantCallback: TrustedTimePluginRegistrantCallback?
 
     /// Registers a callback that wires the host app's
@@ -134,6 +135,31 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
             // would prematurely tear down an in-flight headless engine
             // and complete its BGTask.
             result(nil)
+        case "getBackgroundStopReason":
+            #if os(iOS)
+            // iOS analogue of the Android WorkManager stop-reason query:
+            // answers whether the *previous* headless BGTask attempt was
+            // terminated by the OS expiration handler. The breadcrumb is
+            // written (and cleared) by finishHeadlessSync; stopReason 3
+            // deliberately reuses the value BackgroundSyncStopInfo already
+            // renders as TIMEOUT, and the expiration instant is carried in
+            // `state` so the STOPINFO transcript line of the next fire can
+            // be paired with the orphaned FIRE BEGIN it explains. nil when
+            // the previous attempt finished without expiring or nothing
+            // has fired yet.
+            if let expiredAt = UserDefaults.standard.object(
+                forKey: TrustedTimePlugin.kLastExpiredKey
+            ) as? Date {
+                let iso = ISO8601DateFormatter().string(from: expiredAt)
+                result(["state": "EXPIRED(\(iso))", "stopReason": 3])
+            } else {
+                result(nil)
+            }
+            #else
+            // No BGTaskScheduler on macOS; report "no stop reason" the
+            // same way iOS does before any fire.
+            result(nil)
+            #endif
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -366,6 +392,22 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         guard let resolved = pendingTask ?? task else { return }
         pendingTaskCompleted = true
         pendingTask = nil
+        // Expiration breadcrumb for the *next* fire's STOPINFO transcript
+        // line (surfaced via getBackgroundStopReason). An expired run's
+        // Dart isolate is torn down before it can write its own
+        // FIRE SUCCESS/FAILURE line, so the transcript is left with an
+        // orphaned FIRE BEGIN; UserDefaults is synchronous and safe to
+        // touch inside the ~seconds expiration grace window, unlike a
+        // round-trip into the dying engine. A normal completion clears
+        // any stale breadcrumb so it is reported at most once and never
+        // misattributed to a healthy fire.
+        if expired {
+            UserDefaults.standard.set(
+                Date(), forKey: TrustedTimePlugin.kLastExpiredKey)
+        } else {
+            UserDefaults.standard.removeObject(
+                forKey: TrustedTimePlugin.kLastExpiredKey)
+        }
         headlessChannel?.setMethodCallHandler(nil)
         headlessChannel = nil
         headlessEngine?.destroyContext()

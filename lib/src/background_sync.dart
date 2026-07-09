@@ -90,23 +90,35 @@ final class BackgroundSyncSuccess extends TrustedTimeBackgroundResult {
 /// Diagnostic snapshot of the OS scheduler's view of the background-sync
 /// work, as reported by `TrustedTime.getBackgroundStopReason`.
 ///
-/// Android-only in practice: the values map 1:1 onto WorkManager's
-/// `WorkInfo` — [state] is `WorkInfo.State.name` and [stopReason] is
+/// On Android the values map 1:1 onto WorkManager's `WorkInfo` — [state]
+/// is `WorkInfo.State.name` and [stopReason] is
 /// `WorkInfo.getStopReason()`, the reason the OS stopped the *previous*
 /// run attempt of the periodic work. The platform populates real stop
 /// reasons on API 31+; earlier releases always report
 /// `STOP_REASON_NOT_STOPPED`.
+///
+/// On iOS a snapshot is produced only when the *previous* headless
+/// BGTask attempt was terminated by the BGTaskScheduler expiration
+/// handler: [state] is `EXPIRED(<ISO-8601 instant>)` and [stopReason] is
+/// `3` (`TIMEOUT`, the nearest WorkManager analogue). All other outcomes
+/// surface as `null` from the accessor rather than a snapshot.
 final class BackgroundSyncStopInfo {
   /// Creates a snapshot carrying the raw platform values.
   const BackgroundSyncStopInfo({required this.state, required this.stopReason});
 
-  /// The work's current `WorkInfo.State` name (e.g. `ENQUEUED`, `RUNNING`).
+  /// The scheduler-side state of the work: on Android a
+  /// `WorkInfo.State.name` (e.g. `ENQUEUED`, `RUNNING`); on iOS
+  /// `EXPIRED(<ISO-8601 instant>)`, timestamping when the previous
+  /// attempt's expiration handler fired.
   final String state;
 
-  /// Raw `WorkInfo.getStopReason()` value for the previous run attempt.
+  /// Raw stop-reason value for the previous run attempt.
   ///
-  /// Matches Android's `JobParameters.STOP_REASON_*` constants, plus
-  /// WorkManager's sentinels `-256` (not stopped) and `-512` (unknown).
+  /// On Android this is `WorkInfo.getStopReason()`, matching Android's
+  /// `JobParameters.STOP_REASON_*` constants plus WorkManager's
+  /// sentinels `-256` (not stopped) and `-512` (unknown). On iOS it is
+  /// always `3` (`TIMEOUT`), the closest analogue to a BGTask
+  /// expiration.
   final int stopReason;
 
   /// Human-readable name for [stopReason], falling back to the raw value

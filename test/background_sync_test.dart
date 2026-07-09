@@ -843,6 +843,23 @@ void main() {
       expect(info.stopReasonName, 'TIMEOUT');
     });
 
+    test('maps the iOS expiration-breadcrumb reply shape', () async {
+      // iOS reports a previous BGTask expiration as state=EXPIRED(<iso>)
+      // with the TIMEOUT stop reason (see TrustedTimePlugin.swift's
+      // getBackgroundStopReason branch); the Dart mapping is
+      // shape-agnostic and must carry both values through unchanged.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            expect(call.method, 'getBackgroundStopReason');
+            return {'state': 'EXPIRED(2026-07-07T17:14:05Z)', 'stopReason': 3};
+          });
+
+      final info = await public_api.TrustedTime.getBackgroundStopReason();
+      expect(info, isNotNull);
+      expect(info!.state, 'EXPIRED(2026-07-07T17:14:05Z)');
+      expect(info.stopReasonName, 'TIMEOUT');
+    });
+
     test('returns null when the platform reports no scheduled work', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async => null);

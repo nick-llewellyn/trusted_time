@@ -749,7 +749,7 @@ abstract final class TrustedTime {
   /// Queries the OS scheduler for the state of the background-sync work
   /// and the reason the *previous* run attempt was stopped.
   ///
-  /// Android-only: reads WorkManager's `WorkInfo` for the unique periodic
+  /// On Android, reads WorkManager's `WorkInfo` for the unique periodic
   /// work registered by [enableBackgroundSync] and surfaces
   /// `WorkInfo.getStopReason()` (populated with real values on API 31+;
   /// earlier releases report `NOT_STOPPED`). Intended as a diagnostic to be
@@ -757,12 +757,22 @@ abstract final class TrustedTime {
   /// attempt killed by timeout / quota / device state?" without shell
   /// access to `dumpsys jobscheduler`.
   ///
-  /// Returns `null` when no answer is available: on iOS, desktop, and web
-  /// (no handler for this method, or the channel itself is absent), when
-  /// no background work has been scheduled yet, and under a
-  /// [TrustedTimeMock] override. Platform-side query failures are logged
-  /// and also surface as `null` — this is a best-effort diagnostic and
-  /// must never turn a healthy fire into a failed one.
+  /// On iOS, reports whether the *previous* headless BGTask attempt was
+  /// terminated by the BGTaskScheduler expiration handler: `stopReason`
+  /// is `3` ([BackgroundSyncStopInfo.stopReasonName] `TIMEOUT`, the
+  /// nearest WorkManager analogue) and `state` carries the expiration
+  /// instant as `EXPIRED(<ISO-8601>)` so the report can be paired with
+  /// the fire it explains. The breadcrumb is consumed pessimistically:
+  /// a normally completed attempt clears it, so it is reported after the
+  /// expired fire only, never re-attributed to a later healthy one.
+  ///
+  /// Returns `null` when no answer is available: on desktop and web (no
+  /// handler for this method, or the channel itself is absent), on iOS
+  /// when the previous attempt did not expire, when no background work
+  /// has been scheduled yet, and under a [TrustedTimeMock] override.
+  /// Platform-side query failures are logged and also surface as `null`
+  /// — this is a best-effort diagnostic and must never turn a healthy
+  /// fire into a failed one.
   static Future<BackgroundSyncStopInfo?> getBackgroundStopReason() async {
     if (_override != null) return null;
     WidgetsFlutterBinding.ensureInitialized();
