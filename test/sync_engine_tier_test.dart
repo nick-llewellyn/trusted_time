@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nts/nts.dart' as nts;
 import 'package:trusted_time/src/domain/marzullo_engine.dart';
@@ -93,6 +96,27 @@ class _BurstNtsSource implements TimeSource {
       delayMs: d,
     );
   }
+}
+
+/// An NTS [TimeSource] whose [warm] never completes, to exercise the
+/// warm-await bound on the validate path: a hung handshake must not
+/// stall the freshness probe past [SyncEngine.warmBarrierCap].
+class _HungWarmNtsSource implements TimeSource, Warmable {
+  @override
+  final String id = 'nts:hung-warm';
+  @override
+  final String groupId = 'ghung';
+
+  @override
+  Future<void> warm() => Completer<void>().future;
+
+  @override
+  Future<TimeSample> getTime() async => TimeSample(
+    interval: const TimeInterval(startMs: 990, endMs: 1010),
+    sourceId: id,
+    groupId: groupId,
+    delayMs: 20,
+  );
 }
 
 class _RecordingObserver implements SyncObserver {
@@ -415,6 +439,43 @@ void main() {
       // Only the first two attempts run; min(50, 10) = 10.
       expect(source.calls, 2);
       expect(sample.delayMs, 10);
+    });
+
+    test('a hung warm() cannot stall the probe past warmBarrierCap', () {
+      // Pins the Phase A warm-await bound: validate() has no outer
+      // safety timeout (unlike sync()), so without the cap a warm()
+      // that never completes would hang the probe — and any headless
+      // OS budget above it — indefinitely.
+      fakeAsync((async) {
+        final observer = _RecordingObserver();
+        final events = <IntegrityEvent>[];
+        final engine = _engineFor(
+          [_HungWarmNtsSource()],
+          observer: observer,
+          events: events,
+        );
+
+        TimeSample? sample;
+        unawaited(engine.validate().then((s) => sample = s));
+
+        // Just before the cap: still blocked on the hung warm.
+        async.elapse(SyncEngine.warmBarrierCap - const Duration(seconds: 1));
+        expect(sample, isNull);
+
+        // Past the cap: the probe abandons the warm await, runs the
+        // burst, and completes. The timed-out warm is reported to the
+        // observer as a warm-phase failure.
+        async.elapse(const Duration(seconds: 2));
+        expect(sample, isNotNull);
+        expect(sample!.sourceId, 'nts:hung-warm');
+        expect(
+          observer.failures.any(
+            (f) =>
+                f.sourceId == 'nts:hung-warm' && '${f.error}'.contains('warm'),
+          ),
+          isTrue,
+        );
+      });
     });
   });
 }

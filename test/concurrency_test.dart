@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/exceptions.dart';
@@ -128,6 +129,41 @@ class WideIntervalSource implements TimeSource {
       interval: TimeInterval(startMs: startMs, endMs: endMs),
       sourceId: id,
       groupId: groupId,
+    );
+  }
+}
+
+/// Test source whose sample carries an explicit [TimeSample.receivedAtMs]
+/// alongside a controlled interval, so the receipt-normalization tests
+/// can construct populations that only overlap after the engine shifts
+/// them to a common reference instant (or, with null stamps, verify the
+/// engine leaves them unshifted).
+class ReceiptStampedSource implements TimeSource {
+  ReceiptStampedSource(
+    this.id,
+    this.delay,
+    this.startMs,
+    this.endMs,
+    this.receivedAtMs, [
+    this.groupId = 'test-group',
+  ]);
+  @override
+  final String id;
+  final Duration delay;
+  final int startMs;
+  final int endMs;
+  final int? receivedAtMs;
+  @override
+  final String groupId;
+
+  @override
+  Future<TimeSample> getTime() async {
+    await Future.delayed(delay);
+    return TimeSample(
+      interval: TimeInterval(startMs: startMs, endMs: endMs),
+      sourceId: id,
+      groupId: groupId,
+      receivedAtMs: receivedAtMs,
     );
   }
 }
@@ -288,15 +324,30 @@ class WarmingTestSource implements TimeSource, Warmable {
   final List<WarmingEvent> events;
   final Stopwatch clock;
 
+  Future<void>? _warmTask;
+
   @override
   Future<void> warm() {
+    // Memoized, matching the Warmable contract real sources implement
+    // (NtsSource caches its warm future): repeat calls — e.g. the
+    // global warming barrier followed by the per-source Phase A —
+    // await the same underlying task instead of re-running the delay.
+    final existing = _warmTask;
+    if (existing != null) return existing;
     events.add(
       WarmingEvent(id, WarmingPhase.warmStart, clock.elapsedMilliseconds),
     );
     if (throwSyncFromWarm) {
-      throw StateError('synchronous warm failure: $id');
+      // Memoize the failure before throwing so repeat calls return the
+      // same failed Future instead of re-emitting warmStart and
+      // re-throwing synchronously. ignore() keeps the cached future from
+      // tripping the unhandled-async-error trap when no later call
+      // awaits it.
+      final error = StateError('synchronous warm failure: $id');
+      _warmTask = Future<void>.error(error)..ignore();
+      throw error;
     }
-    return _doWarm();
+    return _warmTask = _doWarm();
   }
 
   Future<void> _doWarm() async {
@@ -552,83 +603,96 @@ void main() {
       );
     });
 
-    test('fast sources are not blocked by a slow sources warming phase '
-        '(no global barrier)', () async {
-      // Three fast sources are needed so that the engine reaches both
-      // consensus quorum (2 samples) and stability (2 consecutive
-      // matching results) before the slow source can finish warming.
-      // This isolates the no-global-barrier property: with a barrier,
-      // sync would block ~500ms; without, it completes in ~50ms.
+    test('global warming barrier: every warm completes before any '
+        'getTime starts', () async {
+      // The barrier (trusted_time-z6e) inverts the former
+      // no-global-barrier property: all queries must launch against
+      // fully-warmed state with converged start times, so the slowest
+      // warm gates every source's first query. The mixed delays below
+      // (5–300 ms) would previously have let the fast sources sample
+      // ~295 ms before the slow one finished warming.
       final events = <WarmingEvent>[];
       final clockSw = Stopwatch()..start();
 
-      WarmingTestSource fast(String id, String group) => WarmingTestSource(
+      WarmingTestSource src(String id, Duration warmDelay) => WarmingTestSource(
         id: id,
-        groupId: group,
+        groupId: 'g-$id',
         utcMs: 1000000,
         events: events,
         clock: clockSw,
-        warmDelay: Duration.zero,
-        getTimeDelay: const Duration(milliseconds: 50),
+        warmDelay: warmDelay,
+        getTimeDelay: const Duration(milliseconds: 20),
       );
 
-      final fast1 = fast('fast1', 'g-fast1');
-      final fast2 = fast('fast2', 'g-fast2');
-      final fast3 = fast('fast3', 'g-fast3');
-      final slow = WarmingTestSource(
-        id: 'slow',
-        groupId: 'g-slow',
+      final sources = [
+        src('fast', const Duration(milliseconds: 5)),
+        src('medium', const Duration(milliseconds: 60)),
+        src('slow', const Duration(milliseconds: 300)),
+      ];
+
+      final engine = SyncEngine(
+        config: config.copyWith(additionalSources: sources),
+        clock: clock,
+      );
+
+      final anchor = await engine.sync();
+      expect(anchor.networkUtcMs, inInclusiveRange(999990, 1000020));
+
+      final lastWarmEnd = events
+          .where((e) => e.phase == WarmingPhase.warmEnd)
+          .map((e) => e.atMs)
+          .reduce(max);
+      final firstGetTimeStart = events
+          .where((e) => e.phase == WarmingPhase.getTimeStart)
+          .map((e) => e.atMs)
+          .reduce(min);
+      expect(
+        firstGetTimeStart,
+        greaterThanOrEqualTo(lastWarmEnd),
+        reason:
+            'a query started at ${firstGetTimeStart}ms before the '
+            'slowest warm finished at ${lastWarmEnd}ms; events: $events',
+      );
+    });
+
+    test('warming barrier tolerates warm failures (cycle proceeds)', () async {
+      // warmAllSources() swallows per-source warm failures, so a
+      // throwing Warmable must not block the barrier nor the cycle.
+      final events = <WarmingEvent>[];
+      final clockSw = Stopwatch()..start();
+
+      final healthy1 = WarmingTestSource(
+        id: 'h1',
+        groupId: 'g1',
         utcMs: 1000000,
         events: events,
         clock: clockSw,
-        warmDelay: const Duration(milliseconds: 500),
-        getTimeDelay: const Duration(milliseconds: 50),
+      );
+      final healthy2 = WarmingTestSource(
+        id: 'h2',
+        groupId: 'g2',
+        utcMs: 1000000,
+        events: events,
+        clock: clockSw,
+      );
+      final broken = WarmingTestSource(
+        id: 'broken',
+        groupId: 'g3',
+        utcMs: 1000000,
+        events: events,
+        clock: clockSw,
+        throwAsyncFromWarm: true,
       );
 
       final engine = SyncEngine(
         config: config.copyWith(
-          earlyExit: true,
-          additionalSources: [fast1, fast2, fast3, slow],
+          additionalSources: [healthy1, healthy2, broken],
         ),
         clock: clock,
       );
 
-      final syncSw = Stopwatch()..start();
       final anchor = await engine.sync();
-      syncSw.stop();
-      final eventsAtReturn = events.toList();
-
       expect(anchor.networkUtcMs, inInclusiveRange(999990, 1000020));
-
-      // Primary assertion: sync completes well before the slow source's
-      // warm could possibly finish (500 ms warm).
-      expect(
-        syncSw.elapsedMilliseconds,
-        lessThan(300),
-        reason:
-            'sync took ${syncSw.elapsedMilliseconds}ms; fast sources '
-            'should not have waited on slow source warming',
-      );
-
-      // Secondary assertion: at the moment sync() returned, the fast
-      // sources had finished getTime, and the slow source's warm had
-      // not yet completed.
-      bool sawPhase(String id, WarmingPhase phase) =>
-          eventsAtReturn.any((e) => e.sourceId == id && e.phase == phase);
-      for (final id in ['fast1', 'fast2', 'fast3']) {
-        expect(
-          sawPhase(id, WarmingPhase.getTimeEnd),
-          isTrue,
-          reason: '$id should have completed getTime before sync returned',
-        );
-      }
-      expect(
-        sawPhase('slow', WarmingPhase.warmEnd),
-        isFalse,
-        reason:
-            'slow.warm-end should not have completed yet; events: '
-            '$eventsAtReturn',
-      );
     });
 
     test('getTime is never invoked before warm has fully resolved (per-source '
@@ -1803,6 +1867,145 @@ void main() {
             'would have reached 2 at sample 3 and the recorded count '
             'would be 3',
       );
+    });
+  });
+
+  group('SyncEngine receipt normalization', () {
+    // Samples estimate the true time at their own receipt instant, so
+    // two accurate sources whose responses land seconds apart produce
+    // intervals that do not overlap at all in absolute terms — the
+    // exact failure signature seen on a just-woken radio, where the
+    // first response rides a stalling link. The engine shifts every
+    // stamped sample to the latest receipt instant before Marzullo
+    // intersection (SyncEngine._normalizedToLatestReceipt), so receipt
+    // spread alone can no longer break quorum.
+
+    test('samples received seconds apart reach quorum after '
+        'normalization', () async {
+      // Both sources estimate the same true time with ±50 ms
+      // uncertainty, but s2's response arrives 3 s after s1's. In
+      // absolute terms the intervals are disjoint ([999950,1000050]
+      // vs [1002950,1003050]); normalized to s2's receipt instant,
+      // s1's interval shifts forward by 3000 ms and they coincide.
+      final s1 = ReceiptStampedSource(
+        's1',
+        const Duration(milliseconds: 10),
+        999950,
+        1000050,
+        1000000,
+        'g1',
+      );
+      final s2 = ReceiptStampedSource(
+        's2',
+        const Duration(milliseconds: 30),
+        1002950,
+        1003050,
+        1003000,
+        'g2',
+      );
+
+      final engine = SyncEngine(
+        config: const TrustedTimeConfig(
+          minimumQuorum: 2,
+          minGroupCount: 1,
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+        ).copyWith(additionalSources: [s1, s2]),
+        clock: MockMonotonicClock(),
+      );
+
+      final anchor = await engine.sync();
+      // Consensus forms at the shared reference (s2's receipt), where
+      // both normalized intervals are [1002950,1003050].
+      expect(anchor.networkUtcMs, closeTo(1003000, 60));
+    });
+
+    test(
+      'unstamped samples are consumed unshifted (legacy behaviour)',
+      () async {
+        // Same disjoint intervals but no receipt stamps: the engine has
+        // no basis to normalize, so the cycle must still fail quorum
+        // exactly as before the receivedAtMs field existed.
+        final s1 = ReceiptStampedSource(
+          's1',
+          const Duration(milliseconds: 10),
+          999950,
+          1000050,
+          null,
+          'g1',
+        );
+        final s2 = ReceiptStampedSource(
+          's2',
+          const Duration(milliseconds: 30),
+          1002950,
+          1003050,
+          null,
+          'g2',
+        );
+
+        final engine = SyncEngine(
+          config: const TrustedTimeConfig(
+            minimumQuorum: 2,
+            minGroupCount: 1,
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+          ).copyWith(additionalSources: [s1, s2]),
+          clock: MockMonotonicClock(),
+        );
+
+        await expectLater(
+          engine.sync(),
+          throwsA(isA<TrustedTimeSyncException>()),
+        );
+      },
+    );
+
+    test('mixed population: stamped samples normalize, unstamped pass '
+        'through', () async {
+      // s1 and s2 are stamped 2 s apart and normalize onto each other;
+      // s3 is unstamped but its absolute interval already overlaps the
+      // normalized pair at the reference instant, so all three
+      // participate.
+      final s1 = ReceiptStampedSource(
+        's1',
+        const Duration(milliseconds: 10),
+        999950,
+        1000050,
+        1000000,
+        'g1',
+      );
+      final s2 = ReceiptStampedSource(
+        's2',
+        const Duration(milliseconds: 30),
+        1001950,
+        1002050,
+        1002000,
+        'g2',
+      );
+      final s3 = ReceiptStampedSource(
+        's3',
+        const Duration(milliseconds: 50),
+        1001940,
+        1002060,
+        null,
+        'g3',
+      );
+
+      final engine = SyncEngine(
+        config: const TrustedTimeConfig(
+          minimumQuorum: 3,
+          minGroupCount: 1,
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+        ).copyWith(additionalSources: [s1, s2, s3]),
+        clock: MockMonotonicClock(),
+      );
+
+      final anchor = await engine.sync();
+      expect(anchor.networkUtcMs, closeTo(1002000, 60));
     });
   });
 

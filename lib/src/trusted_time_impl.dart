@@ -8,6 +8,7 @@ import 'exceptions.dart';
 import 'integrity_event.dart';
 import 'integrity_monitor.dart';
 import 'monotonic_clock.dart';
+import 'sync_cycle.dart';
 import 'sync_engine.dart';
 import 'sources/nts_auth_level.dart';
 import 'infra/sync_observer.dart';
@@ -339,14 +340,21 @@ final class TrustedTimeImpl {
   /// creation.
   ///
   /// **Desktop** (Linux/macOS/Windows): a [Timer.periodic] inside the
-  /// running isolate re-syncs at [interval].
+  /// running isolate re-syncs at [interval] (honoured exactly — no floor).
   /// **Web**: no-op (browsers suspend background tabs).
+  ///
+  /// On Android/iOS [interval] is applied at minute resolution and clamped
+  /// to `[15 min, 1 week]` to respect [WorkManager]'s hard periodic floor;
+  /// the desktop timer path honours [interval] as given.
   Future<void> enableBackgroundSync(Duration interval) async {
     if (kIsWeb) return;
     if (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS) {
-      if (kDebugMode && interval.inHours < 1) {
-        debugPrint('[TrustedTime] Background sync interval below 1h; clamped.');
+      if (kDebugMode && interval.inMinutes < 15) {
+        debugPrint(
+          '[TrustedTime] Background sync interval below the platform '
+          'scheduler floor (15 min); clamped up.',
+        );
       }
       await _invokeBackgroundSync(interval);
     } else {
@@ -484,9 +492,17 @@ final class TrustedTimeImpl {
     _refreshTimer?.cancel();
     _refreshTimer = null;
     try {
-      final anchor = await _syncEngine.sync();
+      // Shared query-and-bank unit (sync + persistState-gated save), so
+      // the foreground and background paths produce and persist anchors
+      // identically. Save runs before _applyAnchor: a storage failure
+      // surfaces as a failed cycle rather than leaving in-memory state
+      // ahead of what the next warm restore will read back.
+      final anchor = await performSyncCycle(
+        engine: _syncEngine,
+        store: _store,
+        config: _config,
+      );
       _applyAnchor(anchor);
-      if (_config.persistState) await _store.save(anchor);
       _trusted = true;
       _offlineLastUtcMs = anchor.networkUtcMs;
       _offlineLastWallMs = anchor.wallMs;
@@ -494,7 +510,14 @@ final class TrustedTimeImpl {
     } catch (e) {
       if (kDebugMode) debugPrint('[TrustedTime] Sync failed: $e');
       _trusted = false;
-      _scheduleRetry();
+      // Same transient/non-transient verdict as the background path
+      // (see isTransientSyncError): only network-weather failures are
+      // worth re-attempting. A non-transient error (e.g. ArgumentError
+      // from an invalid config) would fail identically on every attempt,
+      // so arming the retry timer would loop the same failure forever.
+      if (isTransientSyncError(e)) {
+        _scheduleRetry();
+      }
     } finally {
       // Reset together so the bool and Completer stay observably in
       // sync. A future caller that arrives after this point sees
@@ -779,6 +802,14 @@ final class TrustedTimeImpl {
   @visibleForTesting
   Timer? get debugDesktopBgTimer => _desktopBgTimer;
 
+  /// Whether the failed-sync retry timer is currently armed.
+  ///
+  /// Lets tests pin the transient/non-transient retry verdict: a failed
+  /// cycle arms the retry timer only when the error is classified as
+  /// transient by the shared [isTransientSyncError] predicate.
+  @visibleForTesting
+  bool get debugRetryTimerActive => _retryTimer != null;
+
   /// Drives the foreground-resume validate path deterministically in
   /// tests without a real [WidgetsBinding] lifecycle dispatch. [elapsed]
   /// overrides the monotonic reading used to measure background duration.
@@ -790,10 +821,28 @@ final class TrustedTimeImpl {
 
   static const _bgChannel = MethodChannel('trusted_time/background');
 
+  /// Lower bound (minutes) enforced by the platform scheduler. Android's
+  /// [WorkManager] rejects any periodic interval below 15 minutes
+  /// (`PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS`); we mirror that
+  /// floor here so the request the native layer receives is always
+  /// schedulable and the clamp is visible to Dart-side tests.
+  static const int _minBgSyncMinutes = 15;
+
+  /// Upper bound (minutes) = one week, matching the previous 168h cap.
+  static const int _maxBgSyncMinutes = 168 * 60;
+
   Future<void> _invokeBackgroundSync(Duration interval) async {
+    // Round *up* to the next whole minute rather than truncating:
+    // background sync is battery-sensitive OS work, so a leftover-seconds
+    // interval (e.g. 15m59s) must never schedule *more* frequently than
+    // the caller requested. Pure integer ceiling division — no double
+    // conversion, so no precision loss for very large Durations.
+    final minutes =
+        (interval.inMicroseconds + Duration.microsecondsPerMinute - 1) ~/
+        Duration.microsecondsPerMinute;
     try {
       await _bgChannel.invokeMethod<void>('enableBackgroundSync', {
-        'intervalHours': interval.inHours.clamp(1, 168),
+        'intervalMinutes': minutes.clamp(_minBgSyncMinutes, _maxBgSyncMinutes),
       });
     } catch (e) {
       if (kDebugMode) debugPrint('[TrustedTime] Background sync failed: $e');

@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:math';
-import 'package:flutter/foundation.dart' show kDebugMode;
+import 'package:flutter/foundation.dart'
+    show DebugPrintCallback, debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:nts/nts.dart' show NtsDnsPoolStats, ntsDnsPoolStats;
 import 'package:trusted_time/trusted_time.dart';
+import 'background_sync_file_log.dart';
 import 'benchmark_logger.dart';
 import 'burst/burst_probe_panel.dart';
 import 'nts_sources.dart';
@@ -49,7 +51,129 @@ void trustedTimeBackgroundCallback() {
   // the returned Future. `unawaited(...)` makes the fire-and-forget intent
   // explicit and keeps `unawaited_futures` clean if a host copy/pastes
   // this pattern into an async context.
-  unawaited(TrustedTime.runBackgroundSync(config: buildStressConfig()));
+  //
+  // The work is delegated to an async helper so the outcome can be awaited
+  // and appended to BackgroundSyncFileLog: this callback runs in the
+  // headless isolate, which the foreground telemetry stack never observes,
+  // so the on-disk transcript is the only durable record of a background
+  // fire (readable in-app or via `adb pull`, no logcat needed).
+  unawaited(_runAndLogBackgroundSync());
+}
+
+/// Runs one headless background sync, appending a `BEGIN` line before the
+/// sync and one result line when it completes, then lets the isolate be
+/// torn down.
+///
+/// [TrustedTime.runBackgroundSync] already persists the anchor (on success,
+/// when `persistState` is set) and signals native completion via the method
+/// channel; this wrapper adds only the example's own observability.
+///
+/// Two teardown-race defences, both required:
+///
+/// - The `BEGIN` line is written and awaited *before* the sync starts, so
+///   an OS-dispatched fire is durably recorded even if everything after it
+///   is lost. Without it, a fire whose result line is truncated leaves no
+///   trace at all — indistinguishable from the OS never dispatching.
+/// - The result line is written inside the `onResult` hook, which
+///   [TrustedTime.runBackgroundSync] awaits *before* it sends the native
+///   completion signal. On Android the worker destroys the headless engine
+///   as soon as that signal arrives, so any append performed after the
+///   outer `await` returns would race the teardown and usually lose.
+///
+/// The whole body is guarded: a logging failure must never turn a
+/// successful sync into a failed background fire, and any thrown error is
+/// itself recorded rather than left to escape the isolate.
+///
+/// **Debug-build tee.** In debug builds the library's internal
+/// `[TrustedTime]` diagnostics (burst `receipts=[...]` deltas, consensus
+/// `receiptSpread=...`, in-run retry attempts) go through [debugPrint] and
+/// land only in logcat — lost once the ring buffer rolls. While the sync
+/// runs, [debugPrint] is swapped for a wrapper that also queues each
+/// `[TrustedTime]`-prefixed line onto a sequential append chain into the
+/// transcript. The chain is drained inside `onResult` — before
+/// [TrustedTime.runBackgroundSync] sends the native completion signal —
+/// so the tee'd lines cannot lose the engine-teardown race, and they land
+/// ahead of the result line. `kDebugMode` is a compile-time constant, so
+/// release builds carry none of this (and have no debug lines to tee
+/// anyway).
+Future<void> _runAndLogBackgroundSync() async {
+  DebugPrintCallback? originalDebugPrint;
+  var teeChain = Future<void>.value();
+  if (kDebugMode) {
+    final original = originalDebugPrint = debugPrint;
+    debugPrint = (String? message, {int? wrapWidth}) {
+      if (message != null && message.startsWith('[TrustedTime]')) {
+        // Sequential chain (not fire-and-forget) so transcript order
+        // matches emission order and onResult can await one future.
+        teeChain = teeChain.then(
+          (_) => BackgroundSyncFileLog.append('FIRE      DEBUG    $message'),
+        );
+      }
+      original(message, wrapWidth: wrapWidth);
+    };
+  }
+  try {
+    await BackgroundSyncFileLog.append('FIRE      BEGIN');
+    // Diagnostic: how the OS scheduler last treated this work. On Android
+    // this surfaces WorkManager's WorkInfo.getStopReason() for the
+    // *previous* attempt (e.g. TIMEOUT, DEVICE_STATE, QUOTA); on iOS it
+    // reports whether the previous BGTask attempt was terminated by the
+    // expiration handler (state=EXPIRED(<instant>), TIMEOUT). Either way
+    // it answers "was the last fire killed?" from the transcript alone —
+    // pairing any orphaned FIRE BEGIN with its cause. Returns null before
+    // the first schedule; best-effort, never fatal.
+    final stopInfo = await TrustedTime.getBackgroundStopReason();
+    if (stopInfo != null) {
+      await BackgroundSyncFileLog.append(
+        'FIRE      STOPINFO state=${stopInfo.state} '
+        'prevStopReason=${stopInfo.stopReasonName}(${stopInfo.stopReason})',
+      );
+    }
+    await TrustedTime.runBackgroundSync(
+      config: buildStressConfig(),
+      onResult: (result) async {
+        // Drain the tee first so debug lines precede the result line and
+        // are durably on disk before the native completion signal.
+        await teeChain;
+        await BackgroundSyncFileLog.append(_formatBackgroundResult(result));
+      },
+    );
+  } catch (e) {
+    await teeChain;
+    await BackgroundSyncFileLog.append('FIRE      threw    error=$e');
+  } finally {
+    if (originalDebugPrint != null) {
+      debugPrint = originalDebugPrint;
+    }
+  }
+}
+
+/// Formats a [TrustedTimeBackgroundResult] as one aligned log line for the
+/// on-disk background-sync transcript.
+///
+/// On success the anchor's key fields are surfaced (network UTC, auth
+/// level, confidence, uncertainty) so a reader can confirm not just that a
+/// fire happened but that it reached a real, trustworthy anchor. On failure
+/// the reason string is carried verbatim. The `elapsed` wall-clock duration
+/// is included in both cases as a coarse health signal.
+String _formatBackgroundResult(TrustedTimeBackgroundResult result) {
+  final elapsedMs = result is BackgroundSyncSuccess
+      ? result.elapsed.inMilliseconds
+      : (result as BackgroundSyncFailure).elapsed.inMilliseconds;
+  final elapsed = '${elapsedMs}ms';
+  switch (result) {
+    case BackgroundSyncSuccess(:final anchor):
+      final utc = DateTime.fromMillisecondsSinceEpoch(
+        anchor.networkUtcMs,
+        isUtc: true,
+      ).toIso8601String();
+      return 'FIRE      SUCCESS  elapsed=$elapsed '
+          'utc=$utc auth=${anchor.authLevel.name} '
+          'confidence=${anchor.confidence.name} '
+          '±${anchor.uncertaintyMs}ms';
+    case BackgroundSyncFailure(:final reason):
+      return 'FIRE      FAILURE  elapsed=$elapsed reason=$reason';
+  }
 }
 
 Future<void> main() async {
@@ -61,6 +185,18 @@ Future<void> main() async {
   // `enableBackgroundSync` perform a real headless anchor refresh rather
   // than the back-compat HTTPS-HEAD connectivity fallback.
   await TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback);
+
+  // Verification hook: --dart-define=BG_SYNC_MINUTES=15 auto-schedules the
+  // native periodic background sync at startup (floored to WorkManager's
+  // 15-min minimum), so the recurring headless path can be observed
+  // unattended without tapping the Section 5 switch. A normal launch
+  // (define absent) does nothing here and keeps the switch-driven 24h flow.
+  const bgSyncMinutes = int.fromEnvironment('BG_SYNC_MINUTES', defaultValue: 0);
+  if (bgSyncMinutes > 0) {
+    await TrustedTime.enableBackgroundSync(
+      interval: Duration(minutes: bgSyncMinutes),
+    );
+  }
 
   // Register telemetry after init so the recorder receives every
   // subsequent sync cycle (refreshes, Force Resync, integrity-triggered
@@ -732,14 +868,29 @@ class _HomePageState extends State<HomePage> {
                         _bgSyncEnabled = val;
                       });
                       if (val) {
+                        // Verification hook: --dart-define=BG_SYNC_MINUTES=15
+                        // requests a fast cadence (floored to WorkManager's
+                        // 15-min minimum) so the periodic headless path can be
+                        // observed over a short window. Defaults to 24h — a
+                        // normal launch is unaffected.
+                        const overrideMinutes = int.fromEnvironment(
+                          'BG_SYNC_MINUTES',
+                          defaultValue: 0,
+                        );
                         TrustedTime.enableBackgroundSync(
-                          interval: const Duration(hours: 24),
+                          interval: overrideMinutes > 0
+                              ? Duration(minutes: overrideMinutes)
+                              : const Duration(hours: 24),
                         );
                       }
                     },
                   ),
                 ],
               ),
+            ),
+            _sectionHeader('Section 5b — Background Sync Log (headless)'),
+            _card(
+              child: const _BackgroundSyncLogPanel(),
             ),
             _sectionHeader('Section 6 — Sync Telemetry'),
             _card(
@@ -871,6 +1022,137 @@ class _HomePageState extends State<HomePage> {
         padding: const EdgeInsets.all(16),
         child: SizedBox(width: double.infinity, child: child),
       ),
+    );
+  }
+}
+
+/// Reads the on-disk background-sync transcript
+/// ([BackgroundSyncFileLog]) back into the UI so the headless path is
+/// observable in-app, without a `logcat` capture.
+///
+/// The headless isolate that writes this file is a separate process the
+/// foreground telemetry stack never sees, so this panel is the in-app
+/// window onto it. It loads on mount and on demand (there is no live
+/// stream across the isolate boundary — a background fire happens while
+/// this widget may not even be alive — so an explicit refresh is the
+/// honest model). The resolved file path is shown so the same transcript
+/// can be pulled off-device with `adb pull <path>`.
+class _BackgroundSyncLogPanel extends StatefulWidget {
+  const _BackgroundSyncLogPanel();
+
+  @override
+  State<_BackgroundSyncLogPanel> createState() =>
+      _BackgroundSyncLogPanelState();
+}
+
+class _BackgroundSyncLogPanelState extends State<_BackgroundSyncLogPanel> {
+  List<String> _lines = const [];
+  String? _path;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  Future<void> _reload() async {
+    setState(() => _loading = true);
+    final path = await BackgroundSyncFileLog.resolvePath();
+    final lines = await BackgroundSyncFileLog.readLatest();
+    if (!mounted) return;
+    setState(() {
+      _path = path;
+      _lines = lines;
+      _loading = false;
+    });
+  }
+
+  Future<void> _clear() async {
+    await BackgroundSyncFileLog.clear();
+    await _reload();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              _loading
+                  ? 'Loading…'
+                  : '${_lines.length} entr${_lines.length == 1 ? 'y' : 'ies'} '
+                      '(newest first)',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            Row(
+              children: [
+                IconButton(
+                  tooltip: 'Refresh',
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _loading ? null : _reload,
+                ),
+                IconButton(
+                  tooltip: 'Clear log',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: _loading || _lines.isEmpty ? null : _clear,
+                ),
+              ],
+            ),
+          ],
+        ),
+        if (_path != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: SelectableText(
+              'adb pull $_path',
+              style: const TextStyle(fontSize: 11, color: Colors.white54),
+            ),
+          ),
+        Container(
+          width: double.infinity,
+          height: 180,
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.black,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: _lines.isEmpty
+              ? Center(
+                  child: Text(
+                    // Distinguish "logging is compiled out" from "no fires
+                    // yet" — otherwise a release build without the
+                    // BG_SYNC_LOG define looks identical to a build whose
+                    // background path never ran.
+                    BackgroundSyncFileLog.enabled
+                        ? 'No background fires recorded yet.\n'
+                            'Trigger one, then Refresh.'
+                        : 'Transcript logging is disabled in this build.\n'
+                            'Rebuild with --dart-define=BG_SYNC_LOG=true '
+                            'to enable it.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                )
+              : ListView.builder(
+                  itemCount: _lines.length,
+                  itemBuilder: (context, i) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 1),
+                    child: SelectableText(
+                      _lines[i],
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                        color: Colors.greenAccent,
+                      ),
+                    ),
+                  ),
+                ),
+        ),
+      ],
     );
   }
 }

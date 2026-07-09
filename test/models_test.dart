@@ -575,6 +575,80 @@ void main() {
     });
   });
 
+  group('TimeSample.normalizedTo', () {
+    // Each sample's interval estimates the true time at its own
+    // receipt instant. normalizedTo slides the interval along the
+    // local timeline by (refMs - receivedAtMs) so samples received at
+    // different instants become directly comparable under Marzullo
+    // intersection. See SyncEngine._normalizedToLatestReceipt for the
+    // consuming side.
+
+    const interval = TimeInterval(startMs: 1000, endMs: 1100);
+
+    test('shifts the interval by refMs - receivedAtMs', () {
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'nts:time.example',
+        groupId: 'g',
+        receivedAtMs: 5000,
+      );
+      final shifted = sample.normalizedTo(8000);
+      expect(shifted.interval.startMs, 4000);
+      expect(shifted.interval.endMs, 4100);
+      expect(shifted.receivedAtMs, 8000);
+    });
+
+    test('shifts backwards for a reference earlier than receipt', () {
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'nts:time.example',
+        groupId: 'g',
+        receivedAtMs: 5000,
+      );
+      final shifted = sample.normalizedTo(4000);
+      expect(shifted.interval.startMs, 0);
+      expect(shifted.interval.endMs, 100);
+    });
+
+    test('preserves width and all non-interval fields', () {
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'nts:time.example',
+        groupId: 'g',
+        authLevel: NtsAuthLevel.verified,
+        delayMs: 80,
+        dispersionMs: 15,
+        receivedAtMs: 5000,
+      );
+      final shifted = sample.normalizedTo(9000);
+      expect(shifted.interval.width, sample.interval.width);
+      expect(shifted.sourceId, sample.sourceId);
+      expect(shifted.groupId, sample.groupId);
+      expect(shifted.authLevel, sample.authLevel);
+      expect(shifted.delayMs, sample.delayMs);
+      expect(shifted.dispersionMs, sample.dispersionMs);
+    });
+
+    test('returns this unchanged when receivedAtMs is null', () {
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'ntp:time.example',
+        groupId: 'g',
+      );
+      expect(identical(sample.normalizedTo(8000), sample), isTrue);
+    });
+
+    test('returns this unchanged when already at the reference', () {
+      const sample = TimeSample(
+        interval: interval,
+        sourceId: 'ntp:time.example',
+        groupId: 'g',
+        receivedAtMs: 8000,
+      );
+      expect(identical(sample.normalizedTo(8000), sample), isTrue);
+    });
+  });
+
   group('TrustedTime.ntsTrustStatus pass-through', () {
     // The bd's acceptance criterion says the regression test must
     // confirm the wrapper returns whatever `nts.ntsTrustStatus()`

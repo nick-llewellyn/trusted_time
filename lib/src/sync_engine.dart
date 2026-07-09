@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart'
+    show debugPrint, kDebugMode, visibleForTesting;
 import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
@@ -33,6 +34,17 @@ import 'infra/consensus_cache.dart';
 /// 3. **Mathematical Outlier Filtering**: Uses median-based guards to neutralize
 ///    malicious or jittery time authorities.
 final class SyncEngine {
+  /// Upper bound on any await of [Warmable.warm] inside this engine.
+  ///
+  /// warm() futures are memoized and not cancellable, so a timed-out
+  /// await abandons the wait without aborting the handshake — the same
+  /// future is re-joined by getTime()'s JIT warm, where the per-query
+  /// maxLatency bound applies. Used by [sync]'s global warming barrier
+  /// and [validate]'s Phase A, so a hung handshake can never stall a
+  /// cycle (or a headless OS budget) beyond this cap.
+  @visibleForTesting
+  static const warmBarrierCap = Duration(seconds: 10);
+
   /// Documented.
   SyncEngine({
     required TrustedTimeConfig config,
@@ -147,6 +159,7 @@ final class SyncEngine {
               : _config.customRootCerts,
           onStratumObserved: (s) =>
               _qualityTracker.setStratum('${TimeSource.prefixNts}$host', s),
+          burstCount: _config.ntsBurstCount,
         ),
       ..._config.additionalSources,
     ];
@@ -188,12 +201,15 @@ final class SyncEngine {
   /// Eagerly invokes [Warmable.warm] on every source that supports it,
   /// in parallel.
   ///
-  /// Intended to be called during application bootstrap so per-source
-  /// setup costs (e.g., the NTS-KE TCP+TLS+key-exchange handshake)
-  /// complete before the first [sync] cycle. Without this, those costs
-  /// fall inside cycle 1's wall clock and contaminate sample
-  /// timestamps with hundreds of milliseconds of skew, preventing
-  /// Marzullo intervals from overlapping.
+  /// Called during application bootstrap so per-source setup costs
+  /// (e.g., the NTS-KE TCP+TLS+key-exchange handshake) complete before
+  /// the first [sync] cycle, and again by [sync] itself as the global
+  /// warming barrier so every cycle's queries — foreground or
+  /// background — launch against fully-warmed state with converged
+  /// start times. Without this, those costs fall inside the cycle's
+  /// wall clock and contaminate sample timestamps with hundreds of
+  /// milliseconds of skew, preventing Marzullo intervals from
+  /// overlapping.
   ///
   /// Each [Warmable.warm] is itself idempotent and memoized, so calling
   /// this method multiple times is safe and cheap. Failures from
@@ -283,10 +299,19 @@ final class SyncEngine {
 
     // Phase A (warm) runs outside the query budget, exactly as in
     // sync(); a warm failure is non-fatal and the cold getTime() still
-    // runs under the maxLatency budget in Phase B.
+    // runs under the maxLatency budget in Phase B. Unlike sync(), no
+    // outer safety timeout wraps this method, so the warm await must
+    // carry its own bound — without it, a hung handshake would stall
+    // validateFreshness() indefinitely. The cap matches sync()'s
+    // warming-barrier cap; on timeout the probe proceeds and Phase B's
+    // per-query maxLatency bound covers the still-cold source (getTime's
+    // JIT warm await re-joins the same memoized warm future inside that
+    // budget).
     if (source is Warmable) {
       try {
-        await Future.sync(() => (source as Warmable).warm());
+        await Future.sync(
+          () => (source as Warmable).warm(),
+        ).timeout(warmBarrierCap);
       } catch (e) {
         // Best-effort, mirroring sync()'s warm-phase handling: surface
         // the failure to the observer so a Warmable that violates the
@@ -443,9 +468,14 @@ final class SyncEngine {
       // very different — adding sources vs. waiting for the
       // exponential cooldown to expire.
       final emptyError = _sources.isEmpty
+          // An empty source configuration fails identically on every
+          // attempt — non-transient, so retry schedulers give up rather
+          // than loop the same failure forever. Cooldown, by contrast,
+          // expires with time, so a retry can plausibly recover.
           ? const TrustedTimeSyncException(
               'No time sources are configured: ntpServers, httpsSources, '
               'ntsServers, and additionalSources are all empty.',
+              transient: false,
             )
           : const TrustedTimeSyncException(
               'All configured time sources are currently in exponential '
@@ -518,11 +548,12 @@ final class SyncEngine {
             }
           }
 
-          final result = _engine.resolve(samples);
+          final (normalized, refMs) = _normalizedToLatestReceipt(samples);
+          final result = _engine.resolve(normalized);
           if (result != null) {
             // Stability Check: Escalates quorum requirements if high variance
             // is detected, ensuring we don't anchor to a jittery consensus.
-            final varianceDetected = samples.any(
+            final varianceDetected = normalized.any(
               (s) =>
                   (s.interval.midpoint - result.utc.millisecondsSinceEpoch)
                       .abs() >
@@ -530,12 +561,23 @@ final class SyncEngine {
             );
             final requiredStability = varianceDetected ? 3 : 2;
 
-            if (lastStabilityInterval == result.interval) {
+            // Compare intervals relative to the normalization reference:
+            // the reference advances as later samples arrive, so the
+            // absolute consensus interval shifts by the receipt delta
+            // between resolves even when the consensus itself is stable.
+            final absoluteInterval = result.interval;
+            final relativeInterval = absoluteInterval == null
+                ? null
+                : TimeInterval(
+                    startMs: absoluteInterval.startMs - refMs,
+                    endMs: absoluteInterval.endMs - refMs,
+                  );
+            if (lastStabilityInterval == relativeInterval) {
               stableCount++;
             } else {
               stableCount = 1;
             }
-            lastStabilityInterval = result.interval;
+            lastStabilityInterval = relativeInterval;
 
             if (stableCount >= requiredStability) {
               // Early Exit: If configured, we return as soon as a stable quorum
@@ -569,16 +611,34 @@ final class SyncEngine {
         }
       });
 
-      // 2. Launch racing queries.
+      // 2. Warming barrier: complete every Warmable's warm() before the
+      // first timed query is issued, so all queries launch against
+      // fully-warmed state (e.g. primed NTS cookie jars) with converged
+      // start times. Without the barrier, each source queries the
+      // moment its own handshake finishes, and the receipt spread
+      // between the fastest and slowest handshake widens the
+      // normalization shifts the consensus must absorb. The barrier is
+      // a completion gate, not a fixed delay: when handshakes are fast
+      // (or already memoized, as after initialize()'s explicit
+      // warmAllSources()) it costs nothing. The warmBarrierCap only
+      // bounds a pathological hang — warmAllSources() already swallows
+      // per-source failures, so on timeout the cycle proceeds and the
+      // per-source Phase A warm below covers any laggard.
+      await warmAllSources().timeout(warmBarrierCap, onTimeout: () {});
+
+      // 3. Launch racing queries.
       //
       // Each source runs a per-source two-phase sequence concurrently
       // with the others:
       //   Phase A — for sources that implement [Warmable], warm() runs
       //     outside the per-query maxLatency budget, so slow handshakes
       //     (e.g., NTS-KE) do not eat into the timed query window.
-      //     Sources that don't implement Warmable skip Phase A and
-      //     proceed straight to the query, so they are not blocked by
-      //     slower siblings.
+      //     After the barrier above, warm() is memoized and Phase A is
+      //     a no-op for every source the barrier reached; it remains
+      //     the JIT fallback for a source whose handshake outlived the
+      //     barrier cap. Sources that don't implement Warmable skip
+      //     Phase A and proceed straight to the query, so they are not
+      //     blocked by slower siblings.
       //   Phase B — _querySafe() runs the timed getTime() under
       //     _config.maxLatency.
       // warm() is wrapped in Future.sync to capture both synchronous
@@ -601,12 +661,14 @@ final class SyncEngine {
         }());
       }
 
-      // Outer safety timeout. The per-source pipeline runs warm()
-      // outside the maxLatency budget, so this deadline must cover
-      // both phases. Budget = maxLatency (timed query window) + 5s for
-      // a slow NTS-KE handshake (TCP + TLS 1.3 + key exchange,
-      // typically ~1s but up to ~3s on poor networks) + 1s for stream
-      // processing and consensus resolution overhead.
+      // Outer safety timeout. The warming barrier above completes (or
+      // caps out) before this deadline starts counting, so the common
+      // case consumes none of this budget on handshakes. The 5 s
+      // handshake allowance is retained for the residual path where a
+      // handshake outlived the barrier cap and Phase A re-awaits the
+      // same memoized warm() inside this window. Budget = maxLatency
+      // (timed query window) + 5s for that residual NTS-KE completion
+      // + 1s for stream processing and consensus resolution overhead.
       final anchor = await completer.future.timeout(
         _config.maxLatency + const Duration(seconds: 6),
         onTimeout: () async {
@@ -645,7 +707,8 @@ final class SyncEngine {
           //    short-circuits instead of running on after sync() returns.
           if (!completer.isCompleted &&
               samples.length >= _config.minimumQuorum) {
-            final result = _engine.resolve(samples);
+            final (normalized, _) = _normalizedToLatestReceipt(samples);
+            final result = _engine.resolve(normalized);
             if (result != null) {
               await _completeSync(
                 result,
@@ -726,6 +789,24 @@ final class SyncEngine {
       // work if the completer has been resolved (or errored)
       // out-of-band.
       if (completer.isCompleted) return;
+      if (kDebugMode) {
+        // Cross-source receipt spread at consensus time: how far apart
+        // (on the monotonic receipt timeline) the population's samples
+        // arrived, i.e. the exact shift _normalizedToLatestReceipt
+        // absorbed for this resolve. `n/m` counts samples carrying a
+        // receipt stamp out of the population.
+        final receipts = samples
+            .map((s) => s.receivedAtMs)
+            .whereType<int>()
+            .toList(growable: false);
+        final spread = receipts.isEmpty
+            ? 'n/a'
+            : '${receipts.reduce(max) - receipts.reduce(min)}ms';
+        debugPrint(
+          '[TrustedTime] consensus receiptSpread=$spread '
+          '(${receipts.length}/${samples.length} stamped)',
+        );
+      }
       _observer?.onConsensusReached(result);
 
       // Tier-aware admission bookkeeping. A degraded cycle (no Tier 1 truth
@@ -834,8 +915,11 @@ final class SyncEngine {
     // This prevents outliers from corrupting the monotonic clock reference.
     final participantSamples = result.participants;
     if (participantSamples.isEmpty) {
-      throw TrustedTimeSyncException(
+      // Structural invariant violation, not network weather: a retry of
+      // the same cycle would produce the same empty participant set.
+      throw const TrustedTimeSyncException(
         'Consensus result has no participant samples',
+        transient: false,
       );
     }
 
@@ -865,7 +949,8 @@ final class SyncEngine {
 
     // All sources responded but we haven't reached stability.
     // Try one final resolve with all samples before failing.
-    final finalResult = _engine.resolve(samples);
+    final (normalized, _) = _normalizedToLatestReceipt(samples);
+    final finalResult = _engine.resolve(normalized);
     if (finalResult != null && samples.length >= _config.minimumQuorum) {
       unawaited(
         _completeSync(finalResult, samples, elapsedMs ?? 0, completer, guard),
@@ -883,6 +968,46 @@ final class SyncEngine {
         ),
       );
     }
+  }
+
+  /// Shifts every sample carrying a receipt timestamp so all intervals
+  /// estimate the true time at one shared reference instant — the
+  /// latest receipt in the population — before Marzullo intersection.
+  ///
+  /// Each sample's interval brackets the true time *at its own receipt
+  /// instant*. When a cycle's queries complete seconds apart (typical
+  /// on a just-woken radio, where the first responses ride a stalling
+  /// link), intersecting the raw intervals under-counts overlap by
+  /// exactly the receipt spread: two perfect ±50 ms samples received
+  /// 3 s apart share no overlap at all and read as disagreeing
+  /// sources. Normalizing to a common instant removes that artificial
+  /// disagreement while leaving genuinely conflicting sources apart.
+  ///
+  /// The latest receipt is chosen (rather than the earliest) so the
+  /// consensus midpoint stays as close as possible to the
+  /// anchor-creation instant that [_createAnchor] pairs it with.
+  /// Samples without a receipt timestamp (legacy fixtures, custom
+  /// sources) pass through unshifted, preserving existing behaviour.
+  ///
+  /// Returns the normalized population together with the reference
+  /// instant used (`0` when no sample carried a receipt timestamp, in
+  /// which case the population is returned as-is). Callers that
+  /// compare successive consensus intervals for stability must
+  /// translate them by `-refMs` first: the reference advances as new
+  /// samples arrive, so absolute intervals shift between resolves even
+  /// when the underlying consensus is unchanged.
+  (List<TimeSample>, int) _normalizedToLatestReceipt(List<TimeSample> samples) {
+    int? refMs;
+    for (final s in samples) {
+      final r = s.receivedAtMs;
+      if (r != null && (refMs == null || r > refMs)) refMs = r;
+    }
+    if (refMs == null) return (samples, 0);
+    final ref = refMs;
+    return (
+      samples.map((s) => s.normalizedTo(ref)).toList(growable: false),
+      ref,
+    );
   }
 
   /// Wraps a source query with timeout and health-tracking logic.

@@ -13,18 +13,32 @@ final class TrustedTimeNotReadyException implements Exception {
       'Await initialize() and ensure sync succeeded.';
 }
 
-/// Thrown when the sync engine cannot reach the required quorum of agreeing
-/// time sources.
+/// Thrown when the sync engine cannot produce a trust anchor.
 ///
-/// This can happen if the device is completely offline, all configured
-/// servers are unreachable, or network latency exceeds the configured
-/// [TrustedTimeConfig.maxLatency].
+/// Most instances are network weather — the device is completely offline,
+/// all configured servers are unreachable, network latency exceeds the
+/// configured [TrustedTimeConfig.maxLatency], or quorum is not reached —
+/// and carry [transient] `true`. The engine also raises this type for
+/// failures that recur identically on every attempt (e.g. an empty source
+/// configuration); those carry [transient] `false` so retry schedulers
+/// know not to re-attempt them.
 final class TrustedTimeSyncException implements Exception {
   /// Creates a [TrustedTimeSyncException] with a descriptive [message].
-  const TrustedTimeSyncException(this.message);
+  const TrustedTimeSyncException(this.message, {this.transient = true});
 
   /// Human-readable description of why consensus failed.
   final String message;
+
+  /// Whether a retry can plausibly recover from this failure.
+  ///
+  /// `true` (the default) for conditions that can clear between attempts:
+  /// quorum not reached, sync timeout, all sources in exponential cooldown.
+  /// `false` for failures that are structural — an empty source
+  /// configuration, a consensus result with no participant samples — and
+  /// would fail identically on every attempt. Consumed by
+  /// `isTransientSyncError`, the shared verdict used by the foreground
+  /// retry scheduler and the background in-run retry loop.
+  final bool transient;
 
   @override
   String toString() => 'TrustedTimeSyncException: $message';

@@ -51,12 +51,14 @@ import 'package:timezone/timezone.dart' as tz;
 import 'src/background_sync.dart'
     show
         BackgroundSyncFailure,
+        BackgroundSyncStopInfo,
         BackgroundSyncSuccess,
         TrustedTimeBackgroundResult;
 import 'src/background_sync.dart' as bg show runBackgroundSync;
 import 'src/exceptions.dart';
 import 'src/integrity_event.dart';
 import 'src/models.dart';
+import 'src/nts_bootstrap.dart';
 import 'src/trusted_time_estimate.dart';
 import 'src/trusted_time_impl.dart';
 import 'src/trusted_time_mock.dart';
@@ -66,6 +68,7 @@ import 'src/sources/nts_auth_level.dart';
 export 'src/background_sync.dart'
     show
         BackgroundSyncFailure,
+        BackgroundSyncStopInfo,
         BackgroundSyncSuccess,
         TrustedTimeBackgroundResult;
 export 'src/exceptions.dart';
@@ -154,55 +157,13 @@ abstract final class TrustedTime {
     }
 
     // Initialize the flutter_rust_bridge runtime backing package:nts
-    // before any NtsSource is constructed.  Gated on
-    // ntsServers.isNotEmpty to preserve the package's "zero overhead
-    // when unused" guarantee.  NtsRustLib uses a process-wide
-    // singleton: a second init() call within the same process throws
-    // `StateError: Should not initialize flutter_rust_bridge twice`.
-    // That happens whenever the host app re-initialises TrustedTime
-    // (benchmark UIs that cycle the engine through different source
-    // pools, hot-restart in development, etc.). We treat the
-    // "already initialised" StateError as success so re-init flows
-    // do not silently strip ntsServers and leave the engine with
-    // zero sources for the rest of the process lifetime. Other
-    // exceptions (missing native asset, arch mismatch, etc.) are
-    // still treated as real failures and disable NTS for this
-    // configuration.
-    if (config.ntsServers.isNotEmpty) {
-      try {
-        await nts.NtsRustLib.init();
-      } catch (e) {
-        // Detect "already initialised" loosely: any StateError whose
-        // message references flutter_rust_bridge. The exact phrase
-        // "Should not initialize flutter_rust_bridge twice" is the
-        // current upstream wording but is not part of any public API
-        // contract; matching just the package name is robust to
-        // wording / capitalisation drift across frb releases while
-        // still narrow enough not to swallow unrelated StateErrors
-        // from other code paths. The case-insensitive comparison
-        // (lowercasing both sides) is the source of that
-        // capitalisation robustness — without it we would only
-        // accept the canonical lowercase package name as it appears
-        // in upstream's current panic, defeating the safety margin
-        // the loose match was added for. If frb starts throwing
-        // StateError for genuinely new structural failures we will
-        // need to revisit, but the failure mode of an unrecognised
-        // double-init (silently disabling NTS) is significantly
-        // worse than the failure mode of an unrecognised real error
-        // (the engine will surface it at first NTS use).
-        final message = e is StateError ? e.message.toLowerCase() : '';
-        final alreadyInitialised =
-            e is StateError && message.contains('flutter_rust_bridge');
-        if (!alreadyInitialised) {
-          if (kDebugMode) {
-            debugPrint(
-              '[TrustedTime] NTS disabled — NtsRustLib.init failed: $e',
-            );
-          }
-          config = config.copyWith(ntsServers: const []);
-        }
-      }
-    }
+    // before any NtsSource is constructed, degrading to an NTS-disabled
+    // config if the FFI bootstrap genuinely fails. The gating,
+    // already-initialised-as-success, and degrade semantics live in the
+    // shared ensureNtsRuntime helper so the headless background isolate
+    // (runBackgroundSync) performs the identical bootstrap — see
+    // trusted_time-y81.
+    config = await ensureNtsRuntime(config);
 
     await TrustedTimeImpl.init(config);
   }
@@ -541,6 +502,16 @@ abstract final class TrustedTime {
   /// auto-registers plugins on engine creation). If either is missing,
   /// background fires fall back to a connectivity-only HTTPS HEAD probe
   /// that does not refresh the anchor — see ADR 0002.
+  ///
+  /// **Interval granularity**: [interval] is applied at minute resolution.
+  /// On both Android and iOS the Dart layer rounds fractional minutes
+  /// **up** to the next whole minute (never scheduling more frequently
+  /// than requested — this is battery-sensitive OS work) and clamps the
+  /// result to `[15 min, 1 week]` before it reaches the platform
+  /// scheduler. The 15-minute floor mirrors Android [WorkManager]'s hard
+  /// minimum on periodic work and is applied on iOS too, for
+  /// cross-platform consistency (BGTaskScheduler treats the interval as
+  /// a hint anyway).
   static Future<void> enableBackgroundSync({
     Duration interval = const Duration(hours: 24),
   }) {
@@ -669,6 +640,20 @@ abstract final class TrustedTime {
   /// Automatically notifies the native plugin of completion so the headless
   /// engine can be torn down inside the OS budget.
   ///
+  /// **Post-sync work must go in [onResult], not after the returned
+  /// future.** On Android the native worker destroys the headless
+  /// [FlutterEngine] as soon as it receives the completion signal, which
+  /// this method sends internally *before* returning. Any code the caller
+  /// runs after `await runBackgroundSync(...)` therefore races engine
+  /// teardown and is liable to be killed mid-execution — silently, for
+  /// async work such as file or channel I/O. [onResult] is awaited
+  /// *before* the completion signal is sent, so work done inside it (e.g.
+  /// appending to an on-disk log) is guaranteed to finish while the
+  /// engine is still alive. An error thrown from [onResult] is logged and
+  /// swallowed: observer-side failures must not turn a completed sync
+  /// into a failed background fire, nor delay the native completion
+  /// signal beyond the OS budget.
+  ///
   /// When a [TrustedTimeMock] is active via [overrideForTesting], this method
   /// short-circuits before any network I/O, secure-storage write, or
   /// platform-channel traffic, and returns a deterministic
@@ -678,9 +663,21 @@ abstract final class TrustedTime {
   /// invoke the registered background callback from accidentally exercising
   /// the real sync engine.
   ///
+  /// **In-run retry**: a transient sync failure ([TrustedTimeSyncException])
+  /// is retried within the same run before the failure is reported, on a
+  /// platform-sized schedule — twice on Android (after 10 s and 20 s
+  /// waits, fitting the 9-minute worker budget), once on iOS (after a 2 s
+  /// wait, fitting the ~30 s `BGAppRefreshTask` budget) — because the OS
+  /// scheduler's own retry can be deferred for hours under doze while
+  /// this run still has budget left. Non-transient errors (e.g. an
+  /// invalid config) fail immediately. [retryDelays] overrides that
+  /// schedule for tests only.
+  ///
   /// Returns a [TrustedTimeBackgroundResult] describing the outcome.
   static Future<TrustedTimeBackgroundResult> runBackgroundSync({
     TrustedTimeConfig config = const TrustedTimeConfig(),
+    Future<void> Function(TrustedTimeBackgroundResult result)? onResult,
+    @visibleForTesting List<Duration>? retryDelays,
   }) async {
     // Honor the test-mock override before any side-effecting work. Mirrors
     // the early-return pattern in initialize / now / enableBackgroundSync /
@@ -690,7 +687,7 @@ abstract final class TrustedTime {
     final override = _override;
     if (override != null) {
       final nowMs = override.nowUnixMs;
-      return BackgroundSyncSuccess(
+      final synthetic = BackgroundSyncSuccess(
         anchor: TrustAnchor(
           networkUtcMs: nowMs,
           // Mock has no uptime / wall / uncertainty surface; synthesize zero
@@ -701,13 +698,37 @@ abstract final class TrustedTime {
         ),
         elapsed: Duration.zero,
       );
+      // The hook contract ("onResult observes every outcome") holds under
+      // the mock too, so host code exercised in tests behaves as it will
+      // in production — including the binding guarantee: the production
+      // path below initializes bindings before the hook runs, so a hook
+      // that touches MethodChannels (background-fire logging/telemetry)
+      // must see the same environment under the override.
+      WidgetsFlutterBinding.ensureInitialized();
+      await _invokeOnResult(onResult, synthetic);
+      return synthetic;
     }
     WidgetsFlutterBinding.ensureInitialized();
-    final result = await bg.runBackgroundSync(config: config);
+    final result = await bg.runBackgroundSync(
+      config: config,
+      retryDelays: retryDelays,
+    );
+    // Awaited BEFORE the completion signal below: the native worker
+    // destroys the headless engine as soon as it receives that signal, so
+    // this is the last point where caller-side async work is guaranteed
+    // to run to completion (see dartdoc).
+    await _invokeOnResult(onResult, result);
     try {
       await _bgChannel.invokeMethod<void>('notifyBackgroundComplete', {
         'success': result.isSuccess,
-        if (result is BackgroundSyncFailure) 'reason': result.reason,
+        if (result is BackgroundSyncFailure) ...{
+          'reason': result.reason,
+          // Android maps retryable=false to Result.failure() (skip this
+          // interval; the periodic chain continues) instead of
+          // Result.retry() — re-running a non-transient failure such as
+          // an invalid config would fail identically every time.
+          'retryable': result.retryable,
+        },
       });
     } on MissingPluginException {
       // Channel is absent on desktop/web and in unit tests that have not
@@ -727,6 +748,100 @@ abstract final class TrustedTime {
       );
     }
     return result;
+  }
+
+  /// Queries the OS scheduler for the state of the background-sync work
+  /// and the reason the *previous* run attempt was stopped.
+  ///
+  /// On Android, reads WorkManager's `WorkInfo` for the unique periodic
+  /// work registered by [enableBackgroundSync] and surfaces
+  /// `WorkInfo.getStopReason()` (populated with real values on API 31+;
+  /// earlier releases report `NOT_STOPPED`). Intended as a diagnostic to be
+  /// logged at the start of a background fire, answering "was the last
+  /// attempt killed by timeout / quota / device state?" without shell
+  /// access to `dumpsys jobscheduler`.
+  ///
+  /// On iOS, reports whether the *previous* headless BGTask attempt was
+  /// terminated by the BGTaskScheduler expiration handler: `stopReason`
+  /// is `3` ([BackgroundSyncStopInfo.stopReasonName] `TIMEOUT`, the
+  /// nearest WorkManager analogue) and `state` carries the expiration
+  /// instant as `EXPIRED(<ISO-8601>)` so the report can be paired with
+  /// the fire it explains. The breadcrumb is consumed pessimistically:
+  /// a normally completed attempt clears it, so it is reported after the
+  /// expired fire only, never re-attributed to a later healthy one.
+  ///
+  /// Returns `null` when no answer is available: on desktop and web (no
+  /// handler for this method, or the channel itself is absent), on iOS
+  /// when the previous attempt did not expire, when no background work
+  /// has been scheduled yet, and under a [TrustedTimeMock] override.
+  /// Platform-side query failures are logged and also surface as `null`
+  /// — this is a best-effort diagnostic and must never turn a healthy
+  /// fire into a failed one.
+  static Future<BackgroundSyncStopInfo?> getBackgroundStopReason() async {
+    if (_override != null) return null;
+    WidgetsFlutterBinding.ensureInitialized();
+    try {
+      final raw = await _bgChannel.invokeMapMethod<String, Object?>(
+        'getBackgroundStopReason',
+      );
+      if (raw == null) return null;
+      final state = raw['state'];
+      final stopReason = raw['stopReason'];
+      if (state is! String || stopReason is! int) return null;
+      return BackgroundSyncStopInfo(state: state, stopReason: stopReason);
+    } on MissingPluginException {
+      // Channel absent (desktop/web, unmocked unit tests) or the platform
+      // answered notImplemented (iOS has no WorkManager analogue). Either
+      // way: no scheduler-side stop reason to report.
+      return null;
+    } on PlatformException catch (e, s) {
+      // Genuine Android-side query failures (the plugin's
+      // STOP_REASON_UNAVAILABLE error). Non-fatal for a diagnostic
+      // accessor.
+      developer.log(
+        'TrustedTime.getBackgroundStopReason: platform query failed',
+        name: 'trusted_time',
+        level: 900,
+        error: e,
+        stackTrace: s,
+      );
+      return null;
+    } catch (e, s) {
+      // Anything else — e.g. a TypeError from invokeMapMethod when the
+      // platform returns an unexpected map shape. The dartdoc promises
+      // best-effort null on failure, so no error may escape here.
+      developer.log(
+        'TrustedTime.getBackgroundStopReason: unexpected error',
+        name: 'trusted_time',
+        level: 900,
+        error: e,
+        stackTrace: s,
+      );
+      return null;
+    }
+  }
+
+  /// Runs the caller's [runBackgroundSync] `onResult` hook, logging and
+  /// swallowing any error it throws.
+  ///
+  /// Observer-side failures must neither turn a completed sync into a
+  /// failed background fire nor block the native completion signal.
+  static Future<void> _invokeOnResult(
+    Future<void> Function(TrustedTimeBackgroundResult result)? onResult,
+    TrustedTimeBackgroundResult result,
+  ) async {
+    if (onResult == null) return;
+    try {
+      await onResult(result);
+    } catch (e, s) {
+      developer.log(
+        'TrustedTime.runBackgroundSync: onResult hook threw',
+        name: 'trusted_time',
+        level: 900,
+        error: e,
+        stackTrace: s,
+      );
+    }
   }
 
   static const _bgChannel = MethodChannel('trusted_time/background');

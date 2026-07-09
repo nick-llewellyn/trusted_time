@@ -184,7 +184,13 @@ final class NtpSource implements TimeSource {
     // confidence grading, so keeping it off the timing path is free.
     final group = await _groupIdFor(addr);
 
-    final utc = DateTime.now().toUtc().add(Duration(milliseconds: offset));
+    // Take both readings back-to-back: the wall reading anchors the
+    // UTC estimate below, while the monotonic reading stamps the
+    // receipt for normalization — immune to wall-clock steps between
+    // this sample's receipt and the rest of the cycle's.
+    final receiptMs = TimeSample.monotonicReceiptNowMs();
+    final localNow = DateTime.now();
+    final utc = localNow.toUtc().add(Duration(milliseconds: offset));
     final u = sw.elapsedMilliseconds ~/ 2;
 
     return TimeSample(
@@ -196,6 +202,11 @@ final class NtpSource implements TimeSource {
       groupId: group,
       // Whole round-trip delay δ; the interval still uses u = δ/2.
       delayMs: sw.elapsedMilliseconds,
+      // Monotonic receipt instant (taken alongside the wall reading
+      // the estimate above is anchored to), so the engine can
+      // normalize samples received at different points in the cycle
+      // before Marzullo intersection.
+      receivedAtMs: receiptMs,
     );
   }
 }

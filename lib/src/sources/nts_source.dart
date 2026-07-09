@@ -8,6 +8,42 @@ import '../exceptions.dart';
 import '../models.dart';
 import 'nts_auth_level.dart';
 
+/// Collapses the successful samples of one [NtsSource] query burst
+/// into the single sample handed to the consensus.
+///
+/// Invoked with a non-empty list; every sample comes from the same
+/// host within one [NtsSource.getTime] call, so cross-source
+/// comparability is not a concern. The returned sample **must be one
+/// of the input instances** (an element of `samples`, compared by
+/// identity): [NtsSource] maps the winner back to its raw attempt to
+/// attribute the server stratum, and a copied or derived instance
+/// breaks that mapping — stratum reporting is then skipped for the
+/// burst (asserted in debug builds).
+typedef NtsBurstReducer = TimeSample Function(List<TimeSample> samples);
+
+/// Default [NtsBurstReducer]: keeps the sample with the smallest
+/// round-trip delay.
+///
+/// The minimum measured RTT is the tightest, least path-asymmetric
+/// estimate in the burst — the burst-and-pick-min strategy
+/// `package:nts` documents, and the same reduction the validate tier
+/// applies via `SyncEngine.validate()`. The comparison key matches
+/// `SyncEngine._rttKey`: [TimeSample.delayMs] when measured, else
+/// `2 × uncertaintyMs` (the interval half-width is ≈ δ/2, so doubling
+/// keeps the key in RTT units). All samples in a burst come from one
+/// source, so the key is internally consistent even when δ is
+/// unmeasured.
+TimeSample lowestRttReducer(List<TimeSample> samples) {
+  assert(samples.isNotEmpty, 'reducer requires at least one sample');
+  var best = samples.first;
+  for (final s in samples.skip(1)) {
+    if (_rttKey(s) < _rttKey(best)) best = s;
+  }
+  return best;
+}
+
+int _rttKey(TimeSample sample) => sample.delayMs ?? (2 * sample.uncertaintyMs);
+
 /// RFC 8915-compliant NTS (Network Time Security) time source.
 ///
 /// Uses [package:nts](https://pub.dev/packages/nts) which provides a
@@ -30,6 +66,14 @@ import 'nts_auth_level.dart';
 /// [getTime] still calls [warm] as a JIT fallback; when that fails
 /// too, [nts.NtsClient.query] performs its own cold-start handshake
 /// transparently.
+///
+/// **Query burst:** [getTime] issues `burstCount` concurrent queries
+/// against the warmed jar and reduces the successes to one sample via
+/// the configured [NtsBurstReducer] (lowest RTT by default). Each
+/// attempt spends one cookie up-front and each success returns two
+/// in-band (net +1), so with the cap of 4 even a total-loss burst
+/// leaves half the jar for a retry burst without a mid-window
+/// re-handshake.
 ///
 /// **Per-source [nts.NtsClient]:** Each [NtsSource] owns its own
 /// [nts.NtsClient] instance, lazily constructed on first [warm] (or
@@ -84,10 +128,28 @@ final class NtsSource implements TimeSource, Warmable {
   /// alongside the resolved mode.
   ///
   /// [onStratumObserved] is called with the NTP stratum reported by
-  /// the server after each successful query. Used by [SyncEngine] to
-  /// feed stratum hints into `SourceQualityTracker` without widening
+  /// the server after each successful query burst. Used by [SyncEngine]
+  /// to feed stratum hints into `SourceQualityTracker` without widening
   /// [TimeSample]. Added in upstream 2.1.0; optional so callers that
   /// don't run quality scoring (e.g. unit tests) need not supply it.
+  ///
+  /// [burstCount] is the number of concurrent queries [getTime] issues
+  /// per call; the successes are collapsed to one sample by [reducer]
+  /// (default [lowestRttReducer]). Must be in `1..4` — the cap keeps a
+  /// total-loss burst from draining the 8-cookie jar past the point
+  /// where a full retry burst can run without a mid-window
+  /// re-handshake. Enforced with a [RangeError] in all build modes:
+  /// the value typically arrives from the public
+  /// [TrustedTimeConfig.ntsBurstCount] knob, whose const constructor
+  /// can only `assert`, so this is where an out-of-range value fails
+  /// deterministically in release builds. The default of `1` preserves
+  /// single-query behaviour for direct callers; [SyncEngine] passes
+  /// [TrustedTimeConfig.ntsBurstCount].
+  ///
+  /// [debugQueryOverride] replaces the `client.query` call for tests
+  /// that need to script per-attempt outcomes without touching the FFI
+  /// surface; when set, no [nts.NtsClient] is minted and [warm] is a
+  /// no-op (there is no real cookie jar to prime).
   NtsSource(
     this._host, {
     int port = 4460,
@@ -96,12 +158,24 @@ final class NtsSource implements TimeSource, Warmable {
     nts.TrustMode trustMode = nts.TrustMode.platformWithFallback,
     List<int>? customRoots,
     void Function(int)? onStratumObserved,
+    int burstCount = 1,
+    NtsBurstReducer reducer = lowestRttReducer,
+    @visibleForTesting Future<nts.NtsTimeSample> Function()? debugQueryOverride,
   }) : _spec = nts.NtsServerSpec(host: _host, port: port),
        _dnsConcurrencyCap = dnsConcurrencyCap,
        _timeoutMs = maxLatency.inMilliseconds,
        _trustMode = trustMode,
        _customRoots = customRoots,
-       _onStratumObserved = onStratumObserved;
+       _onStratumObserved = onStratumObserved,
+       _burstCount = RangeError.checkValueInInterval(
+         burstCount,
+         1,
+         4,
+         'burstCount',
+         'must be in 1..4 (NTS cookie-jar economics)',
+       ),
+       _reducer = reducer,
+       _debugQueryOverride = debugQueryOverride;
 
   final String _host;
   final nts.NtsServerSpec _spec;
@@ -110,6 +184,9 @@ final class NtsSource implements TimeSource, Warmable {
   final nts.TrustMode _trustMode;
   final List<int>? _customRoots;
   final void Function(int)? _onStratumObserved;
+  final int _burstCount;
+  final NtsBurstReducer _reducer;
+  final Future<nts.NtsTimeSample> Function()? _debugQueryOverride;
 
   /// Per-source [nts.NtsClient]. Lazily constructed on first [warm]
   /// or first [getTime] call so the [NtsSource] constructor never
@@ -138,14 +215,22 @@ final class NtsSource implements TimeSource, Warmable {
 
   @override
   Future<void> warm() {
+    // Honour the [debugQueryOverride] contract: the override scripts the
+    // query path without touching the FFI surface, so warming must not
+    // mint an [nts.NtsClient] either. There is no real cookie jar to
+    // prime when the query itself is scripted, so this is a pure no-op
+    // rather than a memoized task.
+    if (_debugQueryOverride != null) return Future.value();
     return _warmTask ??= _performWarming();
   }
 
   @override
   Future<TimeSample> getTime() async {
     // JIT fallback: ensure warming has been kicked off and completed
-    // before issuing the timed query. SyncEngine normally awaits warm()
-    // in its dedicated warming phase, so this is a no-op in that path.
+    // before issuing the timed queries. SyncEngine normally awaits
+    // warm() in its dedicated warming phase (and, since the global
+    // warming barrier, before any source's query launches), so this is
+    // a no-op in that path.
     await warm();
 
     // Mint the client here as a fallback if [_performWarming]
@@ -156,57 +241,162 @@ final class NtsSource implements TimeSource, Warmable {
     // method, matching the loud-getTime / lossy-warm contract:
     //
     //   - Construction failure: `StateError` from
-    //     `nts.NtsClient(trustMode: _trustMode)` below, before the
-    //     query try/catch is entered. Indicates a structural
+    //     `nts.NtsClient(trustMode: _trustMode)` below, before any
+    //     query attempt is launched. Indicates a structural
     //     problem (NtsRustLib not initialised) rather than a transient
     //     network issue, so it is intentionally not translated into
     //     an `nts.NtsError` subtype.
     //   - Query failure: `nts.NtsError` (or `TransientSourceError`
-    //     for the dnsSaturation phase) thrown from `client.query`
-    //     below and handled by the existing on-clauses.
-    final client = _client ??= nts.NtsClient(
-      trustMode: _trustMode,
-      customRoots: _customRoots,
-    );
-
-    final nts.NtsTimeSample result;
-    try {
-      result = await client.query(
+    //     for the dnsSaturation phase) thrown when every attempt in
+    //     the burst fails; see the classification below.
+    final override = _debugQueryOverride;
+    final Future<nts.NtsTimeSample> Function() runQuery;
+    if (override != null) {
+      runQuery = override;
+    } else {
+      final client = _client ??= nts.NtsClient(
+        trustMode: _trustMode,
+        customRoots: _customRoots,
+      );
+      runQuery = () => client.query(
         spec: _spec,
         timeoutMs: _timeoutMs,
         dnsConcurrencyCap: _dnsConcurrencyCap,
       );
-    } on nts.NtsErrorTimeout catch (e) {
-      // Dns(Saturation) means the bounded DNS resolver pool was at
-      // capacity for this call. The host itself is healthy; SyncEngine
-      // should retry on the next cycle without applying exponential
-      // cooldown. Other timeout phases (Connect, Tls, KeRecordIo, Ntp,
-      // DnsTimeout) propagate as-is and follow the standard cooldown
-      // path.
-      if (e.phase == nts.TimeoutPhase.dnsSaturation) {
-        throw TransientSourceError(e);
-      }
-      rethrow;
     }
 
+    // Launch the burst concurrently. All attempts share this source's
+    // session table (one cookie per attempt, spent up-front) and each
+    // carries its own timeoutMs budget, so a straggler times out
+    // inside the same window a single query would have. Every attempt
+    // guards its own failure; the burst as a whole succeeds when at
+    // least one attempt lands. Each attempt returns its result rather
+    // than appending to a shared list, so Future.wait materializes
+    // successes in fixed attempt-index order — completion order must
+    // not leak into the list, or the reducer's "first wins" tie-break
+    // (and thus the winning sample and its stratum attribution) would
+    // be race-dependent when RTT keys tie.
+    var transientFailures = 0;
+    Object? lastError;
+    StackTrace? lastStackTrace;
+    Object? lastNonTransientError;
+    StackTrace? lastNonTransientStackTrace;
+
+    final results = await Future.wait(
+      List.generate(_burstCount, (_) async {
+        try {
+          final result = await runQuery();
+          // Capture the receipt instant here — at each attempt's own
+          // completion — so per-attempt receivedAtMs stays accurate
+          // for the engine's receipt normalization. Stamped on the
+          // monotonic receipt timeline so a wall-clock step mid-burst
+          // cannot corrupt the deltas normalization consumes.
+          return _BurstSuccess(
+            raw: result,
+            receivedAtMs: TimeSample.monotonicReceiptNowMs(),
+          );
+        } on nts.NtsErrorTimeout catch (e, st) {
+          // Dns(Saturation) means the bounded DNS resolver pool was at
+          // capacity for this attempt. The host itself is healthy;
+          // SyncEngine should retry on the next cycle without applying
+          // exponential cooldown. Other timeout phases (Connect, Tls,
+          // KeRecordIo, Ntp, DnsTimeout) follow the standard cooldown
+          // path when the whole burst fails.
+          if (e.phase == nts.TimeoutPhase.dnsSaturation) {
+            transientFailures++;
+            lastError = TransientSourceError(e);
+            lastStackTrace = st;
+          } else {
+            lastError = lastNonTransientError = e;
+            lastStackTrace = lastNonTransientStackTrace = st;
+          }
+          return null;
+        } on TransientSourceError catch (e, st) {
+          // An already-wrapped transient error — e.g. thrown directly by
+          // a [debugQueryOverride] script, or by a future refactor that
+          // classifies timeouts earlier — must keep its transient
+          // semantics so an all-transient burst still bypasses cooldown.
+          transientFailures++;
+          lastError = e;
+          lastStackTrace = st;
+          return null;
+        } catch (e, st) {
+          lastError = lastNonTransientError = e;
+          lastStackTrace = lastNonTransientStackTrace = st;
+          return null;
+        }
+      }),
+    );
+    final successes = results.whereType<_BurstSuccess>().toList(
+      growable: false,
+    );
+
     if (kDebugMode) {
-      final p = result.phaseTimings;
+      final rtts = successes
+          .map((s) => (s.raw.roundTripMicros / 1000).toStringAsFixed(1))
+          .join(', ');
+      // Per-attempt receipt deltas relative to the burst's earliest
+      // receipt, in attempt-index order (failed attempts filtered) —
+      // surfaces the intra-burst receipt spread that the engine's
+      // normalization absorbs.
+      var receipts = '';
+      if (successes.isNotEmpty) {
+        final earliest = successes
+            .map((s) => s.receivedAtMs)
+            .reduce((a, b) => a < b ? a : b);
+        receipts = successes
+            .map((s) => '+${s.receivedAtMs - earliest}')
+            .join(', ');
+      }
       debugPrint(
-        '[TrustedTime] nts:$_host '
-        'rtt=${(result.roundTripMicros / 1000).toStringAsFixed(1)}ms '
-        'dns=${(p.dnsMicros / 1000).toStringAsFixed(1)}ms '
-        'connect=${(p.connectMicros / 1000).toStringAsFixed(1)}ms '
-        'tls=${(p.tlsHandshakeMicros / 1000).toStringAsFixed(1)}ms '
-        'ke=${(p.keRecordIoMicros / 1000).toStringAsFixed(1)}ms',
+        '[TrustedTime] nts:$_host burst '
+        '${successes.length}/$_burstCount succeeded rtts=[$rtts]ms '
+        'receipts=[$receipts]ms',
       );
     }
 
-    // Report stratum to quality tracker if a listener is registered.
-    // Added in upstream 2.1.0; SyncEngine wires this to
-    // SourceQualityTracker.setStratum so the 20% stratum weight in
-    // the quality score has fresh data after every successful query.
-    _onStratumObserved?.call(result.serverStratum);
+    if (successes.isEmpty) {
+      // Every attempt failed. Classify the burst as transient only
+      // when every failure was transient — a single hard failure means
+      // the standard cooldown path must still arm, so a non-transient
+      // error takes precedence over any transient sibling.
+      final error = transientFailures == _burstCount
+          ? lastError!
+          : lastNonTransientError!;
+      final stack = transientFailures == _burstCount
+          ? lastStackTrace!
+          : lastNonTransientStackTrace!;
+      Error.throwWithStackTrace(error, stack);
+    }
 
+    // Reduce the burst to one sample (lowest RTT by default) and
+    // report stratum once, from the winning attempt, so the quality
+    // tracker sees exactly one observation per getTime() call as
+    // before. The identity lookup is the [NtsBurstReducer] contract:
+    // a reducer that returns a copy or derived instance cannot be
+    // mapped back to a raw attempt, so rather than attribute some
+    // other attempt's stratum, reporting is skipped for the burst.
+    final samples = successes
+        .map((s) => _toTimeSample(s.raw, s.receivedAtMs))
+        .toList(growable: false);
+    final winner = _reducer(samples);
+    final winnerIndex = samples.indexWhere((s) => identical(s, winner));
+    assert(
+      winnerIndex >= 0,
+      'NtsBurstReducer must return one of its input samples '
+      '(identity-preserved); got a copied or derived instance, so the '
+      'winning attempt cannot be identified for stratum attribution.',
+    );
+    if (winnerIndex >= 0) {
+      _onStratumObserved?.call(successes[winnerIndex].raw.serverStratum);
+    }
+    return winner;
+  }
+
+  /// Converts one successful raw query result into the [TimeSample]
+  /// shape the engine consumes, stamped with that attempt's own
+  /// receipt instant.
+  TimeSample _toTimeSample(nts.NtsTimeSample result, int receivedAtMs) {
     // Calculate uncertainty from network RTT (convert microseconds to
     // milliseconds).
     final uncertaintyMs = result.roundTripMicros ~/ 2000;
@@ -219,6 +409,10 @@ final class NtsSource implements TimeSource, Warmable {
       ),
       sourceId: id,
       groupId: groupId,
+      // Local receipt instant, so the engine can normalize samples
+      // received at different points in the cycle to one reference
+      // instant before Marzullo intersection.
+      receivedAtMs: receivedAtMs,
       // Whole round-trip delay δ (RTT), kept separate from the interval
       // half-width so root distance (Λ = E + δ/2) is computable. The
       // interval math above is unchanged.
@@ -261,6 +455,15 @@ final class NtsSource implements TimeSource, Warmable {
       // cookie jar is empty.
     }
   }
+}
+
+/// One successful burst attempt: the raw query result paired with the
+/// local receipt instant captured at that attempt's completion.
+final class _BurstSuccess {
+  const _BurstSuccess({required this.raw, required this.receivedAtMs});
+
+  final nts.NtsTimeSample raw;
+  final int receivedAtMs;
 }
 
 /// Maps the trust-anchor backend that authenticated an NTS handshake to

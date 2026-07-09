@@ -147,6 +147,10 @@ final class HttpsSource implements TimeSource {
       groupId: groupId,
       // Whole round-trip delay δ; the interval still uses δ/2.
       delayMs: sw.elapsedMilliseconds,
+      // Monotonic receipt instant, so the engine can normalize
+      // samples received at different points in the cycle before
+      // Marzullo intersection — immune to wall-clock steps mid-cycle.
+      receivedAtMs: TimeSample.monotonicReceiptNowMs(),
     );
   }
 
