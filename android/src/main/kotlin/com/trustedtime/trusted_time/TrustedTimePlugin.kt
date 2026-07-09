@@ -93,8 +93,33 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         val request = PeriodicWorkRequestBuilder<BackgroundSyncWorker>(minutes, TimeUnit.MINUTES)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .build()
-        WorkManager.getInstance(context)
-            .enqueueUniquePeriodicWork(WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, request)
+        // UPDATE preserves the existing schedule's timing across app
+        // launches, but WorkerUpdater returns NOT_APPLIED for any finished
+        // WorkSpec state (only CANCELLED gets delete + re-enqueue). A
+        // periodic WorkSpec reaches the terminal FAILED state when a
+        // Throwable escapes doWork(), after which UPDATE silently never
+        // revives the schedule — verified on-device (see issue qn1). Check
+        // the current state first and fall back to CANCEL_AND_REENQUEUE
+        // for finished states so enableBackgroundSync always resurrects a
+        // dead schedule.
+        val workManager = WorkManager.getInstance(context)
+        val future = workManager.getWorkInfosForUniqueWork(WORK_NAME)
+        future.addListener(
+            {
+                val policy = try {
+                    val state = future.get().firstOrNull()?.state
+                    if (state != null && state.isFinished) {
+                        ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE
+                    } else {
+                        ExistingPeriodicWorkPolicy.UPDATE
+                    }
+                } catch (_: Exception) {
+                    ExistingPeriodicWorkPolicy.UPDATE
+                }
+                workManager.enqueueUniquePeriodicWork(WORK_NAME, policy, request)
+            },
+            { runnable -> runnable.run() },
+        )
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -179,17 +204,32 @@ private enum class SyncVerdict { SUCCESS, FAILED_RETRYABLE, FAILED_PERMANENT }
  */
 class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
 
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = try {
         val prefs = applicationContext.getSharedPreferences(
             TrustedTimePlugin.PREFS, Context.MODE_PRIVATE,
         )
         val handle = prefs.getLong(TrustedTimePlugin.KEY_HANDLE, 0L)
-        if (handle == 0L) return runConnectivityFallback()
-
-        val callbackInfo = FlutterCallbackInformation.lookupCallbackInformation(handle)
-            ?: return runConnectivityFallback()
-
-        return runHeadlessSync(callbackInfo)
+        when {
+            handle == 0L -> runConnectivityFallback()
+            else -> {
+                val callbackInfo =
+                    FlutterCallbackInformation.lookupCallbackInformation(handle)
+                if (callbackInfo == null) runConnectivityFallback()
+                else runHeadlessSync(callbackInfo)
+            }
+        }
+    } catch (e: CancellationException) {
+        // WorkManager cancelling the worker must propagate.
+        throw e
+    } catch (_: Throwable) {
+        // Last-resort guard: a Throwable escaping doWork() marks the
+        // periodic WorkSpec FAILED — a terminal state that permanently
+        // kills the schedule (verified on-device; see issue qn1). The
+        // inner handlers already convert Exceptions, but a java.lang.Error
+        // (e.g. OOM during FlutterEngine spin-up) or a throw from
+        // teardown in runHeadlessSync's finally block would still escape
+        // without this. Ask for a retry with backoff instead.
+        Result.retry()
     }
 
     private suspend fun runHeadlessSync(
@@ -294,11 +334,11 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
             // The finally below still tears the engine down (its
             // withContext is NonCancellable).
             throw e
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             // Loader/engine/callback initialization failures land here.
             // Ask WorkManager to retry with backoff rather than letting
-            // the exception escape doWork (which would record a permanent
-            // Result.failure() for this iteration).
+            // the throwable escape doWork (which would mark the periodic
+            // WorkSpec FAILED and permanently kill the schedule).
             Result.retry()
         } finally {
             // Teardown must hop back to Main and complete even if the
