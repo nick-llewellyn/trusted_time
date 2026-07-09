@@ -253,8 +253,9 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
                             // CompletableDeferred.complete returns false (rather than
                             // throwing) when the deferred has already been resolved,
                             // which makes duplicate notifyBackgroundComplete calls or
-                            // a late call racing with teardown safe. We discard the
-                            // boolean intentionally — only the first signal counts.
+                            // a late call racing with teardown safe. complete()'s
+                            // Boolean return value is discarded intentionally — only
+                            // the first verdict counts; later signals are no-ops.
                             deferred.complete(verdict)
                             result.success(null)
                         }
