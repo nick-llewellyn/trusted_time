@@ -138,8 +138,12 @@ final class NtsSource implements TimeSource, Warmable {
   /// (default [lowestRttReducer]). Must be in `1..4` — the cap keeps a
   /// total-loss burst from draining the 8-cookie jar past the point
   /// where a full retry burst can run without a mid-window
-  /// re-handshake. The default of `1` preserves single-query behaviour
-  /// for direct callers; [SyncEngine] passes
+  /// re-handshake. Enforced with a [RangeError] in all build modes:
+  /// the value typically arrives from the public
+  /// [TrustedTimeConfig.ntsBurstCount] knob, whose const constructor
+  /// can only `assert`, so this is where an out-of-range value fails
+  /// deterministically in release builds. The default of `1` preserves
+  /// single-query behaviour for direct callers; [SyncEngine] passes
   /// [TrustedTimeConfig.ntsBurstCount].
   ///
   /// [debugQueryOverride] replaces the `client.query` call for tests
@@ -157,17 +161,19 @@ final class NtsSource implements TimeSource, Warmable {
     int burstCount = 1,
     NtsBurstReducer reducer = lowestRttReducer,
     @visibleForTesting Future<nts.NtsTimeSample> Function()? debugQueryOverride,
-  }) : assert(
-         burstCount >= 1 && burstCount <= 4,
-         'burstCount must be in 1..4 (NTS cookie-jar economics)',
-       ),
-       _spec = nts.NtsServerSpec(host: _host, port: port),
+  }) : _spec = nts.NtsServerSpec(host: _host, port: port),
        _dnsConcurrencyCap = dnsConcurrencyCap,
        _timeoutMs = maxLatency.inMilliseconds,
        _trustMode = trustMode,
        _customRoots = customRoots,
        _onStratumObserved = onStratumObserved,
-       _burstCount = burstCount,
+       _burstCount = RangeError.checkValueInInterval(
+         burstCount,
+         1,
+         4,
+         'burstCount',
+         'must be in 1..4 (NTS cookie-jar economics)',
+       ),
        _reducer = reducer,
        _debugQueryOverride = debugQueryOverride;
 

@@ -372,8 +372,12 @@ void main() {
     });
 
     test('burstCount outside 1..4 is rejected', () {
-      expect(() => NtsSource('h', burstCount: 0), throwsAssertionError);
-      expect(() => NtsSource('h', burstCount: 5), throwsAssertionError);
+      // RangeError (not assert), so the check survives release builds:
+      // TrustedTimeConfig's const constructor can only assert, making
+      // this the deterministic production failure point for an invalid
+      // ntsBurstCount.
+      expect(() => NtsSource('h', burstCount: 0), throwsRangeError);
+      expect(() => NtsSource('h', burstCount: 5), throwsRangeError);
     });
 
     test('warm() is a no-op under debugQueryOverride', () async {

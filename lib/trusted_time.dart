@@ -700,7 +700,11 @@ abstract final class TrustedTime {
       );
       // The hook contract ("onResult observes every outcome") holds under
       // the mock too, so host code exercised in tests behaves as it will
-      // in production.
+      // in production — including the binding guarantee: the production
+      // path below initializes bindings before the hook runs, so a hook
+      // that touches MethodChannels (background-fire logging/telemetry)
+      // must see the same environment under the override.
+      WidgetsFlutterBinding.ensureInitialized();
       await _invokeOnResult(onResult, synthetic);
       return synthetic;
     }

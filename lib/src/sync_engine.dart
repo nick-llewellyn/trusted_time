@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
-import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+import 'package:flutter/foundation.dart'
+    show debugPrint, kDebugMode, visibleForTesting;
 import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
@@ -33,6 +34,17 @@ import 'infra/consensus_cache.dart';
 /// 3. **Mathematical Outlier Filtering**: Uses median-based guards to neutralize
 ///    malicious or jittery time authorities.
 final class SyncEngine {
+  /// Upper bound on any await of [Warmable.warm] inside this engine.
+  ///
+  /// warm() futures are memoized and not cancellable, so a timed-out
+  /// await abandons the wait without aborting the handshake — the same
+  /// future is re-joined by getTime()'s JIT warm, where the per-query
+  /// maxLatency bound applies. Used by [sync]'s global warming barrier
+  /// and [validate]'s Phase A, so a hung handshake can never stall a
+  /// cycle (or a headless OS budget) beyond this cap.
+  @visibleForTesting
+  static const warmBarrierCap = Duration(seconds: 10);
+
   /// Documented.
   SyncEngine({
     required TrustedTimeConfig config,
@@ -287,10 +299,19 @@ final class SyncEngine {
 
     // Phase A (warm) runs outside the query budget, exactly as in
     // sync(); a warm failure is non-fatal and the cold getTime() still
-    // runs under the maxLatency budget in Phase B.
+    // runs under the maxLatency budget in Phase B. Unlike sync(), no
+    // outer safety timeout wraps this method, so the warm await must
+    // carry its own bound — without it, a hung handshake would stall
+    // validateFreshness() indefinitely. The cap matches sync()'s
+    // warming-barrier cap; on timeout the probe proceeds and Phase B's
+    // per-query maxLatency bound covers the still-cold source (getTime's
+    // JIT warm await re-joins the same memoized warm future inside that
+    // budget).
     if (source is Warmable) {
       try {
-        await Future.sync(() => (source as Warmable).warm());
+        await Future.sync(
+          () => (source as Warmable).warm(),
+        ).timeout(warmBarrierCap);
       } catch (e) {
         // Best-effort, mirroring sync()'s warm-phase handling: surface
         // the failure to the observer so a Warmable that violates the
@@ -599,14 +620,11 @@ final class SyncEngine {
       // normalization shifts the consensus must absorb. The barrier is
       // a completion gate, not a fixed delay: when handshakes are fast
       // (or already memoized, as after initialize()'s explicit
-      // warmAllSources()) it costs nothing. The 10 s cap only bounds a
-      // pathological hang — warmAllSources() already swallows
+      // warmAllSources()) it costs nothing. The warmBarrierCap only
+      // bounds a pathological hang — warmAllSources() already swallows
       // per-source failures, so on timeout the cycle proceeds and the
       // per-source Phase A warm below covers any laggard.
-      await warmAllSources().timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {},
-      );
+      await warmAllSources().timeout(warmBarrierCap, onTimeout: () {});
 
       // 3. Launch racing queries.
       //
