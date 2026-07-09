@@ -216,6 +216,11 @@ final class IntegrityMonitor {
       // session-relative, so the inequality alone is sufficient there.
       return (rebooted: uptimeRegressed, currentUptimeMs: currentUptime);
     }
+    if (uptimeRegressed) {
+      // Uptime regression is conclusive on its own — the monotonic
+      // counter only resets at boot — so skip the identity IPC call.
+      return (rebooted: true, currentUptimeMs: currentUptime);
+    }
     final currentBootId = await _clock.getBootId();
     final identityMismatch =
         currentBootId == null ||
