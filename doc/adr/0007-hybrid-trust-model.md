@@ -372,14 +372,15 @@ immediately" — is served by three signals that all shipped:
 - `SyncMetrics.confidenceBreakdown['tier1Quorum']` — the fraction of
   the configured source pool that contributed a `verified`
   participant to the published consensus. It reads `0.0` when no
-  verified sample made it into the consensus winning set (whether
-  because Tier 1 collected nothing usable or because every verified
-  sample was excluded from the reduction), and can be positive on a
-  degraded cycle when verified samples participated in the fallback
-  reduction without forming a truth box. It is a per-cycle health
-  gauge for the verified tier's presence in the published consensus,
-  to be read alongside the `degradedTier` event rather than as a
-  degradation discriminant on its own.
+  verified sample landed in the consensus winning set — i.e. none
+  contained the consensus window's midpoint, the engine's structural
+  anchor, whether because Tier 1 collected nothing usable or because
+  the verified samples' intervals missed it — and can be positive on
+  a degraded cycle when verified samples did contain the fallback
+  window's midpoint without having formed a truth box. It is a
+  per-cycle health gauge for the verified tier's presence in the
+  published consensus, to be read alongside the `degradedTier` event
+  rather than as a degradation discriminant on its own.
 
 An attacker who suppresses NTS (blocking TCP/4460, breaking the
 NTS-KE handshake) can therefore still produce a high-confidence
