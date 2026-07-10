@@ -685,6 +685,61 @@ void main() {
       },
     );
 
+    test(
+      'is authLevel-agnostic: a none probe re-validates a verified anchor',
+      () async {
+        // Pins the deliberate posture for trusted_time-wba: freshness is
+        // an *operational* claim (the clock has not drifted), not an
+        // *authentication* claim — the anchor's integrity guarantees come
+        // entirely from the establish cycle, so validateFreshness() does
+        // not compare the probe sample's authLevel against the anchor's.
+        //
+        // As shipped, the mixed case cannot arise: bundledOnly cannot
+        // produce `none` samples and platformOnly cannot produce
+        // `verified` anchors. This test constructs the mix directly so
+        // that if a future trust mode (or a probe-side authLevel guard)
+        // changes the posture, it fails and forces the decision to be
+        // re-asked rather than drifting silently.
+        final box = _MidpointBox(
+          DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
+        );
+        final a = _AuthBoxedSource(
+          box,
+          id: 'nts:a',
+          groupId: 'g1',
+          authLevel: NtsAuthLevel.verified,
+        );
+        final b = _AuthBoxedSource(
+          box,
+          id: 'nts:b',
+          groupId: 'g2',
+          authLevel: NtsAuthLevel.verified,
+        );
+        await TrustedTime.initialize(
+          config: TrustedTimeConfig(
+            ntpServers: const [],
+            httpsSources: const [],
+            ntsServers: const [],
+            persistState: false,
+            earlyExit: false,
+            additionalSources: [a, b],
+          ),
+        );
+        addTearDown(TrustedTimeImpl.instance.dispose);
+
+        // The establish cycle built a Tier 1 (verified) anchor.
+        expect(TrustedTime.isTrusted, isTrue);
+        expect(TrustedTime.authLevel, NtsAuthLevel.verified);
+
+        // Downgrade both sources so the probe sample reports `none`,
+        // then confirm the probe still re-validates the verified anchor.
+        a.authLevel = NtsAuthLevel.none;
+        b.authLevel = NtsAuthLevel.none;
+        expect(await TrustedTime.validateFreshness(), isTrue);
+        expect(TrustedTime.authLevel, NtsAuthLevel.verified);
+      },
+    );
+
     test('returns false when the NTS probe disagrees beyond the '
         'uncertainty window', () async {
       final box = _MidpointBox(
@@ -1148,6 +1203,37 @@ class _FailingSource implements TimeSource {
 
   @override
   Future<TimeSample> getTime() async => throw Exception('unreachable host');
+}
+
+/// A [_BoxedSource] variant with a mutable [authLevel], so a test can
+/// establish a verified anchor and then downgrade the same sources for
+/// the freshness probe (the trusted_time-wba posture test).
+class _AuthBoxedSource implements TimeSource {
+  _AuthBoxedSource(
+    this._box, {
+    required this.id,
+    required this.groupId,
+    required this.authLevel,
+  });
+
+  final _MidpointBox _box;
+  @override
+  final String id;
+  @override
+  final String groupId;
+  NtsAuthLevel authLevel;
+  static const int halfWidthMs = 10;
+
+  @override
+  Future<TimeSample> getTime() async => TimeSample(
+    interval: TimeInterval(
+      startMs: _box.midpointMs - halfWidthMs,
+      endMs: _box.midpointMs + halfWidthMs,
+    ),
+    sourceId: id,
+    groupId: groupId,
+    authLevel: authLevel,
+  );
 }
 
 /// A [TimeSource] that reports an interval centred on a [_MidpointBox]

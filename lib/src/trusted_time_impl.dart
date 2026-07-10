@@ -289,6 +289,20 @@ final class TrustedTimeImpl {
   /// be performed at all: no anchor has been established, no NTS source
   /// is available, or every query in the burst failed (see
   /// [SyncEngine.validate]).
+  ///
+  /// The probe is deliberately **authLevel-agnostic**: the sample's
+  /// [TimeSample.authLevel] is not compared against the anchor's.
+  /// Freshness is an operational claim (the clock has not drifted), not
+  /// an authentication claim — the anchor's integrity guarantees come
+  /// entirely from the establish cycle's tiered consensus. As shipped,
+  /// the mixed case cannot arise anyway: `bundledOnly` (the default)
+  /// cannot produce [NtsAuthLevel.none] samples, and `platformOnly`
+  /// ([TrustedTimeConfig.usePlatformTrust]) cannot produce
+  /// [NtsAuthLevel.verified] anchors, so the probe is never weaker than
+  /// the anchor it checks. A guard here would also make this method
+  /// unusable under `usePlatformTrust: true`. If a future trust mode
+  /// makes mixed auth levels reachable, revisit this posture (pinned by
+  /// the authLevel-agnostic test in `trusted_time_impl_test.dart`).
   Future<bool> validateFreshness() async {
     // If a full establish cycle is already running, a separate probe
     // would only contend with it for the same NTS client. Defer to the
