@@ -110,13 +110,18 @@ void TrustedTimePlugin::HandleMethodCall(
     // wall-clock minus uptime, it cannot be forged by manipulating the
     // system clock. Null on read failure — the Dart side fails closed by
     // treating anchors without a matching boot ID as rebooted.
+    // RRF_SUBKEY_WOW6464KEY pins the read to the 64-bit registry view so a
+    // 32-bit build on 64-bit Windows sees the same kernel counter. HKLM\SYSTEM
+    // sits in the shared (non-redirected) portion of the registry, but the
+    // explicit flag removes any dependence on the WOW64 redirection table.
     DWORD boot_id = 0;
     DWORD size = sizeof(boot_id);
     LSTATUS status = RegGetValueW(
         HKEY_LOCAL_MACHINE,
         L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory "
         L"Management\\PrefetchParameters",
-        L"BootId", RRF_RT_REG_DWORD, nullptr, &boot_id, &size);
+        L"BootId", RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, nullptr, &boot_id,
+        &size);
     if (status == ERROR_SUCCESS) {
       result->Success(
           flutter::EncodableValue("bootid:" + std::to_string(boot_id)));
