@@ -334,7 +334,8 @@ fall back to lower-tier Marzullo **and cap `confidence` at
 `ConfidenceLevel.low`**. The shipped implementation (PR #48)
 delivered the fallback and the `degradedTier` event but not the cap:
 the degraded branch of `MarzulloEngine.resolve()` pins
-`authLevel: none` and sets `ConsensusResult.degradedTier = true`,
+`authLevel: NtsAuthLevel.none` and sets
+`ConsensusResult.degradedTier = true`,
 then publishes whatever confidence the single-tier reduction graded
 from depth and diversity. This postscript resolves the divergence in
 favour of the implementation — the cap is deliberately dropped, not
@@ -361,15 +362,20 @@ The cap's original purpose — "callers who require high-confidence
 anchors for security-critical paths see the degradation
 immediately" — is served by three signals that all shipped:
 
-- `TrustAnchor.authLevel == none` on every degraded anchor, which
-  makes `getTime(requireSecure: true)` **fail closed** regardless of
-  confidence. `requireSecure` is the contract's security gate;
-  `minConfidence` is a quality gate, and the contract directs
-  security-sensitive callers to the former.
+- `TrustAnchor.authLevel == NtsAuthLevel.none` on every degraded
+  anchor, which makes `getTime(requireSecure: true)` **fail closed**
+  regardless of confidence. `requireSecure` is the contract's
+  security gate; `minConfidence` is a quality gate, and the contract
+  directs security-sensitive callers to the former.
 - The `degradedTier` `IntegrityEvent` on `onIntegrityLost`, emitted
   at the cycle that lost its truth box.
-- `SyncMetrics.confidenceBreakdown['tier1Quorum'] == 0.0` on every
-  degraded cycle.
+- `SyncMetrics.confidenceBreakdown['tier1Quorum']` — the fraction of
+  the configured source pool that contributed a `verified`
+  participant to the published consensus. On a degraded cycle no
+  truth box formed, so this sits below the verified quorum floor
+  (typically `0.0`; a stray verified sample that failed to form a
+  truth box can still participate in the fallback reduction and
+  leave it slightly positive).
 
 An attacker who suppresses NTS (blocking TCP/4460, breaking the
 NTS-KE handshake) can therefore still produce a high-confidence
