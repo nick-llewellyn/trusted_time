@@ -16,10 +16,14 @@ import 'package:trusted_time/src/sources/nts_auth_level.dart';
 import 'package:trusted_time/src/sync_engine.dart';
 
 class _MockClock implements MonotonicClock {
+  _MockClock({this.bootId = 'boot-test'});
+
+  final String? bootId;
+
   @override
   Future<int> uptimeMs() async => 100000;
   @override
-  Future<String?> getBootId() async => 'boot-test';
+  Future<String?> getBootId() async => bootId;
 }
 
 /// A [TimeSource] whose sample interval, auth level, and trust backend are
@@ -145,6 +149,7 @@ SyncEngine _engineFor(
   required _RecordingObserver observer,
   required List<IntegrityEvent> events,
   int? validateBurstCount,
+  MonotonicClock? clock,
 }) {
   return SyncEngine(
     config:
@@ -161,7 +166,7 @@ SyncEngine _engineFor(
           additionalSources: sources,
           validateBurstCount: validateBurstCount,
         ),
-    clock: _MockClock(),
+    clock: clock ?? _MockClock(),
     observer: observer,
     onIntegrityEvent: events.add,
   );
@@ -329,6 +334,51 @@ void main() {
         containsAll(<String>['nts:x', 'ntp:y', 'ntp:z']),
       );
       expect(events, isEmpty);
+    });
+  });
+
+  group('SyncEngine anchor boot-ID stamping (R5)', () {
+    // The warm-restore reboot check compares a persisted anchor's bootId
+    // against the device's current boot ID, so the engine must stamp the
+    // clock's identity onto every freshly synced anchor. A regression
+    // here would silently produce null-bootId anchors: everything still
+    // passes, but every warm restore fails closed and forces a needless
+    // network sync.
+    test('sync() stamps the clock boot ID onto the anchor', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      final engine = _engineFor(
+        [
+          _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+          _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+        ],
+        observer: observer,
+        events: events,
+        clock: _MockClock(bootId: 'boot-uuid-42'),
+      );
+
+      final anchor = await engine.sync();
+
+      expect(anchor.bootId, 'boot-uuid-42');
+    });
+
+    test('sync() leaves the anchor bootId null when the platform provides '
+        'none (fails closed on later warm restore)', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      final engine = _engineFor(
+        [
+          _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+          _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+        ],
+        observer: observer,
+        events: events,
+        clock: _MockClock(bootId: null),
+      );
+
+      final anchor = await engine.sync();
+
+      expect(anchor.bootId, isNull);
     });
   });
 
