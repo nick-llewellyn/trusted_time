@@ -228,11 +228,22 @@ so Δuptime and Δwall agree), and the runtime `deviceRebooted` event
 never fired because the process was dead across the reboot.
 
 **Mitigation (adopted):** `TrustAnchor` records the boot-session
-identifier at capture, and `checkRebootOnWarmStart` compares identity —
-`rebooted = anchor.bootId != currentBootId` — rather than relying on
-the inequality. Anchors without a boot ID (pre-upgrade persistence, or
-a platform that cannot supply one) fail closed as rebooted. The uptime
-subtraction is retained only for computing `elapsedSinceAnchor` on the
+identifier at capture, and `checkRebootOnWarmStart` compares identity
+rather than relying on the inequality alone. The full verdict is:
+
+```
+rebooted = uptimeRegressed
+        || anchor.bootId == null       // fail closed: pre-upgrade anchor
+        || currentBootId == null       // fail closed: platform can't supply one
+        || anchor.bootId != currentBootId
+```
+
+A missing boot ID on *either* side counts as a reboot — an anchor
+without one (pre-upgrade persistence) and a platform that cannot
+supply one both fail closed rather than comparing null to null and
+passing. The uptime inequality is kept as a first-line tripwire
+(conclusive on its own, and checked before the identity fetch), and
+the uptime subtraction computes `elapsedSinceAnchor` on the
 confirmed-same-boot path. Residual exposure is reduced to an attacker
 who can forge the boot ID itself, which requires kernel-level control
 (R4.2).
