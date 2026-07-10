@@ -371,11 +371,12 @@ immediately" — is served by three signals that all shipped:
   at the cycle that lost its truth box.
 - `SyncMetrics.confidenceBreakdown['tier1Quorum']` — the fraction of
   the configured source pool that contributed a `verified`
-  participant to the published consensus. On a degraded cycle no
-  truth box formed, so this sits below the verified quorum floor
-  (typically `0.0`; a stray verified sample that failed to form a
-  truth box can still participate in the fallback reduction and
-  leave it slightly positive).
+  participant to the published consensus. It reads `0.0` when Tier 1
+  produced no usable samples, and can be positive on a degraded
+  cycle whose verified samples were present but too divergent to
+  form a truth box. It is a per-cycle health gauge for the verified
+  tier, to be read alongside the `degradedTier` event rather than as
+  a degradation discriminant on its own.
 
 An attacker who suppresses NTS (blocking TCP/4460, breaking the
 NTS-KE handshake) can therefore still produce a high-confidence
