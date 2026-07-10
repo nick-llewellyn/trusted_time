@@ -7,6 +7,16 @@ import 'package:flutter/services.dart';
 abstract interface class MonotonicClock {
   /// Documented.
   Future<int> uptimeMs();
+
+  /// An opaque identifier for the current boot session, or `null` when
+  /// the platform cannot provide one.
+  ///
+  /// Two calls within the same boot session return the same value; a
+  /// reboot produces a different value. Unlike [uptimeMs] — which only
+  /// reveals that the counter reset — boot identity survives a wait-out
+  /// attack, where the device is rebooted and left powered on until the
+  /// new uptime exceeds a persisted anchor's recorded uptime.
+  Future<String?> getBootId();
 }
 
 /// Production implementation using native OS kernel timers via
@@ -21,6 +31,19 @@ final class PlatformMonotonicClock implements MonotonicClock {
       throw StateError('OS kernel returned null uptime baseline.');
     }
     return result;
+  }
+
+  @override
+  Future<String?> getBootId() async {
+    try {
+      return await _channel.invokeMethod<String>('getBootId');
+    } on PlatformException {
+      // Platform has no boot-session concept (or predates the method).
+      // A null boot ID makes anchors fail closed on warm restore.
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
   }
 }
 

@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <sstream>
+#include <string>
 
 // Custom window message used to marshal work back onto the UI thread.
 // The lParam carries a heap-allocated std::function<void()>* that the handler
@@ -103,6 +104,33 @@ void TrustedTimePlugin::HandleMethodCall(
     // requires Windows 10 build 1809, so no version guard is needed.
     int64_t uptimeMs = static_cast<int64_t>(GetTickCount64());
     result->Success(flutter::EncodableValue(uptimeMs));
+  } else if (method_call.method_name() == "getBootId") {
+    // The kernel increments this counter on every boot (the same value the
+    // Event Log stamps into records). Unlike a boot instant derived from
+    // wall-clock minus uptime, it cannot be forged by manipulating the
+    // system clock. Null on read failure — the Dart side fails closed by
+    // treating anchors without a matching boot ID as rebooted.
+    // RRF_SUBKEY_WOW6464KEY pins the read to the 64-bit registry view so a
+    // 32-bit build on 64-bit Windows sees the same kernel counter. HKLM\SYSTEM
+    // sits in the shared (non-redirected) portion of the registry, but the
+    // explicit flag removes any dependence on the WOW64 redirection table.
+    DWORD boot_id = 0;
+    DWORD size = sizeof(boot_id);
+    LSTATUS status = RegGetValueW(
+        HKEY_LOCAL_MACHINE,
+        L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory "
+        L"Management\\PrefetchParameters",
+        L"BootId", RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, nullptr, &boot_id,
+        &size);
+    if (status == ERROR_SUCCESS) {
+      result->Success(
+          flutter::EncodableValue("bootid:" + std::to_string(boot_id)));
+    } else {
+      // Explicit null EncodableValue: the zero-arg Success() overload is
+      // not consistently available across Flutter Windows wrapper
+      // versions.
+      result->Success(flutter::EncodableValue());
+    }
   } else if (method_call.method_name() == "enableBackgroundSync") {
     // Background sync is stubbed on Windows. The Dart layer already provides
     // a Timer.periodic fallback for desktop platforms where the app runs

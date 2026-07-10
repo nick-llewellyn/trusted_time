@@ -706,6 +706,7 @@ final class TrustAnchor {
     required this.uncertaintyMs,
     this.authLevel = NtsAuthLevel.none,
     this.confidence = ConfidenceLevel.low,
+    this.bootId,
   });
 
   /// Deserializes a [TrustAnchor] from a JSON map with rigorous bounds checking.
@@ -751,6 +752,7 @@ final class TrustAnchor {
         uncertaintyMs: json['uncertaintyMs'] as int,
         authLevel: authLevel,
         confidence: confidence,
+        bootId: json['bootId'] as String?,
       );
     } catch (e) {
       throw TrustedTimePersistenceException('Malformed TrustAnchor JSON: $e');
@@ -774,6 +776,16 @@ final class TrustAnchor {
 
   /// The qualitative grade of this anchor (none, low, medium, or high).
   final ConfidenceLevel confidence;
+
+  /// Opaque identifier of the boot session this anchor was captured in,
+  /// or `null` when the platform provides none.
+  ///
+  /// On warm restore the anchor is only honoured when this matches the
+  /// device's current boot ID — identity comparison, not the uptime
+  /// inequality, is what defeats the wait-out attack (reboot, then leave
+  /// the device on until uptime exceeds the recorded value). Anchors
+  /// without a boot ID fail closed: they are treated as rebooted.
+  final String? bootId;
 
   /// Alias for [networkUtcMs].
   int get trustedUtcMs => networkUtcMs;
@@ -800,6 +812,7 @@ final class TrustAnchor {
     'uncertaintyMs': uncertaintyMs,
     'authLevel': authLevel.name,
     'confidence': confidence.index,
+    if (bootId != null) 'bootId': bootId,
   };
 }
 

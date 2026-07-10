@@ -1145,6 +1145,8 @@ class _FakeMonotonicClock implements MonotonicClock {
   final int value;
   @override
   Future<int> uptimeMs() async => value;
+  @override
+  Future<String?> getBootId() async => 'boot-test';
 }
 
 /// A deterministic [TimeSource] centred on a fixed UTC instant with a

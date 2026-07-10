@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
@@ -948,6 +950,117 @@ void main() {
       expect(impl.debugValidateCycleCount, 2);
       expect(counter.count, 1);
       expect(TrustedTime.isTrusted, isTrue);
+    });
+  });
+
+  group('warm-restore boot-ID rejection (R5)', () {
+    // End-to-end coverage of the IntegrityMonitor/TrustedTimeImpl seam:
+    // initialize() must consume checkRebootOnWarmStart's verdict and
+    // discard a persisted anchor whose boot identity does not match the
+    // device's current boot session, forcing a fresh network sync
+    // instead of a warm restore. The unit seams on both sides are
+    // covered elsewhere; this pins the caller's boolean gate.
+    //
+    // The persisted anchor is served through the mocked secure-storage
+    // channel because init() constructs the real AnchorStore, and the
+    // current boot ID through the mocked monotonic channel. The anchor
+    // is dated 2023 while the fake network sources answer 2024, so the
+    // restore-vs-resync outcome is observable through TrustedTime.now()
+    // as well as through whether any source was queried at all.
+    const anchorKey = 'tt_anchor_v2';
+
+    // Wait-out attack shape: the anchor's recorded uptime (1000ms) is
+    // far below the mocked current uptime (500000ms), so the legacy
+    // inequality alone would honour the anchor — only boot identity
+    // can reveal the reboot.
+    final persistedUtc = DateTime.utc(2023, 1, 1).millisecondsSinceEpoch;
+    final persistedAnchorJson = jsonEncode(
+      TrustAnchor(
+        networkUtcMs: persistedUtc,
+        uptimeMs: 1000,
+        wallMs: persistedUtc,
+        uncertaintyMs: 10,
+        bootId: 'boot-A',
+      ).toJson(),
+    );
+
+    void installChannelMocks({required String currentBootId}) {
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(storageChannel, (call) async {
+        if (call.method == 'read') {
+          final key = (call.arguments as Map)['key'] as String?;
+          if (key == anchorKey) return persistedAnchorJson;
+        }
+        return null;
+      });
+      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+        if (call.method == 'getUptimeMs') return 500000;
+        if (call.method == 'getBootId') return currentBootId;
+        return null;
+      });
+    }
+
+    tearDown(() {
+      // Restore the file-level default handlers so sibling groups keep
+      // the null-storage / fixed-uptime behaviour they were written
+      // against.
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(storageChannel, (call) async => null);
+      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+        if (call.method == 'getUptimeMs') return 1000;
+        return null;
+      });
+    });
+
+    Future<_ProbeCounter> initWithPersistedAnchor() async {
+      final counter = _ProbeCounter();
+      final box = _MidpointBox(
+        DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
+      );
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          earlyExit: false,
+          additionalSources: [
+            _CountingSource(box, id: 'ntp:a', groupId: 'g1', counter: counter),
+            _CountingSource(box, id: 'ntp:b', groupId: 'g2', counter: counter),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      return counter;
+    }
+
+    test('boot-ID mismatch discards the persisted anchor and forces a '
+        'fresh network sync', () async {
+      installChannelMocks(currentBootId: 'boot-B');
+
+      final counter = await initWithPersistedAnchor();
+
+      expect(TrustedTime.isTrusted, isTrue);
+      // The rejected restore fell through to _performSync: the network
+      // sources were queried and the resulting anchor reflects their
+      // 2024 consensus, not the 2023 anchor persisted under boot-A.
+      expect(counter.count, greaterThan(0));
+      expect(TrustedTime.now().year, 2024);
+    });
+
+    test('matching boot ID warm-restores the persisted anchor without '
+        'touching the network', () async {
+      // Control: identical setup except the identity matches, proving
+      // the mismatch test's fresh sync is attributable to the boot-ID
+      // gate rather than to some other rejection of the fixture.
+      installChannelMocks(currentBootId: 'boot-A');
+
+      final counter = await initWithPersistedAnchor();
+
+      expect(TrustedTime.isTrusted, isTrue);
+      expect(counter.count, 0);
+      expect(TrustedTime.now().year, 2023);
     });
   });
 }
