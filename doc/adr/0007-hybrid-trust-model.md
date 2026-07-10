@@ -326,3 +326,72 @@ The best-effort contract and the graceful fallback are retained
 exactly as decided; only the lookup substrate moved from the network
 to a bundled asset, and the fallback target moved from the host
 heuristic to the shared sentinel.
+
+## Postscript: the degraded-cycle confidence cap is dropped (2026-07-10)
+
+Open question 2 above promised that a Tier 1 quorum failure would
+fall back to lower-tier Marzullo **and cap `confidence` at
+`ConfidenceLevel.low`**. The shipped implementation (PR #48)
+delivered the fallback and the `degradedTier` event but not the cap:
+the degraded branch of `MarzulloEngine.resolve()` pins
+`authLevel: NtsAuthLevel.none` and sets
+`ConsensusResult.degradedTier = true`,
+then publishes whatever confidence the single-tier reduction graded
+from depth and diversity. This postscript resolves the divergence in
+favour of the implementation — the cap is deliberately dropped, not
+owed.
+
+### Why the cap is wrong under the secure-time contract
+
+The cap predates the secure-time contract
+(`doc/specification/secure-time-contract.md`), which establishes
+`ConfidenceLevel` and `NtsAuthLevel` as **orthogonal axes**:
+confidence measures consensus *quality* (population depth, provider
+diversity, variance) and is explicitly not a trust statement; the
+auth level measures the trust *path*. Under that doctrine a degraded
+cycle with many agreeing, diverse NTP/HTTPS sources genuinely has
+high statistical agreement, and the honest grade for it is whatever
+depth and diversity earned. Capping would fold the trust axis into
+the quality axis, making `low` ambiguous between "thin consensus"
+and "healthy consensus, degraded trust" — destroying telemetry
+information without adding protection.
+
+### The integrity story the cap was defending is carried elsewhere
+
+The cap's original purpose — "callers who require high-confidence
+anchors for security-critical paths see the degradation
+immediately" — is served by three signals that all shipped:
+
+- `TrustAnchor.authLevel == NtsAuthLevel.none` on every degraded
+  anchor, which makes `getTime(requireSecure: true)` **fail closed**
+  regardless of confidence. `requireSecure` is the contract's
+  security gate; `minConfidence` is a quality gate, and the contract
+  directs security-sensitive callers to the former.
+- The `degradedTier` `IntegrityEvent` on `onIntegrityLost`, emitted
+  at the cycle that lost its truth box.
+- `SyncMetrics.confidenceBreakdown['tier1Quorum']` — the fraction of
+  the configured source pool that contributed a `verified`
+  participant to the published consensus. It reads `0.0` when no
+  verified sample landed in the consensus winning set — i.e. none
+  contained the consensus window's midpoint, the engine's structural
+  anchor, whether because Tier 1 collected nothing usable or because
+  the verified samples' intervals missed it — and can be positive on
+  a degraded cycle when verified samples did contain the fallback
+  window's midpoint without having formed a truth box. It is a
+  per-cycle health gauge for the verified tier's presence in the
+  published consensus, to be read alongside the `degradedTier` event
+  rather than as a degradation discriminant on its own.
+
+An attacker who suppresses NTS (blocking TCP/4460, breaking the
+NTS-KE handshake) can therefore still produce a high-confidence
+degraded anchor — but cannot produce a `verified` one, which is the
+axis the threat model defends. `requireSecure: true` is immune to
+the suppression by construction.
+
+### Consequence delta
+
+The "Positive" consequence above claiming callers "distinguish
+authenticated vs degraded anchors via `confidenceScore`" is
+superseded: the discriminant is `TrustAnchor.authLevel` (and the
+`degradedTier` event), never the confidence surface. Decision
+tracked as `trusted_time-r9h`.

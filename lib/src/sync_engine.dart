@@ -878,9 +878,14 @@ final class SyncEngine {
             'diversity': result.groupCount / 2.0,
             'stability': 1.0,
             // Fraction of the configured source pool that contributed a
-            // Tier 1 (verified) sample to the published consensus. 0.0 on a
-            // degraded cycle (no truth box formed); positive when a verified
-            // truth box anchored the result.
+            // Tier 1 (verified) sample to the published consensus winning
+            // set (participants containing the consensus window's
+            // midpoint, the engine's structural anchor). 0.0 when no
+            // verified sample contained that midpoint; can be
+            // low-but-positive on a degraded cycle when verified samples
+            // contained the fallback window's midpoint without having
+            // formed a truth box. Read alongside degradedTier, not as a
+            // degradation discriminant on its own.
             'tier1Quorum': _sources.isEmpty
                 ? 0.0
                 : result.participants
