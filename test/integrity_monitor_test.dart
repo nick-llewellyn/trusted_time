@@ -75,6 +75,9 @@ void main() {
         final result = await monitor.checkRebootOnWarmStart(anchor);
         expect(result.rebooted, isTrue);
         expect(result.currentUptimeMs, 500);
+        // Uptime regression alone decides the verdict; the boot-ID
+        // IPC round-trip is skipped entirely.
+        expect(clock.bootIdCalls, 0);
       },
     );
 
@@ -91,6 +94,9 @@ void main() {
       final result = await monitor.checkRebootOnWarmStart(anchor);
       expect(result.rebooted, isFalse);
       expect(result.currentUptimeMs, 20000);
+      // Exactly one identity fetch: the happy path costs a single
+      // boot-ID IPC call, no more.
+      expect(clock.bootIdCalls, 1);
     });
 
     test(
