@@ -879,11 +879,11 @@ final class SyncEngine {
             'stability': 1.0,
             // Fraction of the configured source pool that contributed a
             // Tier 1 (verified) sample to the published consensus. 0.0 when
-            // Tier 1 produced no usable samples; can be low-but-positive on
-            // a degraded cycle whose verified samples were too divergent to
-            // form a truth box (they may still participate in the fallback
-            // reduction). Read alongside degradedTier, not as a degradation
-            // discriminant on its own.
+            // no verified sample made it into the consensus winning set;
+            // can be low-but-positive on a degraded cycle when verified
+            // samples participated in the fallback reduction without
+            // forming a truth box. Read alongside degradedTier, not as a
+            // degradation discriminant on its own.
             'tier1Quorum': _sources.isEmpty
                 ? 0.0
                 : result.participants
