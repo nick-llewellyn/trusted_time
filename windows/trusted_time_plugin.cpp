@@ -121,7 +121,10 @@ void TrustedTimePlugin::HandleMethodCall(
       result->Success(
           flutter::EncodableValue("bootid:" + std::to_string(boot_id)));
     } else {
-      result->Success();
+      // Explicit null EncodableValue: the zero-arg Success() overload is
+      // not consistently available across Flutter Windows wrapper
+      // versions.
+      result->Success(flutter::EncodableValue());
     }
   } else if (method_call.method_name() == "enableBackgroundSync") {
     // Background sync is stubbed on Windows. The Dart layer already provides

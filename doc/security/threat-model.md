@@ -162,8 +162,10 @@ The persisted payload is small and fully enumerable — the anchor JSON
   on either side — is treated as a reboot: the anchor is discarded and
   a fresh network sync is required (fail closed). The legacy uptime
   inequality (`current < anchor.uptimeMs`) is retained as a secondary
-  tripwire. Web has no boot concept; its monotonic source is
-  session-relative, so anchors cannot survive a page load there.
+  tripwire. Web has no boot concept and its monotonic source
+  (`performance.now()`) is session-relative, so no persisted anchor can
+  be validated there — warm restore on web fails closed unconditionally
+  and always forces a fresh network sync.
 - **Adaptive drift monitor.** While running, the `IntegrityMonitor`
   compares Δuptime against Δwall-clock (baseline every 5 min,
   tightening to 30 s after an anomaly). Divergence beyond 5 s emits

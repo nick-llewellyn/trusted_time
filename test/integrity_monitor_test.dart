@@ -9,10 +9,14 @@ import 'package:trusted_time/src/monotonic_clock.dart';
 class FakeMonotonicClock implements MonotonicClock {
   int value = 1000;
   String? bootId = 'boot-A';
+  int bootIdCalls = 0;
   @override
   Future<int> uptimeMs() async => value;
   @override
-  Future<String?> getBootId() async => bootId;
+  Future<String?> getBootId() async {
+    bootIdCalls++;
+    return bootId;
+  }
 }
 
 /// A clock whose [uptimeMs] blocks on [gate] (when set) so a test can
@@ -115,7 +119,10 @@ void main() {
       'checkRebootOnWarmStart fails closed when the anchor has no bootId',
       () async {
         // Anchors persisted before boot-ID binding (or from a platform
-        // that could not supply one) must be treated as rebooted.
+        // that could not supply one) must be treated as rebooted. The
+        // verdict is decided without fetching the current boot ID: a
+        // null anchor identity can never match, so the IPC call is
+        // skipped.
         clock.value = 50000;
         final anchor = TrustAnchor(
           networkUtcMs: DateTime.now().millisecondsSinceEpoch,
@@ -125,6 +132,7 @@ void main() {
         );
         final result = await monitor.checkRebootOnWarmStart(anchor);
         expect(result.rebooted, isTrue);
+        expect(clock.bootIdCalls, 0);
       },
     );
 
