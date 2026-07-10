@@ -157,7 +157,9 @@ The persisted payload is small and fully enumerable — the anchor JSON
   honoured, `checkRebootOnWarmStart` compares the anchor's recorded
   boot-session identifier against the device's current boot ID
   (`/proc/sys/kernel/random/boot_id` on Android/Linux,
-  `kern.bootsessionuuid`/`kern.boottime` on iOS/macOS, the kernel
+  `kern.bootsessionuuid` on iOS/macOS — no `kern.boottime` fallback,
+  since the boot instant is wall-clock-derived and therefore forgeable
+  by a clock-manipulating attacker — and the kernel
   boot counter on Windows). Any mismatch — including a missing boot ID
   on either side — is treated as a reboot: the anchor is discarded and
   a fresh network sync is required (fail closed). The legacy uptime

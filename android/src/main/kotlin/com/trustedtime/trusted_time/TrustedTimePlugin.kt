@@ -57,7 +57,8 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 result.success(
                     try {
                         java.io.File("/proc/sys/kernel/random/boot_id")
-                            .readText().trim().ifEmpty { null }
+                            .readText().trim()
+                            .takeIf { it.isNotEmpty() }
                     } catch (_: Exception) {
                         null
                     }

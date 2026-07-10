@@ -169,11 +169,14 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
 
     /// Identifier for the current boot session, or nil if unavailable.
     ///
-    /// Prefers `kern.bootsessionuuid` (a fresh UUID per boot, present on
-    /// iOS and modern macOS). Falls back to `kern.boottime` — the boot
-    /// instant in epoch seconds/microseconds — which is stable within a
-    /// boot session and differs across reboots. Returning nil makes the
-    /// Dart side fail closed (anchor treated as rebooted).
+    /// Reads `kern.bootsessionuuid` — a fresh UUID the kernel generates
+    /// at every boot, present on all iOS/macOS versions this package
+    /// supports. There is deliberately no `kern.boottime` fallback: on
+    /// XNU the boot instant is derived from the wall clock
+    /// (boottime = now − uptime, recomputed on clock steps), so an
+    /// attacker who controls the clock could forge a matching identity
+    /// after a reboot. Returning nil makes the Dart side fail closed
+    /// (anchor treated as rebooted).
     static func bootSessionId() -> String? {
         var size = 0
         if sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 0 {
@@ -182,12 +185,6 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
                 let uuid = String(cString: buf).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !uuid.isEmpty { return uuid }
             }
-        }
-        var bootTime = timeval()
-        var tvSize = MemoryLayout<timeval>.size
-        var mib: [Int32] = [CTL_KERN, KERN_BOOTTIME]
-        if sysctl(&mib, 2, &bootTime, &tvSize, nil, 0) == 0 {
-            return "boottime:\(bootTime.tv_sec).\(bootTime.tv_usec)"
         }
         return nil
     }
