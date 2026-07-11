@@ -1,5 +1,12 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io' show HttpDate;
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+import 'package:trusted_time/src/sources/time_sources.dart' show HttpsSource;
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
 
@@ -212,4 +219,298 @@ void main() {
       }
     });
   });
+
+  group('requireSecure edge cases (trusted_time-ejv)', () {
+    setUp(TrustedTime.resetOverride);
+    tearDown(TrustedTime.resetOverride);
+
+    Future<void> initWith(
+      List<TimeSource> sources, {
+      bool persistState = false,
+    }) async {
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          httpsSources: const [],
+          ntsServers: const [],
+          persistState: persistState,
+          minimumQuorum: 2,
+          minGroupCount: 1,
+          earlyExit: false,
+          usePlatformTrust: false,
+        ).copyWith(additionalSources: sources),
+      );
+      addTearDown(TrustedTimeImpl.instance.dispose);
+    }
+
+    group('edge 1: stale-but-cached verified anchor (warm restore)', () {
+      // requireSecure gates *authentication*, not freshness: a persisted
+      // verified anchor warm-restored within the same boot session
+      // satisfies requireSecure: true regardless of its age. There is no
+      // freshness window on this path by design — staleness is the
+      // responsibility of confidenceScore / validateFreshness / the
+      // refresh scheduler, per the Secure Time Contract's separation of
+      // authentication and accuracy.
+      final staleUtc = DateTime.utc(2023, 1, 1).millisecondsSinceEpoch;
+      final staleVerifiedAnchorJson = jsonEncode(
+        TrustAnchor(
+          networkUtcMs: staleUtc,
+          uptimeMs: 500,
+          wallMs: staleUtc,
+          uncertaintyMs: 10,
+          authLevel: NtsAuthLevel.verified,
+          bootId: 'boot-A',
+        ).toJson(),
+      );
+
+      setUp(() {
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(storageChannel, (call) async {
+          if (call.method == 'read' &&
+              (call.arguments as Map)['key'] == 'tt_anchor_v2') {
+            return staleVerifiedAnchorJson;
+          }
+          return null;
+        });
+        messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+          if (call.method == 'getUptimeMs') return 1000;
+          if (call.method == 'getBootId') return 'boot-A';
+          return null;
+        });
+      });
+
+      tearDown(() {
+        // Restore the file-level default handlers for sibling groups.
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(
+          storageChannel,
+          (call) async => null,
+        );
+        messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+          if (call.method == 'getUptimeMs') return 1000;
+          return null;
+        });
+      });
+
+      test('an aged verified anchor still satisfies requireSecure: true '
+          '(no freshness window on the authentication gate)', () async {
+        // No sources at all: the warm restore must satisfy the contract
+        // without any network activity.
+        await initWith(const [], persistState: true);
+
+        expect(TrustedTime.isSecure, isTrue);
+        expect(TrustedTime.authLevel, NtsAuthLevel.verified);
+        final t = TrustedTime.getTime(requireSecure: true);
+        // The returned time projects from the stale 2023 anchor,
+        // proving the value came from the cache, not a fresh sync.
+        expect(t.year, 2023);
+      });
+    });
+
+    group('edge 2: only HTTPS-Date sources available', () {
+      test('authenticated transport is not authenticated time: '
+          'requireSecure: true rejects an HTTPS-only anchor', () async {
+        // Real HttpsSource instances backed by an offline MockClient:
+        // transport-level TLS would succeed in production, but HTTPS
+        // provides no application-layer signature over the timestamp,
+        // so samples are unconditionally NtsAuthLevel.none and the
+        // anchor degrades.
+        http.Client dateClient() => MockClient(
+          (request) async => http.Response(
+            '',
+            200,
+            headers: {'date': HttpDate.format(DateTime.now().toUtc())},
+          ),
+        );
+        await initWith([
+          HttpsSource('https://a.example.com/time', client: dateClient()),
+          HttpsSource('https://b.example.org/time', client: dateClient()),
+        ]);
+
+        // Quorum was reached — best-effort time is available...
+        expect(TrustedTime.isTrusted, isTrue);
+        expect(TrustedTime.getTime(), isA<DateTime>());
+        // ...but the anchor is degraded, so the secure path fails closed.
+        expect(TrustedTime.authLevel, NtsAuthLevel.none);
+        expect(TrustedTime.isSecure, isFalse);
+        expect(
+          () => TrustedTime.getTime(requireSecure: true),
+          throwsA(isA<TrustedTimeSecurityException>()),
+        );
+      });
+    });
+
+    group('edge 3: mid-call NTS server flap', () {
+      test('flap to full outage: the retained verified anchor cannot be '
+          'served while trust is invalidated (fails via NotReady)', () async {
+        final nts1 = _FlappableTierSource(
+          id: 'nts:v1',
+          groupId: 'g1',
+          startMs: 1000,
+          endMs: 1020,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: TrustBackend.webpkiRoots,
+        );
+        final nts2 = _FlappableTierSource(
+          id: 'nts:v2',
+          groupId: 'g2',
+          startMs: 1005,
+          endMs: 1025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: TrustBackend.webpkiRoots,
+        );
+        await initWith([nts1, nts2]);
+        expect(TrustedTime.getTime(requireSecure: true), isA<DateTime>());
+
+        // Every NTS server becomes unreachable; the resync cycle fails.
+        nts1.failing = true;
+        nts2.failing = true;
+        await TrustedTime.forceResync();
+
+        // The stale anchor's verified label survives the failed cycle
+        // (isSecure reflects the anchor, not the cycle)...
+        expect(TrustedTime.isSecure, isTrue);
+        // ...but trust was invalidated by forceResync, so the engine
+        // refuses to project time from it. Fail-closed is preserved —
+        // through TrustedTimeNotReadyException at the now() boundary
+        // rather than TrustedTimeSecurityException at the auth gate.
+        expect(TrustedTime.isTrusted, isFalse);
+        expect(
+          () => TrustedTime.getTime(requireSecure: true),
+          throwsA(isA<TrustedTimeNotReadyException>()),
+        );
+      });
+
+      test(
+        'flap with unauthenticated survivors: the degraded replacement '
+        'anchor fails requireSecure (no stale-verified carry-over)',
+        () async {
+          final nts1 = _FlappableTierSource(
+            id: 'nts:v1',
+            groupId: 'g1',
+            startMs: 1000,
+            endMs: 1020,
+            authLevel: NtsAuthLevel.verified,
+            trustBackend: TrustBackend.webpkiRoots,
+          );
+          final nts2 = _FlappableTierSource(
+            id: 'nts:v2',
+            groupId: 'g2',
+            startMs: 1005,
+            endMs: 1025,
+            authLevel: NtsAuthLevel.verified,
+            trustBackend: TrustBackend.webpkiRoots,
+          );
+          await initWith([
+            nts1,
+            nts2,
+            _TierSource(id: 'ntp:a', groupId: 'g3', startMs: 1000, endMs: 1020),
+            _TierSource(id: 'ntp:b', groupId: 'g4', startMs: 1005, endMs: 1025),
+          ]);
+          expect(TrustedTime.getTime(requireSecure: true), isA<DateTime>());
+
+          // NTS flaps; NTP keeps answering, so the next cycle *succeeds*
+          // as a degraded consensus and replaces the verified anchor.
+          nts1.failing = true;
+          nts2.failing = true;
+          await TrustedTime.forceResync();
+
+          expect(TrustedTime.isTrusted, isTrue);
+          expect(TrustedTime.authLevel, NtsAuthLevel.none);
+          expect(
+            () => TrustedTime.getTime(requireSecure: true),
+            throwsA(isA<TrustedTimeSecurityException>()),
+          );
+          // Best-effort callers keep working across the degradation.
+          expect(TrustedTime.getTime(), isA<DateTime>());
+        },
+      );
+    });
+
+    group('edge 4: cold start with no cache and no network', () {
+      test('initialize survives, requireSecure fails closed with '
+          'SecurityException, and best-effort fails with NotReady', () async {
+        final dead1 = _FlappableTierSource(
+          id: 'nts:v1',
+          groupId: 'g1',
+          startMs: 1000,
+          endMs: 1020,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: TrustBackend.webpkiRoots,
+        )..failing = true;
+        final dead2 = _FlappableTierSource(
+          id: 'nts:v2',
+          groupId: 'g2',
+          startMs: 1005,
+          endMs: 1025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: TrustBackend.webpkiRoots,
+        )..failing = true;
+
+        // persistState: false models the empty cache; every source
+        // fails to model the missing network. initialize() itself must
+        // not throw — sync failure is swallowed and retried later.
+        await initWith([dead1, dead2]);
+
+        expect(TrustedTime.isTrusted, isFalse);
+        expect(TrustedTime.isSecure, isFalse);
+        expect(TrustedTime.authLevel, NtsAuthLevel.none);
+        // No anchor at all: the auth gate rejects before now() is
+        // reached, so strict callers see the actionable security error.
+        expect(
+          () => TrustedTime.getTime(requireSecure: true),
+          throwsA(isA<TrustedTimeSecurityException>()),
+        );
+        // Relaxed callers fail too — with NotReady from now(): the
+        // confidence gate passes (a null anchor reads as low, the
+        // minimum), so the missing anchor is what stops the call.
+        expect(
+          () => TrustedTime.getTime(),
+          throwsA(isA<TrustedTimeNotReadyException>()),
+        );
+      });
+    });
+  });
+}
+
+/// A [_TierSource] whose availability can be flipped mid-test, modelling
+/// an NTS server flap: responsive during the establish cycle, unreachable
+/// on a later resync.
+class _FlappableTierSource implements TimeSource {
+  _FlappableTierSource({
+    required this.id,
+    required this.groupId,
+    required this.startMs,
+    required this.endMs,
+    this.authLevel = NtsAuthLevel.none,
+    this.trustBackend,
+  });
+
+  @override
+  final String id;
+  @override
+  final String groupId;
+  final int startMs;
+  final int endMs;
+  final NtsAuthLevel authLevel;
+  final TrustBackend? trustBackend;
+
+  /// When true, [getTime] throws as an unreachable server would.
+  bool failing = false;
+
+  @override
+  Future<TimeSample> getTime() async {
+    if (failing) {
+      throw TimeoutException('server flap: $id unreachable');
+    }
+    return TimeSample(
+      interval: TimeInterval(startMs: startMs, endMs: endMs),
+      sourceId: id,
+      groupId: groupId,
+      authLevel: authLevel,
+      trustBackend: trustBackend,
+    );
+  }
 }
