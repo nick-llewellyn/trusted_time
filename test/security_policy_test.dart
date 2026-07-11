@@ -317,12 +317,15 @@ void main() {
         // provides no application-layer signature over the timestamp,
         // so samples are unconditionally NtsAuthLevel.none and the
         // anchor degrades.
+        //
+        // Capture one Date header up front and serve it from both
+        // sources: formatting per-request could straddle a second
+        // boundary, and with near-zero mocked RTT the resulting
+        // 1s-skewed intervals would not overlap, flaking quorum.
+        final dateHeader = HttpDate.format(DateTime.now().toUtc());
         http.Client dateClient() => MockClient(
-          (request) async => http.Response(
-            '',
-            200,
-            headers: {'date': HttpDate.format(DateTime.now().toUtc())},
-          ),
+          (request) async =>
+              http.Response('', 200, headers: {'date': dateHeader}),
         );
         await initWith([
           HttpsSource('https://a.example.com/time', client: dateClient()),
