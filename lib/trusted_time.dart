@@ -339,9 +339,33 @@ abstract final class TrustedTime {
   ///   consensus, are [NtsAuthLevel.none] and throw.
   /// * Set [minConfidence] to enforce a minimum qualitative trust level.
   ///
-  /// Throws [TrustedTimeSecurityException] if requirements are not met. See the
-  /// Secure Time Contract (`doc/specification/secure-time-contract.md`) for the
-  /// full `requireSecure` semantics and trust-tiering rules.
+  /// [requireSecure] gates *authentication*, not freshness or accuracy:
+  ///
+  /// * A verified anchor satisfies the gate regardless of age — including
+  ///   one warm-restored from the persisted cache within the same boot
+  ///   session. Staleness is governed separately, by [confidenceScore],
+  ///   [validateFreshness], and the refresh scheduler; combine the gate
+  ///   with [minConfidence] or a [confidenceScore] check when age matters.
+  /// * HTTPS-Date sources never satisfy the gate: authenticated transport
+  ///   is not authenticated time (no application-layer signature over the
+  ///   timestamp), so an anchor built from HTTPS/NTP consensus is
+  ///   [NtsAuthLevel.none] even though best-effort calls keep working.
+  /// * If every NTS server becomes unreachable after a verified anchor was
+  ///   established, the anchor's verified label persists across *failed*
+  ///   resync cycles; a *successful* degraded cycle (unauthenticated
+  ///   survivors reach quorum) replaces the anchor and the gate fails
+  ///   closed from then on. Verified status is never carried over onto a
+  ///   degraded consensus.
+  ///
+  /// Throws [TrustedTimeSecurityException] when the authentication or
+  /// confidence requirement is not met, and [TrustedTimeNotReadyException]
+  /// when no usable anchor exists at all (e.g. a cold start with no cache
+  /// and no network, or after trust was invalidated pending resync). The
+  /// authentication gate is checked first, so a cold start with
+  /// `requireSecure: true` surfaces the actionable security error rather
+  /// than NotReady. See the Secure Time Contract
+  /// (`doc/specification/secure-time-contract.md`) for the full
+  /// `requireSecure` semantics and trust-tiering rules.
   static DateTime getTime({
     bool requireSecure = false,
     ConfidenceLevel minConfidence = ConfidenceLevel.low,
