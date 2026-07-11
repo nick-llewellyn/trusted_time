@@ -484,7 +484,8 @@ void main() {
   });
 }
 
-/// A [_TierSource] whose availability can be flipped mid-test, modelling
+/// A fixed-interval [TimeSource] (mirroring [_TierSource]'s shape, but
+/// unrelated to it) whose availability can be flipped mid-test, modelling
 /// an NTS server flap: responsive during the establish cycle, unreachable
 /// on a later resync.
 class _FlappableTierSource implements TimeSource {
