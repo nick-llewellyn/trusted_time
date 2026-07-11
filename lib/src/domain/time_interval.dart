@@ -13,8 +13,10 @@ final class TimeInterval {
   /// at construction in all build modes, not just via `assert`.
   TimeInterval({required this.startMs, required this.endMs}) {
     if (startMs > endMs) {
-      throw ArgumentError(
-        'Interval start must be <= end (got [$startMs, $endMs])',
+      throw ArgumentError.value(
+        startMs,
+        'startMs',
+        'must be <= endMs (got [$startMs, $endMs])',
       );
     }
   }
