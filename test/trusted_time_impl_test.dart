@@ -1022,7 +1022,11 @@ void main() {
     // is dated 2023 while the fake network sources answer 2024, so the
     // restore-vs-resync outcome is observable through TrustedTime.now()
     // as well as through whether any source was queried at all.
-    const anchorKey = 'tt_anchor_v2';
+    // Match the AnchorStore anchor key by stable prefix rather than the
+    // exact versioned literal (currently tt_anchor_v2) so a key version
+    // bump does not silently turn this into a cold start. The prefix is
+    // unambiguous: the store's other keys live under tt_last_*.
+    const anchorKeyPrefix = 'tt_anchor_';
 
     // Wait-out attack shape: the anchor's recorded uptime (1000ms) is
     // far below the mocked current uptime (500000ms), so the legacy
@@ -1045,7 +1049,9 @@ void main() {
       messenger.setMockMethodCallHandler(storageChannel, (call) async {
         if (call.method == 'read') {
           final key = (call.arguments as Map)['key'] as String?;
-          if (key == anchorKey) return persistedAnchorJson;
+          if (key != null && key.startsWith(anchorKeyPrefix)) {
+            return persistedAnchorJson;
+          }
         }
         return null;
       });
