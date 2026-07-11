@@ -301,9 +301,17 @@ final class MarzulloEngine {
     }
 
     // Sort endpoints to find the densest overlap.
-    // In Marzullo's algorithm, for closed intervals, an 'upper' endpoint
-    // at time T should be processed before a 'lower' endpoint at time T
-    // to correctly count the depth at the point of overlap.
+    // [TimeInterval] is a CLOSED interval — both bounds inclusive — so an
+    // interval ending at T and another starting at T both contain T and
+    // must both be counted active there. That requires processing a
+    // 'lower' endpoint at time T before an 'upper' endpoint at time T
+    // (the standard convention for closed-interval Marzullo). This
+    // ordering is also what makes a zero-width interval
+    // (startMs == endMs) survive the sweep: its own lower must
+    // increment the source count before its upper decrements it. The
+    // previous upper-before-lower ordering made the zero-width upper
+    // decrement a count that was never incremented — a null-check
+    // crash (boundary-conditions audit, bd trusted_time-q7s).
     //
     // Comparator contract: when both `timeMs` and `type` match the
     // endpoints are equal under this ordering and the comparator must
@@ -313,13 +321,12 @@ final class MarzulloEngine {
     // tolerates it). The sweep result is invariant to the relative
     // order of same-type-same-time endpoints — both lowers increment
     // `activeSourceCounts` before any best-window snapshot and both
-    // uppers decrement after — so this is a contract repair, not a
-    // behavioural change.
+    // uppers decrement after.
     endpoints.sort((a, b) {
       final cmp = a.timeMs.compareTo(b.timeMs);
       if (cmp != 0) return cmp;
       if (a.type == b.type) return 0;
-      return a.type == _EndpointType.upper ? -1 : 1;
+      return a.type == _EndpointType.lower ? -1 : 1;
     });
 
     var bestUniqueOverlap = 0;

@@ -118,7 +118,7 @@ class _HungWarmNtsSource implements TimeSource, Warmable {
 
   @override
   Future<TimeSample> getTime() async => TimeSample(
-    interval: const TimeInterval(startMs: 990, endMs: 1010),
+    interval: TimeInterval(startMs: 990, endMs: 1010),
     sourceId: id,
     groupId: groupId,
     delayMs: 20,

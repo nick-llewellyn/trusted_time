@@ -455,7 +455,7 @@ void main() {
     // (SyncObserver.onSampleReceived, the example app's terminal
     // log) depend on.
 
-    const interval = TimeInterval(startMs: 1000, endMs: 1100);
+    final interval = TimeInterval(startMs: 1000, endMs: 1100);
 
     test('defaults to null when constructor parameter is omitted', () {
       // Backward compatibility: every call site that constructs a
@@ -465,7 +465,7 @@ void main() {
       // this default to a non-null sentinel — it would falsely
       // imply NTS-style trust-backend semantics for sources that
       // have no such concept.
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'ntp:time.example',
         groupId: 'g',
@@ -483,7 +483,7 @@ void main() {
       // lib/src/sync_engine.dart), so this constructor-level
       // round-trip is sufficient to cover the documented "flows
       // through unchanged" contract.
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'nts:time.example',
         groupId: 'g',
@@ -495,14 +495,14 @@ void main() {
     test(
       'toString omits backend marker when null and includes it when set',
       () {
-        const nullBackend = TimeSample(
+        final nullBackend = TimeSample(
           interval: interval,
           sourceId: 'ntp:time.example',
           groupId: 'g',
         );
         expect(nullBackend.toString(), isNot(contains('backend:')));
 
-        const platformBackend = TimeSample(
+        final platformBackend = TimeSample(
           interval: interval,
           sourceId: 'nts:time.example',
           groupId: 'g',
@@ -522,10 +522,10 @@ void main() {
     // consensus path reads it yet (the weighted-combine sibling ticket
     // does), so these are constructor/getter-level assertions.
 
-    const interval = TimeInterval(startMs: 1000, endMs: 1100); // width 100
+    final interval = TimeInterval(startMs: 1000, endMs: 1100); // width 100
 
     test('fields default to delay-unset and zero dispersion', () {
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'ntp:time.example',
         groupId: 'g',
@@ -535,7 +535,7 @@ void main() {
     });
 
     test('falls back to interval half-width when delayMs is null', () {
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'ntp:time.example',
         groupId: 'g',
@@ -545,7 +545,7 @@ void main() {
     });
 
     test('uses δ/2 from delayMs when set, independent of interval width', () {
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'ntp:time.example',
         groupId: 'g',
@@ -556,7 +556,7 @@ void main() {
     });
 
     test('adds dispersion E to the half round-trip', () {
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'nts:time.example',
         groupId: 'g',
@@ -568,7 +568,7 @@ void main() {
     });
 
     test('dispersion applies on the half-width fallback too', () {
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'nts:time.example',
         groupId: 'g',
@@ -612,10 +612,10 @@ void main() {
     // intersection. See SyncEngine._normalizedToLatestReceipt for the
     // consuming side.
 
-    const interval = TimeInterval(startMs: 1000, endMs: 1100);
+    final interval = TimeInterval(startMs: 1000, endMs: 1100);
 
     test('shifts the interval by refMs - receivedAtMs', () {
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'nts:time.example',
         groupId: 'g',
@@ -628,7 +628,7 @@ void main() {
     });
 
     test('shifts backwards for a reference earlier than receipt', () {
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'nts:time.example',
         groupId: 'g',
@@ -640,7 +640,7 @@ void main() {
     });
 
     test('preserves width and all non-interval fields', () {
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'nts:time.example',
         groupId: 'g',
@@ -659,7 +659,7 @@ void main() {
     });
 
     test('returns this unchanged when receivedAtMs is null', () {
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'ntp:time.example',
         groupId: 'g',
@@ -668,7 +668,7 @@ void main() {
     });
 
     test('returns this unchanged when already at the reference', () {
-      const sample = TimeSample(
+      final sample = TimeSample(
         interval: interval,
         sourceId: 'ntp:time.example',
         groupId: 'g',

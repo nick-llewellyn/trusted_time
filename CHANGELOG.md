@@ -30,6 +30,16 @@
   that depend on a pinned corporate CA must explicitly opt in with
   `usePlatformTrust: true`; the change is visible and intentional.
 
+- **`TimeInterval` constructor is no longer `const`.** Inverted bounds
+  (`startMs > endMs`) previously slipped past a debug-only `assert` in
+  release builds, silently corrupting midpoint/width arithmetic
+  downstream. The constructor now throws `ArgumentError` in all build
+  modes, which removes `const` constructibility. Migrate
+  `const TimeInterval(...)` (and enclosing `const` contexts that
+  contain one) to non-const construction — typically `const x = ...` →
+  `final x = ...`. Behaviour is otherwise unchanged for valid
+  intervals.
+
 ## [2.1.0]
 
 ### Breaking Changes

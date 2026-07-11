@@ -5,8 +5,21 @@ import 'package:flutter/foundation.dart';
 @immutable
 final class TimeInterval {
   /// Creates a new [TimeInterval] with the specified start and end times in milliseconds.
-  const TimeInterval({required this.startMs, required this.endMs})
-    : assert(startMs <= endMs, 'Interval start must be <= end');
+  ///
+  /// Throws an [ArgumentError] if `startMs > endMs`. An inverted interval is
+  /// mathematically meaningless and, if admitted, would silently corrupt
+  /// every downstream computation ([midpoint], [width], Marzullo
+  /// intersection) rather than fail loudly — so the invariant is enforced
+  /// at construction in all build modes, not just via `assert`.
+  TimeInterval({required this.startMs, required this.endMs}) {
+    if (startMs > endMs) {
+      throw ArgumentError.value(
+        startMs,
+        'startMs',
+        'must be <= endMs (got [$startMs, $endMs])',
+      );
+    }
+  }
 
   /// The start of the interval (inclusive).
   final int startMs;
