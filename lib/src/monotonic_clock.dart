@@ -1,11 +1,25 @@
 import 'package:flutter/services.dart';
 import 'package:nts/nts.dart' as nts;
 
-/// Signature of a monotonic reader factory: returns a function that
-/// yields microsecond readings on a single monotonic timeline. Only
-/// differences between readings from the same returned function are
-/// meaningful.
-typedef MonotonicReaderFactory = int Function() Function();
+/// A resolved monotonic reader and the timeline property that matters
+/// for projection integrity: whether its readings keep advancing while
+/// the device is in deep sleep.
+final class MonotonicReader {
+  /// Creates a reader wrapping [read] with the given capability flag.
+  const MonotonicReader({required this.read, required this.isSleepAware});
+
+  /// Yields microsecond readings on a single monotonic timeline. Only
+  /// differences between readings from the same reader are meaningful.
+  final int Function() read;
+
+  /// Whether the underlying timeline continues counting during device
+  /// suspend. `false` means a projection over this reader freezes for
+  /// the duration of any sleep cycle and resumes behind by that much.
+  final bool isSleepAware;
+}
+
+/// Signature of a monotonic reader factory.
+typedef MonotonicReaderFactory = MonotonicReader Function();
 
 /// Resolves the best available monotonic microsecond reader.
 ///
@@ -15,13 +29,22 @@ typedef MonotonicReaderFactory = int Function() Function();
 /// sleep. When the bridge is not initialized — HTTPS/NTP-only configs
 /// that never call `NtsRustLib.init()`, web, or plain unit-test
 /// isolates — falls back to a fresh [Stopwatch], which is monotonic
-/// but freezes during suspend (the pre-existing behaviour).
-int Function() resolveMonotonicReader() {
+/// but freezes during suspend (the pre-existing behaviour). The
+/// returned [MonotonicReader.isSleepAware] flag records which timeline
+/// was resolved, so callers can surface (or refuse) the degraded
+/// fallback instead of riding it silently.
+MonotonicReader resolveMonotonicReader() {
   try {
-    return nts.MonotonicClock.instance.nowMicros;
+    return MonotonicReader(
+      read: nts.MonotonicClock.instance.nowMicros,
+      isSleepAware: true,
+    );
   } on StateError {
     final stopwatch = Stopwatch()..start();
-    return () => stopwatch.elapsedMicroseconds;
+    return MonotonicReader(
+      read: () => stopwatch.elapsedMicroseconds,
+      isSleepAware: false,
+    );
   }
 }
 
@@ -88,11 +111,21 @@ final class SyncClock {
     : _readerFactory = readerFactory ?? resolveMonotonicReader;
 
   final MonotonicReaderFactory _readerFactory;
-  int Function()? _read;
+  MonotonicReader? _reader;
   int _anchorReadingMicros = 0;
   int _cachedUptimeMs = 0;
   int _cachedWallMs = 0;
   int _initialElapsedMs = 0;
+
+  /// Whether the projection timeline keeps advancing during device
+  /// suspend.
+  ///
+  /// Reports the reader captured with the current anchor; before the
+  /// first [update] it probes the factory for the currently resolvable
+  /// capability without capturing anything, so a pre-anchor caller
+  /// (e.g. the fail-fast gate at engine init) still gets an accurate
+  /// answer.
+  bool get isSleepAware => (_reader ?? _readerFactory()).isSleepAware;
 
   /// Updates the clock with a new trust anchor.
   ///
@@ -112,16 +145,16 @@ final class SyncClock {
     _cachedUptimeMs = uptimeMs;
     _cachedWallMs = wallMs;
     _initialElapsedMs = initialElapsedMs;
-    final read = _readerFactory();
-    _read = read;
-    _anchorReadingMicros = read();
+    final reader = _readerFactory();
+    _reader = reader;
+    _anchorReadingMicros = reader.read();
   }
 
   /// Returns the elapsed time since the anchor was last updated.
   int elapsedSinceAnchorMs() {
-    final read = _read;
-    if (read == null) return _initialElapsedMs;
-    return _initialElapsedMs + (read() - _anchorReadingMicros) ~/ 1000;
+    final reader = _reader;
+    if (reader == null) return _initialElapsedMs;
+    return _initialElapsedMs + (reader.read() - _anchorReadingMicros) ~/ 1000;
   }
 
   /// The hardware uptime recorded in the last anchor.
@@ -135,7 +168,7 @@ final class SyncClock {
     _cachedUptimeMs = 0;
     _cachedWallMs = 0;
     _initialElapsedMs = 0;
-    _read = null;
+    _reader = null;
     _anchorReadingMicros = 0;
   }
 }

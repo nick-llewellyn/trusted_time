@@ -117,13 +117,17 @@ void main() {
   });
 
   group('SyncClock with injected reader', () {
+    MonotonicReader fakeReader(
+      int Function() read, {
+      bool isSleepAware = true,
+    }) => MonotonicReader(read: read, isSleepAware: isSleepAware);
+
     test('projects elapsed time from reader deltas, sleep included', () {
       // A sleep-aware reader keeps advancing during suspend; simulate a
       // 2-hour jump between readings that a Stopwatch would never show.
       var nowMicros = 5000000;
       final injected = SyncClock(
-        readerFactory: () =>
-            () => nowMicros,
+        readerFactory: () => fakeReader(() => nowMicros),
       );
       addTearDown(injected.dispose);
 
@@ -143,7 +147,7 @@ void main() {
       final injected = SyncClock(
         readerFactory: () {
           resolutions++;
-          return () => nowMicros;
+          return fakeReader(() => nowMicros);
         },
       );
       addTearDown(injected.dispose);
@@ -156,8 +160,7 @@ void main() {
     test('anchor reading and reader are captured together on update', () {
       var nowMicros = 42000000;
       final injected = SyncClock(
-        readerFactory: () =>
-            () => nowMicros,
+        readerFactory: () => fakeReader(() => nowMicros),
       );
       addTearDown(injected.dispose);
 
@@ -171,14 +174,48 @@ void main() {
     test('initialElapsedMs stacks on top of reader deltas', () {
       var nowMicros = 0;
       final injected = SyncClock(
-        readerFactory: () =>
-            () => nowMicros,
+        readerFactory: () => fakeReader(() => nowMicros),
       );
       addTearDown(injected.dispose);
 
       injected.update(1000, 0, initialElapsedMs: 90000);
       nowMicros += 1500000;
       expect(injected.elapsedSinceAnchorMs(), 91500);
+    });
+
+    test('isSleepAware reports the captured reader after update', () {
+      final injected = SyncClock(
+        readerFactory: () => fakeReader(() => 0, isSleepAware: false),
+      );
+      addTearDown(injected.dispose);
+
+      injected.update(1000, 0);
+      expect(injected.isSleepAware, isFalse);
+    });
+
+    test('isSleepAware probes the factory before any anchor', () {
+      var probes = 0;
+      final injected = SyncClock(
+        readerFactory: () {
+          probes++;
+          return fakeReader(() => 0);
+        },
+      );
+      addTearDown(injected.dispose);
+
+      expect(injected.isSleepAware, isTrue);
+      expect(probes, 1, reason: 'pre-anchor query resolves the factory');
+
+      injected.update(1000, 0);
+      expect(injected.isSleepAware, isTrue);
+      expect(probes, 2, reason: 'post-anchor query uses the captured reader');
+    });
+
+    test('default resolution falls back to a non-sleep-aware reader '
+        'in a plain test isolate (no nts bridge)', () {
+      final unbridged = SyncClock();
+      addTearDown(unbridged.dispose);
+      expect(unbridged.isSleepAware, isFalse);
     });
   });
 }

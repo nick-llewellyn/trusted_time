@@ -285,6 +285,71 @@ void main() {
     });
   });
 
+  group('sleep-aware projection surface', () {
+    tearDown(TrustedTime.resetOverride);
+
+    // A plain test isolate never initializes the nts bridge
+    // (nts.MonotonicClock.instance throws StateError by contract), so
+    // resolveMonotonicReader deterministically resolves the
+    // suspend-frozen Stopwatch fallback in every test below.
+
+    test(
+      'isProjectionSleepAware reports the fallback timeline honestly',
+      () async {
+        await TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+          ),
+        );
+        addTearDown(TrustedTimeImpl.instance.dispose);
+
+        expect(TrustedTime.isProjectionSleepAware, isFalse);
+      },
+    );
+
+    test('requireSleepAwareProjection fails initialize() fast when only '
+        'the suspend-frozen fallback is available', () async {
+      await expectLater(
+        TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+            requireSleepAwareProjection: true,
+          ),
+        ),
+        throwsA(isA<TrustedTimeSecurityException>()),
+      );
+    });
+
+    test('default (requireSleepAwareProjection: false) accepts the '
+        'fallback and initialize() completes', () async {
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      addTearDown(TrustedTimeImpl.instance.dispose);
+      // No throw; the degraded timeline is observable, not fatal.
+      expect(TrustedTime.isProjectionSleepAware, isFalse);
+    });
+
+    test('isProjectionSleepAware is true under a mock override', () {
+      final mock = TrustedTimeMock(initial: DateTime.utc(2024, 6, 15, 12));
+      addTearDown(mock.dispose);
+      TrustedTime.overrideForTesting(mock);
+
+      expect(TrustedTime.isProjectionSleepAware, isTrue);
+    });
+  });
+
   group('TrustedTime refresh schedule control', () {
     // Live-engine tests; tear down any leftover override from earlier
     // groups so the static surface drops into the real

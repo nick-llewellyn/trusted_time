@@ -126,7 +126,7 @@ final class TrustedTimeImpl {
   /// in device suspend counts toward the foreground-validate threshold;
   /// bridge-less configs fall back to a suspend-frozen [Stopwatch]
   /// timeline. Only differences between readings are meaningful.
-  final int Function() _monotonicRead = resolveMonotonicReader();
+  final int Function() _monotonicRead = resolveMonotonicReader().read;
 
   /// Current reading of [_monotonicRead] as a [Duration] since the
   /// reader's arbitrary epoch. Only differences are meaningful.
@@ -207,6 +207,11 @@ final class TrustedTimeImpl {
   /// Whether the current trust anchor is cryptographically secure.
   bool get isSecure => _anchor?.authLevel == NtsAuthLevel.verified;
 
+  /// Whether the projection behind [now] rides a sleep-aware monotonic
+  /// timeline. See [TrustedTimeConfig.requireSleepAwareProjection] for
+  /// the two timelines and their failure modes.
+  bool get isProjectionSleepAware => _syncClock.isSleepAware;
+
   /// The specific authentication level of the current time estimate.
   NtsAuthLevel get authLevel => _anchor?.authLevel ?? NtsAuthLevel.none;
 
@@ -220,6 +225,20 @@ final class TrustedTimeImpl {
   DateTime now() {
     if (!_trusted || _anchor == null) {
       throw const TrustedTimeNotReadyException();
+    }
+    // The init-time gate makes this unreachable in practice; it stays
+    // as defence in depth so a projection can never silently ride a
+    // suspend-frozen timeline under the hard requirement — even if a
+    // future re-anchor path resolves a different reader than init saw.
+    if (_config.requireSleepAwareProjection && !_syncClock.isSleepAware) {
+      throw const TrustedTimeSecurityException(
+        'requireSleepAwareProjection is set but the active projection '
+        'rides a suspend-frozen Stopwatch timeline: the nts bridge is '
+        'not initialized, so projected time would silently fall behind '
+        'by the duration of any device sleep. Configure reachable '
+        'ntsServers (whose FFI bootstrap must succeed) or relax the '
+        'requirement.',
+      );
     }
     return DateTime.fromMillisecondsSinceEpoch(
       _anchor!.networkUtcMs + _syncClock.elapsedSinceAnchorMs(),
@@ -386,6 +405,25 @@ final class TrustedTimeImpl {
   }
 
   Future<void> _bootstrap() async {
+    // Fail-fast gate for the sleep-aware hard requirement: by this
+    // point the nts bridge bootstrap (ensureNtsRuntime) has already
+    // run — including the degrade path that strips ntsServers on a
+    // genuine init failure — so the reader the engine will project on
+    // is decidable now. Surfacing the misconfiguration here, before
+    // any sync or persistence work, beats throwing from the first
+    // now() call at an arbitrary point in the consumer's runtime.
+    if (_config.requireSleepAwareProjection && !_syncClock.isSleepAware) {
+      throw const TrustedTimeSecurityException(
+        'requireSleepAwareProjection is set but no sleep-aware '
+        'monotonic clock is available: the nts bridge is not '
+        'initialized (HTTPS/NTP-only config, web, or the bridge '
+        'bootstrap failed and NTS was disabled). Projection would '
+        'silently freeze during device sleep. Configure reachable '
+        'ntsServers (whose FFI bootstrap must succeed) or relax the '
+        'requirement.',
+      );
+    }
+
     _listenForIntegrityEvents();
     _startTieredSchedulingIfNeeded();
 

@@ -189,6 +189,34 @@ void main() {
     );
   });
 
+  group('TrustedTimeConfig.requireSleepAwareProjection', () {
+    test('defaults to false (fallback accepted silently)', () {
+      const config = TrustedTimeConfig();
+      expect(config.requireSleepAwareProjection, isFalse);
+    });
+
+    test('round-trips through copyWith and preserves when omitted', () {
+      const original = TrustedTimeConfig();
+      final strict = original.copyWith(requireSleepAwareProjection: true);
+      expect(strict.requireSleepAwareProjection, isTrue);
+
+      final untouched = strict.copyWith(maxLatency: const Duration(seconds: 7));
+      expect(untouched.requireSleepAwareProjection, isTrue);
+    });
+
+    test('participates in equality, hashCode, and toString', () {
+      const base = TrustedTimeConfig();
+      const strict = TrustedTimeConfig(requireSleepAwareProjection: true);
+      expect(base == strict, isFalse);
+
+      const a = TrustedTimeConfig(requireSleepAwareProjection: true);
+      expect(a, equals(strict));
+      expect(a.hashCode, equals(strict.hashCode));
+
+      expect(strict.toString(), contains('requireSleepAwareProjection: true'));
+    });
+  });
+
   group('TrustedTimeConfig cadence mode (ADR 0006)', () {
     test('defaults to singleTier30m with legacy timing untouched', () {
       // The migration contract: existing 1.x integrators who never name
