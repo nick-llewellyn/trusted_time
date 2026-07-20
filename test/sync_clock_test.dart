@@ -115,4 +115,70 @@ void main() {
       expect(clock.elapsedSinceAnchorMs(), 0);
     });
   });
+
+  group('SyncClock with injected reader', () {
+    test('projects elapsed time from reader deltas, sleep included', () {
+      // A sleep-aware reader keeps advancing during suspend; simulate a
+      // 2-hour jump between readings that a Stopwatch would never show.
+      var nowMicros = 5000000;
+      final injected = SyncClock(
+        readerFactory: () =>
+            () => nowMicros,
+      );
+      addTearDown(injected.dispose);
+
+      injected.update(1000, 0);
+      expect(injected.elapsedSinceAnchorMs(), 0);
+
+      nowMicros += const Duration(hours: 2).inMicroseconds;
+      expect(
+        injected.elapsedSinceAnchorMs(),
+        const Duration(hours: 2).inMilliseconds,
+      );
+    });
+
+    test('re-resolves the reader on every update', () {
+      var resolutions = 0;
+      const nowMicros = 0;
+      final injected = SyncClock(
+        readerFactory: () {
+          resolutions++;
+          return () => nowMicros;
+        },
+      );
+      addTearDown(injected.dispose);
+
+      injected.update(1000, 0);
+      injected.update(2000, 0);
+      expect(resolutions, 2);
+    });
+
+    test('anchor reading and reader are captured together on update', () {
+      var nowMicros = 42000000;
+      final injected = SyncClock(
+        readerFactory: () =>
+            () => nowMicros,
+      );
+      addTearDown(injected.dispose);
+
+      injected.update(1000, 0);
+      nowMicros += 7000000;
+      injected.update(2000, 0);
+      // Re-anchored at the advanced reading: elapsed restarts from zero.
+      expect(injected.elapsedSinceAnchorMs(), 0);
+    });
+
+    test('initialElapsedMs stacks on top of reader deltas', () {
+      var nowMicros = 0;
+      final injected = SyncClock(
+        readerFactory: () =>
+            () => nowMicros,
+      );
+      addTearDown(injected.dispose);
+
+      injected.update(1000, 0, initialElapsedMs: 90000);
+      nowMicros += 1500000;
+      expect(injected.elapsedSinceAnchorMs(), 91500);
+    });
+  });
 }

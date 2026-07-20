@@ -1,4 +1,29 @@
 import 'package:flutter/services.dart';
+import 'package:nts/nts.dart' as nts;
+
+/// Signature of a monotonic reader factory: returns a function that
+/// yields microsecond readings on a single monotonic timeline. Only
+/// differences between readings from the same returned function are
+/// meaningful.
+typedef MonotonicReaderFactory = int Function() Function();
+
+/// Resolves the best available monotonic microsecond reader.
+///
+/// Prefers the sleep-aware [nts.MonotonicClock] (`CLOCK_BOOTTIME` /
+/// `mach_continuous_time` / `QueryInterruptTimePrecise` via the Rust
+/// bridge), whose readings keep advancing while the device is in deep
+/// sleep. When the bridge is not initialized — HTTPS/NTP-only configs
+/// that never call `NtsRustLib.init()`, web, or plain unit-test
+/// isolates — falls back to a fresh [Stopwatch], which is monotonic
+/// but freezes during suspend (the pre-existing behaviour).
+int Function() resolveMonotonicReader() {
+  try {
+    return nts.MonotonicClock.instance.nowMicros;
+  } on StateError {
+    final stopwatch = Stopwatch()..start();
+    return () => stopwatch.elapsedMicroseconds;
+  }
+}
 
 /// Contract for providing a hardware-pinned monotonic ticker.
 ///
@@ -49,16 +74,25 @@ final class PlatformMonotonicClock implements MonotonicClock {
 
 /// In-memory cache enabling sub-microsecond synchronous access to trusted time.
 ///
-/// Uses Dart's [Stopwatch] (backed by the OS monotonic clock) so that
-/// elapsed-time measurement is immune to system clock manipulation.
+/// Projects elapsed time on a monotonic reader so that measurement is
+/// immune to system clock manipulation. The default reader resolution
+/// ([resolveMonotonicReader]) prefers the sleep-aware
+/// [nts.MonotonicClock], so a device that sleeps between syncs no
+/// longer freezes the projected clock; bridge-less configs fall back
+/// to a suspend-frozen [Stopwatch] timeline as before.
 final class SyncClock {
-  /// Documented.
-  SyncClock();
+  /// Creates a clock. [readerFactory] overrides monotonic source
+  /// resolution — a test seam; production callers use the default
+  /// [resolveMonotonicReader].
+  SyncClock({MonotonicReaderFactory? readerFactory})
+    : _readerFactory = readerFactory ?? resolveMonotonicReader;
 
+  final MonotonicReaderFactory _readerFactory;
+  int Function()? _read;
+  int _anchorReadingMicros = 0;
   int _cachedUptimeMs = 0;
   int _cachedWallMs = 0;
   int _initialElapsedMs = 0;
-  final Stopwatch _stopwatch = Stopwatch();
 
   /// Updates the clock with a new trust anchor.
   ///
@@ -67,17 +101,28 @@ final class SyncClock {
   /// native uptime and [TrustAnchor.uptimeMs], so that elapsed time
   /// covers the period the app was not running. Defaults to 0 for
   /// fresh-sync callers.
+  ///
+  /// The monotonic reader is re-resolved on every update: the nts lazy
+  /// singleton is not poisoned by a pre-init access, so a bridge
+  /// initialized after a first fallback resolution is picked up at the
+  /// next sync instead of pinning the suspend-frozen fallback for the
+  /// process lifetime. The reader and its anchor reading are captured
+  /// together, so one projection never mixes epochs.
   void update(int uptimeMs, int wallMs, {int initialElapsedMs = 0}) {
     _cachedUptimeMs = uptimeMs;
     _cachedWallMs = wallMs;
     _initialElapsedMs = initialElapsedMs;
-    _stopwatch.reset();
-    _stopwatch.start();
+    final read = _readerFactory();
+    _read = read;
+    _anchorReadingMicros = read();
   }
 
   /// Returns the elapsed time since the anchor was last updated.
-  int elapsedSinceAnchorMs() =>
-      _initialElapsedMs + _stopwatch.elapsedMilliseconds;
+  int elapsedSinceAnchorMs() {
+    final read = _read;
+    if (read == null) return _initialElapsedMs;
+    return _initialElapsedMs + (read() - _anchorReadingMicros) ~/ 1000;
+  }
 
   /// The hardware uptime recorded in the last anchor.
   int get lastUptimeMs => _cachedUptimeMs;
@@ -85,12 +130,12 @@ final class SyncClock {
   /// The system wall-clock recorded in the last anchor.
   int get lastWallMs => _cachedWallMs;
 
-  /// Stops the internal stopwatch and clears the cache.
+  /// Releases the monotonic reader and clears the cache.
   void dispose() {
     _cachedUptimeMs = 0;
     _cachedWallMs = 0;
     _initialElapsedMs = 0;
-    _stopwatch.stop();
-    _stopwatch.reset();
+    _read = null;
+    _anchorReadingMicros = 0;
   }
 }
