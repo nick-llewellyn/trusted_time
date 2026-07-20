@@ -225,9 +225,12 @@ void main() {
 
   group('NtsSource timeout forwarding (real client path)', () {
     test('maxLatency reaches the FFI boundary as whole milliseconds', () async {
+      // Non-default port so the spec-forwarding assertion cannot be
+      // satisfied by an accidentally hard-coded default.
       api.onQuery = (_) async => _ffiSample();
       final source = NtsSource(
         'time.example',
+        port: 4461,
         maxLatency: const Duration(milliseconds: 1500),
       );
 
@@ -236,7 +239,7 @@ void main() {
       expect(api.queryCalls, hasLength(1));
       expect(api.queryCalls.single.timeoutMs, 1500);
       expect(api.queryCalls.single.host, 'time.example');
-      expect(api.queryCalls.single.port, 4460);
+      expect(api.queryCalls.single.port, 4461);
     });
 
     test('default maxLatency forwards the documented 5 s budget', () async {
@@ -366,6 +369,10 @@ void main() {
         api.warmCalls.single.timeoutMs,
         nts.kDefaultTimeout.inMilliseconds,
       );
+      // warm() swallows exceptions, so an unexpected query dispatch
+      // (onQuery is unset here) would be silently absorbed rather
+      // than failing the test — assert none happened explicitly.
+      expect(api.queryCalls, isEmpty);
     });
 
     test('warm failure is swallowed and getTime still queries with '
