@@ -923,6 +923,10 @@ final class TrustedTimeImpl {
   }
 
   Future<void> _handleBackgroundMethodCall(MethodCall call) async {
+    // Defence in depth alongside the handler unbind in [dispose]: a
+    // callback already dispatched (in flight on the platform thread)
+    // when dispose ran must not drive a sync on a disposed engine.
+    if (_disposed) return;
     if (call.method == 'onBackgroundSync') await _performSync();
   }
 
@@ -938,6 +942,13 @@ final class TrustedTimeImpl {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    // Detach the static background-channel handler so platform
+    // callbacks (onBackgroundSync) can never invoke a disposed
+    // engine. Only the live engine ever reaches this line — stale
+    // references are already _disposed and return above — and [init]
+    // re-binds the handler only after a successful bootstrap, so a
+    // failed re-initialize leaves the channel cleanly unbound.
+    _bgChannel.setMethodCallHandler(null);
     _refreshTimer?.cancel();
     _refreshTimer = null;
     _retryTimer?.cancel();

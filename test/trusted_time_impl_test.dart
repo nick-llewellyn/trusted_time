@@ -380,6 +380,56 @@ void main() {
 
       expect(() => TrustedTimeImpl.instance, throwsAssertionError);
     });
+
+    test('a failed re-initialize() leaves the background channel handler '
+        'unbound', () async {
+      // Delivers an inbound platform message on the background channel
+      // and reports whether a Dart-side handler answered it: a bound
+      // handler produces a non-null reply envelope, an unbound channel
+      // replies null.
+      Future<bool> backgroundHandlerBound() async {
+        const codec = StandardMethodCodec();
+        final message = codec.encodeMethodCall(
+          const MethodCall('onBackgroundSync'),
+        );
+        ByteData? reply;
+        await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .handlePlatformMessage(
+              'trusted_time/background',
+              message,
+              (data) => reply = data,
+            );
+        return reply != null;
+      }
+
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      expect(await backgroundHandlerBound(), isTrue);
+
+      // The gate-tripping re-init disposes the previous engine, which
+      // must unbind the handler — otherwise platform callbacks would
+      // keep invoking the disposed instance.
+      await expectLater(
+        TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+            requireSleepAwareProjection: true,
+          ),
+        ),
+        throwsA(isA<TrustedTimeSecurityException>()),
+      );
+
+      expect(await backgroundHandlerBound(), isFalse);
+    });
   });
 
   group('TrustedTime refresh schedule control', () {
