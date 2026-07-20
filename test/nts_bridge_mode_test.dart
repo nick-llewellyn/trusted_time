@@ -39,11 +39,18 @@ final class _BoottimeStubApi implements NtsRustLibApi {
 
   @override
   dynamic noSuchMethod(Invocation invocation) {
-    if (invocation.memberName == #crateApiNtsNtsBoottimeMicros) {
+    // Match the generated signature exactly (a zero-argument method
+    // call): if a future regeneration adds parameters, the stub must
+    // fail fast rather than silently accept the mismatched shape.
+    if (invocation.memberName == #crateApiNtsNtsBoottimeMicros &&
+        invocation.isMethod &&
+        invocation.positionalArguments.isEmpty &&
+        invocation.namedArguments.isEmpty) {
       return nowMicros;
     }
     throw UnsupportedError(
-      '_BoottimeStubApi: ${invocation.memberName} not stubbed',
+      '_BoottimeStubApi: ${invocation.memberName} not stubbed '
+      '(or called with an unexpected shape)',
     );
   }
 }
