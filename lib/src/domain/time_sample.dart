@@ -139,10 +139,19 @@ final class TimeSample {
   /// Replaces the latched receipt reader (test seam), capturing the
   /// reader's current value as the new timeline origin. Pass `null` to
   /// unlatch so the next stamp re-resolves the default reader.
+  ///
+  /// The mutation runs inside an `assert` and is a no-op in release
+  /// and profile builds: [TimeSample] is publicly re-exported, and
+  /// swapping the reader mid-process in production would break the
+  /// one-latched-epoch invariant that consensus normalization and
+  /// anchor backdating rely on.
   @visibleForTesting
   static void debugSetReceiptReader(MonotonicReader? reader) {
-    _receiptReader = reader;
-    _receiptOriginMicros = reader?.read() ?? 0;
+    assert(() {
+      _receiptReader = reader;
+      _receiptOriginMicros = reader?.read() ?? 0;
+      return true;
+    }());
   }
 
   /// Returns a copy whose [interval] is shifted so it estimates the
