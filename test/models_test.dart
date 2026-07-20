@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nts/nts.dart' as nts;
+import 'package:trusted_time/src/monotonic_clock.dart';
 import 'package:trusted_time/trusted_time.dart';
 
 void main() {
@@ -703,6 +704,60 @@ void main() {
         receivedAtMs: 8000,
       );
       expect(identical(sample.normalizedTo(8000), sample), isTrue);
+    });
+  });
+
+  group('TimeSample.monotonicReceiptNowMs', () {
+    // The receipt timeline rides the reader resolved at first stamp
+    // (the shared nts bridge clock when initialized), latched for the
+    // process lifetime so all stamps compare on one epoch. The seam
+    // below injects a scripted reader in place of the latched one.
+
+    tearDown(() => TimeSample.debugSetReceiptReader(null));
+
+    test('reads deltas from the injected reader in milliseconds', () {
+      var micros = 7_000_000;
+      TimeSample.debugSetReceiptReader(
+        MonotonicReader(read: () => micros, isSleepAware: true),
+      );
+      // Injection captures the current reading as the origin.
+      expect(TimeSample.monotonicReceiptNowMs(), 0);
+      micros += 2_500_000;
+      expect(TimeSample.monotonicReceiptNowMs(), 2500);
+    });
+
+    test('latches the reader across stamps (no re-resolution)', () {
+      var reads = 0;
+      var micros = 0;
+      TimeSample.debugSetReceiptReader(
+        MonotonicReader(
+          read: () {
+            reads++;
+            return micros;
+          },
+          isSleepAware: true,
+        ),
+      );
+      micros = 1_000_000;
+      TimeSample.monotonicReceiptNowMs();
+      TimeSample.monotonicReceiptNowMs();
+      // One read at injection (origin capture) plus one per stamp —
+      // a re-resolving implementation would not consult this reader
+      // at all after the first call.
+      expect(reads, 3);
+    });
+
+    test('unlatching resolves a fresh default reader on next stamp', () {
+      var micros = 0;
+      TimeSample.debugSetReceiptReader(
+        MonotonicReader(read: () => micros, isSleepAware: true),
+      );
+      micros = 9_000_000;
+      expect(TimeSample.monotonicReceiptNowMs(), 9000);
+      TimeSample.debugSetReceiptReader(null);
+      // Default resolution in a test isolate is the Stopwatch fallback,
+      // whose first read anchors a fresh epoch near zero.
+      expect(TimeSample.monotonicReceiptNowMs(), lessThan(9000));
     });
   });
 
