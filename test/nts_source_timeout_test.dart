@@ -118,7 +118,14 @@ final class _RecordingNtsApi implements NtsRustLibApi {
       timeoutMs: timeoutMs,
       dnsConcurrencyCap: dnsConcurrencyCap,
     ));
-    return onQuery!(attempt);
+    final query = onQuery;
+    if (query == null) {
+      throw StateError(
+        '_RecordingNtsApi: query dispatched but onQuery is unset — '
+        'script the attempt behaviour before calling getTime()',
+      );
+    }
+    return query(attempt);
   }
 
   @override
@@ -153,6 +160,13 @@ final class _FakeFfiNtsClient implements ffi.NtsClient {
   _FakeFfiNtsClient(this._api);
 
   final _RecordingNtsApi _api;
+  bool _disposed = false;
+
+  void _checkNotDisposed() {
+    if (_disposed) {
+      throw StateError('_FakeFfiNtsClient: used after dispose()');
+    }
+  }
 
   @override
   Future<ffi.NtsTimeSample> query({
@@ -160,13 +174,16 @@ final class _FakeFfiNtsClient implements ffi.NtsClient {
     required int timeoutMs,
     required int dnsConcurrencyCap,
     int? verificationTimeMs,
-  }) => _api.crateApiNtsNtsClientQuery(
-    that: this,
-    spec: spec,
-    timeoutMs: timeoutMs,
-    dnsConcurrencyCap: dnsConcurrencyCap,
-    verificationTimeMs: verificationTimeMs,
-  );
+  }) {
+    _checkNotDisposed();
+    return _api.crateApiNtsNtsClientQuery(
+      that: this,
+      spec: spec,
+      timeoutMs: timeoutMs,
+      dnsConcurrencyCap: dnsConcurrencyCap,
+      verificationTimeMs: verificationTimeMs,
+    );
+  }
 
   @override
   Future<ffi.NtsWarmCookiesOutcome> warmCookies({
@@ -174,19 +191,22 @@ final class _FakeFfiNtsClient implements ffi.NtsClient {
     required int timeoutMs,
     required int dnsConcurrencyCap,
     int? verificationTimeMs,
-  }) => _api.crateApiNtsNtsClientWarmCookies(
-    that: this,
-    spec: spec,
-    timeoutMs: timeoutMs,
-    dnsConcurrencyCap: dnsConcurrencyCap,
-    verificationTimeMs: verificationTimeMs,
-  );
+  }) {
+    _checkNotDisposed();
+    return _api.crateApiNtsNtsClientWarmCookies(
+      that: this,
+      spec: spec,
+      timeoutMs: timeoutMs,
+      dnsConcurrencyCap: dnsConcurrencyCap,
+      verificationTimeMs: verificationTimeMs,
+    );
+  }
 
   @override
-  void dispose() {}
+  void dispose() => _disposed = true;
 
   @override
-  bool get isDisposed => false;
+  bool get isDisposed => _disposed;
 
   @override
   dynamic noSuchMethod(Invocation invocation) => throw UnsupportedError(
