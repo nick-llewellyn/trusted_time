@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:math';
-import 'package:flutter/foundation.dart'
-    show debugPrint, kDebugMode, visibleForTesting;
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
@@ -20,6 +19,7 @@ import 'sources/time_sources.dart';
 import 'infra/dns_budget.dart';
 import 'infra/sync_observer.dart';
 import 'infra/consensus_cache.dart';
+import 'infra/trusted_time_log.dart';
 
 /// ## Absolute Top Tier: Distributed Lifecycle Orchestration
 ///
@@ -114,7 +114,8 @@ final class SyncEngine {
         legacyCap != null &&
         !_deprecationWarned) {
       _deprecationWarned = true;
-      debugPrint(
+      TrustedTimeLog.log(
+        TrustedTimeLogLevel.warning,
         '[TrustedTime] TrustedTimeConfig.ntsDnsConcurrencyCap is '
         'deprecated; use maxConcurrentDnsLookups. Honouring the legacy '
         'value ($cap) as the unified DNS budget. See ADR 0008.',
@@ -789,7 +790,10 @@ final class SyncEngine {
       // work if the completer has been resolved (or errored)
       // out-of-band.
       if (completer.isCompleted) return;
-      if (kDebugMode) {
+      // Winning-set ids, shared by the consensus attribution log below
+      // and the per-source quality bookkeeping further down.
+      final participantIds = result.participants.map((s) => s.sourceId).toSet();
+      if (TrustedTimeLog.enabled) {
         // Cross-source receipt spread at consensus time: how far apart
         // (on the monotonic receipt timeline) the population's samples
         // arrived, i.e. the exact shift _normalizedToLatestReceipt
@@ -802,9 +806,26 @@ final class SyncEngine {
         final spread = receipts.isEmpty
             ? 'n/a'
             : '${receipts.reduce(max) - receipts.reduce(min)}ms';
-        debugPrint(
-          '[TrustedTime] consensus receiptSpread=$spread '
-          '(${receipts.length}/${samples.length} stamped)',
+        // Attribution: which of the collected population the anchor is
+        // actually standing on (won) versus which entered consensus but
+        // were filtered by Marzullo / the tier truth box (rejected).
+        final truthBoxDropped = result.droppedOutsideTruthBox
+            .map((s) => s.sourceId)
+            .toSet();
+        final rejected = <String>[
+          for (final s in samples)
+            if (!participantIds.contains(s.sourceId))
+              truthBoxDropped.contains(s.sourceId)
+                  ? '${s.sourceId} (outside truth box)'
+                  : '${s.sourceId} (outlier)',
+        ];
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.debug,
+          '[TrustedTime] consensus won=[${participantIds.join(', ')}] '
+          'rejected=[${rejected.join(', ')}] '
+          'receiptSpread=$spread '
+          '(${receipts.length}/${samples.length} stamped) '
+          'authLevel=${result.authLevel.name}',
         );
       }
       _observer?.onConsensusReached(result);
@@ -815,6 +836,17 @@ final class SyncEngine {
       // (authLevel: none); lower-tier samples dropped for falling outside
       // the truth box are surfaced as per-source failures for telemetry.
       if (result.degradedTier) {
+        // Human-readable companion to the degradedTier integrity event:
+        // without it, a cycle that minted an authLevel-none anchor looks
+        // identical to a fully-verified success in the logs, and the
+        // requireSecure failure only surfaces later where getTime()
+        // throws — far from the cycle that caused it.
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.warning,
+          '[TrustedTime] anchor DEGRADED: consensus reached without a '
+          'verified-NTS quorum; authLevel=none. getTime() will throw '
+          'under requireSecure until a verified anchor is minted.',
+        );
         _onIntegrityEvent?.call(
           IntegrityEvent(
             reason: TamperReason.degradedTier,
@@ -833,7 +865,6 @@ final class SyncEngine {
       // consistently-rejected source apart from a consistently-agreeing
       // one; looping participants alone pins every participation rate at
       // 1.0 because every iterated sample is a participant by definition.
-      final participantIds = result.participants.map((s) => s.sourceId).toSet();
       final recorded = <String>{};
       for (final sample in samples) {
         if (!recorded.add(sample.sourceId)) continue;
@@ -1066,6 +1097,35 @@ final class SyncEngine {
     );
   }
 
+  /// One structured `sample <id> ok|fail` line per source per query,
+  /// symmetric across source kinds (NTP, HTTPS, NTS, additional) so
+  /// "is NTP working?" is answerable from the log stream directly
+  /// rather than by subtracting NTS burst counts from consensus totals.
+  void _logSample(TimeSample sample) {
+    if (!TrustedTimeLog.enabled) return;
+    // Approximate server-vs-local offset at receipt; diagnostic only.
+    final offsetMs =
+        sample.utc.millisecondsSinceEpoch -
+        DateTime.now().toUtc().millisecondsSinceEpoch;
+    final sign = offsetMs < 0 ? '' : '+';
+    final rtt = sample.delayMs == null ? 'n/a' : '${sample.delayMs}ms';
+    TrustedTimeLog.log(
+      TrustedTimeLogLevel.debug,
+      '[TrustedTime] sample ${sample.sourceId} ok rtt=$rtt '
+      'offset=$sign${offsetMs}ms u=${sample.uncertaintyMs}ms '
+      'authLevel=${sample.authLevel.name}',
+    );
+  }
+
+  /// Failure counterpart of [_logSample].
+  void _logSampleFailure(String sourceId, Object reason) {
+    if (!TrustedTimeLog.enabled) return;
+    TrustedTimeLog.log(
+      TrustedTimeLogLevel.info,
+      '[TrustedTime] sample $sourceId fail reason=$reason',
+    );
+  }
+
   /// Wraps a source query with timeout and health-tracking logic.
   Future<TimeSample?> _querySafe(TimeSource source) async {
     try {
@@ -1073,6 +1133,7 @@ final class SyncEngine {
       _sourceHealth[source.id] = 0; // Reset failure count on success
       _sourceTransientStreak.remove(source.id);
       _blacklistUntil.remove(source.id);
+      _logSample(sample);
       return sample;
     } on TransientSourceError catch (e) {
       // Source classified the failure as transient (e.g. NtsSource saw
@@ -1089,6 +1150,7 @@ final class SyncEngine {
       // failure to the regular cooldown ladder so the host gets
       // exponential backoff and surfaces as unhealthy through the
       // standard `_blacklistUntil` path.
+      _logSampleFailure(source.id, e);
       _observer?.onSourceFailed(source.id, e);
       // The source was actually queried this cycle (it just failed
       // transiently), so refresh its last-queried cycle for starvation
@@ -1111,6 +1173,7 @@ final class SyncEngine {
       }
       return null;
     } catch (e) {
+      _logSampleFailure(source.id, e);
       _observer?.onSourceFailed(source.id, e);
       // Record the failure against the quality score *before*
       // arming the cooldown so the tracker sees the failed

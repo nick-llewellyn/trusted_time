@@ -63,6 +63,7 @@ import 'src/trusted_time_estimate.dart';
 import 'src/trusted_time_impl.dart';
 import 'src/trusted_time_mock.dart';
 import 'src/infra/sync_observer.dart';
+import 'src/infra/trusted_time_log.dart';
 import 'src/sources/nts_auth_level.dart';
 
 export 'src/background_sync.dart'
@@ -98,6 +99,8 @@ export 'package:nts/nts.dart' show TrustMode, TrustBackend, NtsTrustStatus;
 export 'src/trusted_time_estimate.dart';
 export 'src/trusted_time_mock.dart';
 export 'src/infra/sync_observer.dart';
+export 'src/infra/trusted_time_log.dart'
+    show TrustedTimeLogLevel, TrustedTimeLogSink;
 export 'src/sources/nts_auth_level.dart' show NtsAuthLevel;
 export 'src/domain/time_sample.dart' show TimeSample;
 export 'src/domain/marzullo_engine.dart' show ConsensusResult;
@@ -142,7 +145,24 @@ abstract final class TrustedTime {
   ///   runApp(MyApp());
   /// }
   /// ```
-  static Future<void> initialize({TrustedTimeConfig? config}) async {
+  ///
+  /// [onLog] installs a process-global [TrustedTimeLogSink] that
+  /// receives every `[TrustedTime]` diagnostic line (per-source sample
+  /// results, consensus attribution, degradation warnings) — in release
+  /// and profile builds too — so the host can route them into its own
+  /// logging pipeline. When omitted, any previously installed sink is
+  /// left in place; without a sink, diagnostics fall back to
+  /// `debugPrint` in debug builds and are dropped in release/profile
+  /// builds. A parameter here rather than a [TrustedTimeConfig] field
+  /// because the config documents value-based equality, which a closure
+  /// field would silently break. Note that the OS-scheduled background
+  /// isolate does not inherit this sink; pass `onLog` to
+  /// [runBackgroundSync] separately for background diagnostics.
+  static Future<void> initialize({
+    TrustedTimeConfig? config,
+    TrustedTimeLogSink? onLog,
+  }) async {
+    if (onLog != null) TrustedTimeLog.sink = onLog;
     if (!_timezoneInitialized) {
       tz.initializeTimeZones();
       _timezoneInitialized = true;
@@ -719,12 +739,20 @@ abstract final class TrustedTime {
   /// invalid config) fail immediately. [retryDelays] overrides that
   /// schedule for tests only.
   ///
+  /// [onLog] installs the process-global [TrustedTimeLogSink] for this
+  /// background isolate before the sync runs. The headless isolate is
+  /// freshly spawned by the OS scheduler and does not inherit the sink
+  /// passed to [initialize] in the main isolate, so background
+  /// diagnostics need their own installation here.
+  ///
   /// Returns a [TrustedTimeBackgroundResult] describing the outcome.
   static Future<TrustedTimeBackgroundResult> runBackgroundSync({
     TrustedTimeConfig config = const TrustedTimeConfig(),
     Future<void> Function(TrustedTimeBackgroundResult result)? onResult,
+    TrustedTimeLogSink? onLog,
     @visibleForTesting List<Duration>? retryDelays,
   }) async {
+    if (onLog != null) TrustedTimeLog.sink = onLog;
     // Honor the test-mock override before any side-effecting work. Mirrors
     // the early-return pattern in initialize / now / enableBackgroundSync /
     // registerBackgroundCallback so the dartdoc claim on
