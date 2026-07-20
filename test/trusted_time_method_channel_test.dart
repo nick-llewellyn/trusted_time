@@ -106,11 +106,26 @@ void main() {
     });
 
     test('getBootId uses the channel even with a sleep-aware reader', () async {
+      var bootIdCalls = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (methodCall) async {
+            if (methodCall.method == 'getBootId') {
+              bootIdCalls++;
+              return 'boot-uuid-1';
+            }
+            return null;
+          });
+
+      var readerResolutions = 0;
       final clock = PlatformMonotonicClock(
-        readerFactory: () =>
-            const MonotonicReader(read: _read7500000, isSleepAware: true),
+        readerFactory: () {
+          readerResolutions++;
+          return const MonotonicReader(read: _read7500000, isSleepAware: true);
+        },
       );
       expect(await clock.getBootId(), 'boot-uuid-1');
+      expect(bootIdCalls, 1);
+      expect(readerResolutions, 0);
     });
   });
 }
