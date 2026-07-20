@@ -44,6 +44,8 @@ docs/
 test_results.txt
 *.test_results
 
-
 # Local workspace settings
 .dart_sys_cache
+
+# FVM Version Cache
+.fvm/
