@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:nts/nts.dart' as nts;
 
@@ -33,25 +34,38 @@ typedef MonotonicReaderFactory = MonotonicReader Function();
 /// returned [MonotonicReader.isSleepAware] flag records which timeline
 /// was resolved, so callers can surface (or refuse) the degraded
 /// fallback instead of riding it silently.
+///
+/// Availability is checked via the non-throwing
+/// `NtsRustLib.instance.initialized` signal — the same condition
+/// [nts.MonotonicClock] itself gates on — so bridge-less callers that
+/// resolve on every invocation (e.g. [PlatformMonotonicClock.uptimeMs]
+/// on a timer) never pay an exception-based probe. Deliberately not
+/// memoized: a bridge initialized after a first fallback resolution
+/// must be picked up on the next resolution instead of pinning the
+/// suspend-frozen fallback for the process lifetime.
 MonotonicReader resolveMonotonicReader() {
-  try {
+  // `instance` carries frb's blanket @internal annotation, but the
+  // `initialized` getter on it is the documented public signal — and
+  // the exact gate nts.MonotonicClock's own constructor checks before
+  // throwing. Reading it here keeps the two checks equivalent.
+  // ignore: invalid_use_of_internal_member
+  if (nts.NtsRustLib.instance.initialized) {
     return MonotonicReader(
       read: nts.MonotonicClock.instance.nowMicros,
       isSleepAware: true,
     );
-  } on StateError {
-    // Lazily started on first read: capability-only probes (e.g. the
-    // pre-anchor SyncClock.isSleepAware query behind the fail-fast
-    // gate) resolve a reader they never read, and must not each leave
-    // a running Stopwatch behind. Deltas are unaffected — only
-    // differences between readings from the same reader are
-    // meaningful, and the first read anchors the epoch.
-    Stopwatch? stopwatch;
-    return MonotonicReader(
-      read: () => (stopwatch ??= Stopwatch()..start()).elapsedMicroseconds,
-      isSleepAware: false,
-    );
   }
+  // Lazily started on first read: capability-only probes (e.g. the
+  // pre-anchor SyncClock.isSleepAware query behind the fail-fast
+  // gate) resolve a reader they never read, and must not each leave
+  // a running Stopwatch behind. Deltas are unaffected — only
+  // differences between readings from the same reader are
+  // meaningful, and the first read anchors the epoch.
+  Stopwatch? stopwatch;
+  return MonotonicReader(
+    read: () => (stopwatch ??= Stopwatch()..start()).elapsedMicroseconds,
+    isSleepAware: false,
+  );
 }
 
 /// Contract for providing a hardware-pinned monotonic ticker.
@@ -92,8 +106,9 @@ final class PlatformMonotonicClock implements MonotonicClock {
   /// Creates a clock. [readerFactory] overrides monotonic source
   /// resolution — a test seam; production callers use the default
   /// [resolveMonotonicReader].
-  PlatformMonotonicClock({MonotonicReaderFactory? readerFactory})
-    : _readerFactory = readerFactory ?? resolveMonotonicReader;
+  PlatformMonotonicClock({
+    @visibleForTesting MonotonicReaderFactory? readerFactory,
+  }) : _readerFactory = readerFactory ?? resolveMonotonicReader;
 
   static const _channel = MethodChannel('trusted_time/monotonic');
 
@@ -142,7 +157,7 @@ final class SyncClock {
   /// Creates a clock. [readerFactory] overrides monotonic source
   /// resolution — a test seam; production callers use the default
   /// [resolveMonotonicReader].
-  SyncClock({MonotonicReaderFactory? readerFactory})
+  SyncClock({@visibleForTesting MonotonicReaderFactory? readerFactory})
     : _readerFactory = readerFactory ?? resolveMonotonicReader;
 
   final MonotonicReaderFactory _readerFactory;
