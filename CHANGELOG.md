@@ -40,6 +40,26 @@
   `final x = ...`. Behaviour is otherwise unchanged for valid
   intervals.
 
+### Added
+
+- **Sleep-aware projection is now observable and enforceable.** The
+  suspend-frozen `Stopwatch` fallback (below) was previously silent: a
+  bridge-less config could not tell which timeline `now()` rode.
+  - `TrustedTime.isProjectionSleepAware` reports whether projection
+    rides the sleep-aware `nts.MonotonicClock` (`true`) or the
+    suspend-frozen `Stopwatch` fallback (`false`).
+  - `TrustedTimeConfig.requireSleepAwareProjection` (default `false`)
+    makes suspend-correct projection a hard requirement: when only the
+    fallback is available, `initialize()` throws
+    `TrustedTimeSecurityException` at engine start (fail-fast), and
+    `now()` carries the same guard as defence in depth. The default
+    preserves existing behaviour — the fallback is accepted and merely
+    observable.
+  - `resolveMonotonicReader()` now returns a `MonotonicReader` carrying
+    the resolved `read` function and an `isSleepAware` flag;
+    `SyncClock` exposes `isSleepAware` for the reader captured with the
+    current anchor (probing the factory before the first anchor).
+
 ### Fixed
 
 - **Projected time no longer freezes during device sleep** (with NTS

@@ -110,6 +110,7 @@ final class TrustedTimeConfig {
     this.validateInterval = const Duration(hours: 1),
     this.foregroundValidateThreshold = const Duration(minutes: 15),
     this.ntsBurstCount = 4,
+    this.requireSleepAwareProjection = false,
   }) : assert(
          validateBurstCount >= 1,
          'validateBurstCount must be at least 1: the validate tier must '
@@ -363,6 +364,41 @@ final class TrustedTimeConfig {
   /// Allows for faster "warm-start" trust establishment on app restart.
   final bool persistState;
 
+  /// Whether the engine must project time on a sleep-aware monotonic
+  /// timeline, failing closed when only the suspend-frozen fallback is
+  /// available.
+  ///
+  /// Projection between syncs rides the best available monotonic
+  /// reader. When the `package:nts` bridge is initialized (any config
+  /// with non-empty [ntsServers] whose FFI bootstrap succeeded), that
+  /// is the sleep-aware `nts.MonotonicClock` — `CLOCK_BOOTTIME` /
+  /// `mach_continuous_time` / `QueryInterruptTimePrecise` — which
+  /// keeps counting through device suspend. Without the bridge
+  /// (HTTPS/NTP-only configs, web, or after a genuine bridge init
+  /// failure) the engine falls back to a Dart `Stopwatch`, which
+  /// freezes during suspend: a device that sleeps between syncs then
+  /// reports a projected time behind by the sleep duration until the
+  /// next sync or integrity reconciliation.
+  ///
+  /// `false` (the default) accepts the fallback silently — matching
+  /// pre-existing behaviour — and leaves the timeline observable via
+  /// `TrustedTime.isProjectionSleepAware`. Set `true` when
+  /// suspend-correct projection is a hard requirement:
+  ///
+  /// * `TrustedTime.initialize` throws [TrustedTimeSecurityException]
+  ///   when no sleep-aware reader can be resolved at engine start
+  ///   (including the case where a bridge init failure stripped
+  ///   [ntsServers]), so misconfiguration fails fast rather than at
+  ///   first read; and
+  /// * `TrustedTime.now` throws [TrustedTimeSecurityException] if the
+  ///   projection is ever anchored on a suspend-frozen timeline.
+  ///
+  /// This gate is about projection *between* syncs, not consensus
+  /// quality — it is orthogonal to [ConfidenceLevel] and to
+  /// `requireSecure` (which gates NTS authentication of the anchor
+  /// itself).
+  final bool requireSleepAwareProjection;
+
   /// If true, the engine will stop querying sources as soon as a stable quorum
   /// is reached, conserving network and battery resources.
   final bool earlyExit;
@@ -548,6 +584,7 @@ final class TrustedTimeConfig {
     Duration? validateInterval,
     Duration? foregroundValidateThreshold,
     int? ntsBurstCount,
+    bool? requireSleepAwareProjection,
   }) {
     return TrustedTimeConfig(
       ntpServers: ntpServers ?? this.ntpServers,
@@ -582,6 +619,8 @@ final class TrustedTimeConfig {
       foregroundValidateThreshold:
           foregroundValidateThreshold ?? this.foregroundValidateThreshold,
       ntsBurstCount: ntsBurstCount ?? this.ntsBurstCount,
+      requireSleepAwareProjection:
+          requireSleepAwareProjection ?? this.requireSleepAwareProjection,
     );
   }
 
@@ -614,7 +653,8 @@ final class TrustedTimeConfig {
         other.validateBurstCount == validateBurstCount &&
         other.validateInterval == validateInterval &&
         other.foregroundValidateThreshold == foregroundValidateThreshold &&
-        other.ntsBurstCount == ntsBurstCount;
+        other.ntsBurstCount == ntsBurstCount &&
+        other.requireSleepAwareProjection == requireSleepAwareProjection;
   }
 
   @override
@@ -645,6 +685,7 @@ final class TrustedTimeConfig {
     validateInterval,
     foregroundValidateThreshold,
     ntsBurstCount,
+    requireSleepAwareProjection,
   ]);
 
   @override
@@ -687,6 +728,7 @@ final class TrustedTimeConfig {
         '  validateInterval: $validateInterval,\n'
         '  foregroundValidateThreshold: $foregroundValidateThreshold,\n'
         '  ntsBurstCount: $ntsBurstCount,\n'
+        '  requireSleepAwareProjection: $requireSleepAwareProjection,\n'
         ')';
   }
 }
