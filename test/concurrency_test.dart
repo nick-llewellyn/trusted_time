@@ -21,6 +21,16 @@ class MockMonotonicClock implements MonotonicClock {
   Future<String?> getBootId() async => 'boot-test';
 }
 
+/// Monotonic clock reporting a device uptime smaller than any
+/// plausible consensus age — models an app that started immediately
+/// after boot, for the backdating uptime-floor guard test.
+class JustBootedMonotonicClock implements MonotonicClock {
+  @override
+  Future<int> uptimeMs() async => 600;
+  @override
+  Future<String?> getBootId() async => 'boot-test';
+}
+
 /// Monotonic clock that deliberately holds the first [uptimeMs] call
 /// pending until either a second call arrives or one event-loop turn
 /// elapses. Used by the `_completeSync` re-entry guard tests (skj.2)
@@ -2096,6 +2106,51 @@ void main() {
 
       final anchor = await engine.sync();
       expect(anchor.uptimeMs, 100000);
+    });
+
+    test('an age exceeding the device uptime does not backdate the '
+        'anchor', () async {
+      // Just-booted device: uptime (600 ms) is smaller than the
+      // measured consensus age (1500 ms). Subtracting would yield a
+      // negative uptimeMs, breaking the "ms since boot" invariant, so
+      // the engine must fall back to the unbackdated readings.
+      var micros = 0;
+      TimeSample.debugSetReceiptReader(
+        MonotonicReader(read: () => micros, isSleepAware: true),
+      );
+      addTearDown(() => TimeSample.debugSetReceiptReader(null));
+      micros = 3_500_000;
+
+      final s1 = ReceiptStampedSource(
+        's1',
+        const Duration(milliseconds: 10),
+        999950,
+        1000050,
+        1000,
+        'g1',
+      );
+      final s2 = ReceiptStampedSource(
+        's2',
+        const Duration(milliseconds: 30),
+        1000950,
+        1001050,
+        2000,
+        'g2',
+      );
+
+      final engine = SyncEngine(
+        config: const TrustedTimeConfig(
+          minimumQuorum: 2,
+          minGroupCount: 1,
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+        ).copyWith(additionalSources: [s1, s2]),
+        clock: JustBootedMonotonicClock(),
+      );
+
+      final anchor = await engine.sync();
+      expect(anchor.uptimeMs, 600);
     });
   });
 

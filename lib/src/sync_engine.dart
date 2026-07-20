@@ -946,12 +946,16 @@ final class SyncEngine {
     // an older UTC with younger clock readings. Subtracting the age
     // makes all three anchor fields describe the same instant.
     //
-    // The age is measured on the receipt timeline and clamped to
-    // [0, maxLatency]: negative ages cannot arise from real stamps
-    // (receipts precede anchor creation) but do arise from synthetic
-    // fixture stamps on an unrelated scale, and an age beyond the
-    // whole query budget likewise indicates stamps this arithmetic
-    // must not trust. Both degenerate cases fall back to the
+    // The age is measured on the receipt timeline and accepted only
+    // within (0, min(maxLatency, uptimeMs)]: negative ages cannot
+    // arise from real stamps (receipts precede anchor creation) but
+    // do arise from synthetic fixture stamps on an unrelated scale,
+    // an age beyond the whole query budget likewise indicates stamps
+    // this arithmetic must not trust, and an age exceeding the device
+    // uptime would backdate the anchor to before boot — impossible on
+    // a real device (the receipt timeline starts after process start,
+    // which starts after boot) and a violation of the "ms since boot"
+    // invariant on uptimeMs. All degenerate cases fall back to the
     // pre-existing behaviour (no backdating) rather than corrupting
     // the anchor.
     int? refMs;
@@ -962,7 +966,9 @@ final class SyncEngine {
     var ageMs = 0;
     if (refMs != null) {
       final rawAge = TimeSample.monotonicReceiptNowMs() - refMs;
-      if (rawAge > 0 && rawAge <= _config.maxLatency.inMilliseconds) {
+      if (rawAge > 0 &&
+          rawAge <= _config.maxLatency.inMilliseconds &&
+          rawAge <= uptimeMs) {
         ageMs = rawAge;
       }
     }
