@@ -40,9 +40,15 @@ MonotonicReader resolveMonotonicReader() {
       isSleepAware: true,
     );
   } on StateError {
-    final stopwatch = Stopwatch()..start();
+    // Lazily started on first read: capability-only probes (e.g. the
+    // pre-anchor SyncClock.isSleepAware query behind the fail-fast
+    // gate) resolve a reader they never read, and must not each leave
+    // a running Stopwatch behind. Deltas are unaffected — only
+    // differences between readings from the same reader are
+    // meaningful, and the first read anchors the epoch.
+    Stopwatch? stopwatch;
     return MonotonicReader(
-      read: () => stopwatch.elapsedMicroseconds,
+      read: () => (stopwatch ??= Stopwatch()..start()).elapsedMicroseconds,
       isSleepAware: false,
     );
   }

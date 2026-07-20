@@ -71,13 +71,25 @@ final class TrustedTimeImpl {
 
   /// Documented.
   static Future<TrustedTimeImpl> init(TrustedTimeConfig config) async {
+    // Clear the singleton before bootstrapping the replacement: if
+    // _bootstrap() throws (e.g. the requireSleepAwareProjection
+    // fail-fast gate), [instance] must report "not initialized"
+    // rather than hand out the disposed previous engine.
     _instance?.dispose();
+    _instance = null;
     final impl = TrustedTimeImpl._(
       config: config,
       store: AnchorStore(),
       clock: PlatformMonotonicClock(),
     );
-    await impl._bootstrap();
+    try {
+      await impl._bootstrap();
+    } catch (_) {
+      // Release the partially-bootstrapped engine's resources (sync
+      // engine, integrity monitor, timers) before propagating.
+      impl.dispose();
+      rethrow;
+    }
     _instance = impl;
     _bgChannel.setMethodCallHandler(impl._handleBackgroundMethodCall);
     return impl;

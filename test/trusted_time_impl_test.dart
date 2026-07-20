@@ -348,6 +348,38 @@ void main() {
 
       expect(TrustedTime.isProjectionSleepAware, isTrue);
     });
+
+    test('a failed fail-fast initialize() leaves no stale singleton', () async {
+      // First, a successful init installs a live singleton.
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      expect(TrustedTimeImpl.instance, isNotNull);
+
+      // A re-initialize that trips the gate must not leave [instance]
+      // pointing at the disposed previous engine: the singleton is
+      // cleared before bootstrap, so a failed init lands in a clean
+      // "not initialized" state.
+      await expectLater(
+        TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+            requireSleepAwareProjection: true,
+          ),
+        ),
+        throwsA(isA<TrustedTimeSecurityException>()),
+      );
+
+      expect(() => TrustedTimeImpl.instance, throwsAssertionError);
+    });
   });
 
   group('TrustedTime refresh schedule control', () {

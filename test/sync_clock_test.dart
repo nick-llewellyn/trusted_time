@@ -218,4 +218,28 @@ void main() {
       expect(unbridged.isSleepAware, isFalse);
     });
   });
+
+  group('resolveMonotonicReader fallback', () {
+    // Plain test isolate: nts bridge never initialized, so resolution
+    // deterministically lands on the Stopwatch fallback.
+
+    test('fallback reader still measures elapsed time correctly', () async {
+      final reader = resolveMonotonicReader();
+      expect(reader.isSleepAware, isFalse);
+
+      final first = reader.read();
+      await Future.delayed(const Duration(milliseconds: 50));
+      final second = reader.read();
+      expect(second - first, greaterThanOrEqualTo(20000));
+    });
+
+    test('fallback epoch anchors at first read, not resolution', () async {
+      // The lazy Stopwatch means resolution-to-first-read latency does
+      // not count as elapsed time; the first read defines the epoch.
+      final reader = resolveMonotonicReader();
+      await Future.delayed(const Duration(milliseconds: 50));
+      final first = reader.read();
+      expect(first, lessThan(20000));
+    });
+  });
 }
