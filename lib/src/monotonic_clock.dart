@@ -73,13 +73,42 @@ abstract interface class MonotonicClock {
   Future<String?> getBootId();
 }
 
-/// Production implementation using native OS kernel timers via
-/// platform channels.
+/// Production implementation using native OS kernel timers.
+///
+/// [uptimeMs] prefers the synchronous nts bridge clock when it is
+/// available and falls back to the `trusted_time/monotonic` method
+/// channel otherwise. Both read the same per-boot kernel counters
+/// (`CLOCK_BOOTTIME` / `mach_continuous_time` / interrupt time on the
+/// bridge; `SystemClock.elapsedRealtime()` / `systemUptime` /
+/// `CLOCK_BOOTTIME` / `GetTickCount64()` on the channel), so readings
+/// from the two paths share one epoch and remain mutually comparable —
+/// including against anchors persisted by a previous process on the
+/// other path within the same boot session.
+///
+/// [getBootId] always uses the channel: the bridge clock's epoch is
+/// per-boot but exposes no boot-session *identity*, which the
+/// wait-out-attack detection requires.
 final class PlatformMonotonicClock implements MonotonicClock {
+  /// Creates a clock. [readerFactory] overrides monotonic source
+  /// resolution — a test seam; production callers use the default
+  /// [resolveMonotonicReader].
+  PlatformMonotonicClock({MonotonicReaderFactory? readerFactory})
+    : _readerFactory = readerFactory ?? resolveMonotonicReader;
+
   static const _channel = MethodChannel('trusted_time/monotonic');
+
+  final MonotonicReaderFactory _readerFactory;
 
   @override
   Future<int> uptimeMs() async {
+    // Only a sleep-aware reader is a per-boot kernel counter on the
+    // channel's timeline; the suspend-frozen Stopwatch fallback has an
+    // arbitrary process-relative epoch and must never masquerade as
+    // uptime, so bridge-less configs keep the async channel path.
+    final reader = _readerFactory();
+    if (reader.isSleepAware) {
+      return reader.read() ~/ 1000;
+    }
     final result = await _channel.invokeMethod<int>('getUptimeMs');
     if (result == null) {
       throw StateError('OS kernel returned null uptime baseline.');
