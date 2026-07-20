@@ -2012,6 +2012,91 @@ void main() {
       final anchor = await engine.sync();
       expect(anchor.networkUtcMs, closeTo(1002000, 60));
     });
+
+    test('anchor readings are backdated by the consensus reference '
+        'age', () async {
+      // The consensus UTC is valid at the normalization reference (the
+      // latest receipt stamp), but uptimeMs/wallMs are read later, in
+      // _createAnchor. The engine subtracts the measured age so all
+      // anchor fields describe the reference instant. A scripted
+      // receipt reader makes the age deterministic: stamps land at
+      // 1000 and 2000 ms, anchor creation observes 3500 ms → age 1500.
+      var micros = 0;
+      TimeSample.debugSetReceiptReader(
+        MonotonicReader(read: () => micros, isSleepAware: true),
+      );
+      addTearDown(() => TimeSample.debugSetReceiptReader(null));
+      micros = 3_500_000;
+
+      final s1 = ReceiptStampedSource(
+        's1',
+        const Duration(milliseconds: 10),
+        999950,
+        1000050,
+        1000,
+        'g1',
+      );
+      final s2 = ReceiptStampedSource(
+        's2',
+        const Duration(milliseconds: 30),
+        1000950,
+        1001050,
+        2000,
+        'g2',
+      );
+
+      final engine = SyncEngine(
+        config: const TrustedTimeConfig(
+          minimumQuorum: 2,
+          minGroupCount: 1,
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+        ).copyWith(additionalSources: [s1, s2]),
+        clock: MockMonotonicClock(),
+      );
+
+      final anchor = await engine.sync();
+      // MockMonotonicClock reads 100000; receipt age is 3500 − 2000.
+      expect(anchor.uptimeMs, 100000 - 1500);
+    });
+
+    test('stamps on an unrelated scale do not corrupt the anchor', () async {
+      // Synthetic fixture stamps (here: absolute-wall-scale values far
+      // beyond the process receipt timeline) yield a negative or
+      // over-budget raw age; both degenerate cases must fall back to
+      // the unbackdated readings rather than skew the anchor.
+      final s1 = ReceiptStampedSource(
+        's1',
+        const Duration(milliseconds: 10),
+        999950,
+        1000050,
+        1000000,
+        'g1',
+      );
+      final s2 = ReceiptStampedSource(
+        's2',
+        const Duration(milliseconds: 30),
+        999950,
+        1000050,
+        1000000,
+        'g2',
+      );
+
+      final engine = SyncEngine(
+        config: const TrustedTimeConfig(
+          minimumQuorum: 2,
+          minGroupCount: 1,
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+        ).copyWith(additionalSources: [s1, s2]),
+        clock: MockMonotonicClock(),
+      );
+
+      final anchor = await engine.sync();
+      expect(anchor.uptimeMs, 100000);
+    });
   });
 
   group('DnsBudget (ADR 0008)', () {

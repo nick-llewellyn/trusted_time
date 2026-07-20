@@ -38,6 +38,7 @@ final class TrustedTimeImpl {
     required MonotonicClock clock,
   }) : _config = config,
        _store = store,
+       _clock = clock,
        _cache = ConsensusCache(),
        _syncClock = SyncClock(),
        _monitor = IntegrityMonitor(clock: clock) {
@@ -97,6 +98,7 @@ final class TrustedTimeImpl {
 
   final TrustedTimeConfig _config;
   final AnchorStore _store;
+  final MonotonicClock _clock;
   late final SyncEngine _syncEngine;
   final IntegrityMonitor _monitor;
   final ConsensusCache _cache;
@@ -574,7 +576,16 @@ final class TrustedTimeImpl {
         store: _store,
         config: _config,
       );
-      _applyAnchor(anchor);
+      // The anchor's readings are backdated to the consensus reference
+      // instant (see SyncEngine._createAnchor), so the projection must
+      // be seeded with the gap between that instant and now — the same
+      // uptime arithmetic the warm-restore path uses. Without the seed,
+      // elapsed time would start at zero *now* while networkUtcMs is
+      // valid at the (older) reference instant, re-introducing the age
+      // skew the backdating removed.
+      final uptimeNow = await _clock.uptimeMs();
+      final gapMs = uptimeNow - anchor.uptimeMs;
+      _applyAnchor(anchor, initialElapsedMs: gapMs > 0 ? gapMs : 0);
       _trusted = true;
       _offlineLastUtcMs = anchor.networkUtcMs;
       _offlineLastWallMs = anchor.wallMs;

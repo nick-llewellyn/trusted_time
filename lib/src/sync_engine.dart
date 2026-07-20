@@ -936,10 +936,41 @@ final class SyncEngine {
     final bootId = await _clock.getBootId();
     final wallMs = DateTime.now().millisecondsSinceEpoch;
 
+    // Backdate the anchor readings to the consensus reference instant.
+    // The consensus UTC estimates the true time at the normalization
+    // reference (the latest receipt stamp, which every normalized
+    // participant carries after normalizedTo), while uptimeMs / wallMs
+    // above were read moments *later* — after stream processing,
+    // consensus resolution, and the two awaits. Left uncorrected, that
+    // age is baked into the anchor as permanent skew: projection pairs
+    // an older UTC with younger clock readings. Subtracting the age
+    // makes all three anchor fields describe the same instant.
+    //
+    // The age is measured on the receipt timeline and clamped to
+    // [0, maxLatency]: negative ages cannot arise from real stamps
+    // (receipts precede anchor creation) but do arise from synthetic
+    // fixture stamps on an unrelated scale, and an age beyond the
+    // whole query budget likewise indicates stamps this arithmetic
+    // must not trust. Both degenerate cases fall back to the
+    // pre-existing behaviour (no backdating) rather than corrupting
+    // the anchor.
+    int? refMs;
+    for (final s in participantSamples) {
+      final r = s.receivedAtMs;
+      if (r != null && (refMs == null || r > refMs)) refMs = r;
+    }
+    var ageMs = 0;
+    if (refMs != null) {
+      final rawAge = TimeSample.monotonicReceiptNowMs() - refMs;
+      if (rawAge > 0 && rawAge <= _config.maxLatency.inMilliseconds) {
+        ageMs = rawAge;
+      }
+    }
+
     return TrustAnchor(
       networkUtcMs: result.utc.millisecondsSinceEpoch,
-      uptimeMs: uptimeMs,
-      wallMs: wallMs,
+      uptimeMs: uptimeMs - ageMs,
+      wallMs: wallMs - ageMs,
       uncertaintyMs: result.uncertaintyMs,
       authLevel: result.authLevel,
       confidence: result.confidence,

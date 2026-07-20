@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart' as nts;
 import '../../trusted_time.dart';
+import '../monotonic_clock.dart';
 
 /// Represents a single time measurement from a remote authority.
 /// Combines the mathematical [interval] with telemetry [sourceId] and [groupId].
@@ -106,16 +107,43 @@ final class TimeSample {
   /// consumed unshifted, preserving pre-existing behaviour.
   final int? receivedAtMs;
 
-  static final Stopwatch _receiptStopwatch = Stopwatch()..start();
+  static MonotonicReader? _receiptReader;
+  static int _receiptOriginMicros = 0;
 
   /// Current reading of the process-local monotonic receipt timeline.
   ///
-  /// Backed by [Stopwatch] (the OS monotonic clock), so readings only
-  /// move forward and are immune to system clock steps. Producers use
-  /// this to stamp [receivedAtMs]; the absolute value is meaningless
-  /// across processes or reboots and must only be compared with other
-  /// readings from the same process.
-  static int monotonicReceiptNowMs() => _receiptStopwatch.elapsedMilliseconds;
+  /// Rides the best monotonic reader resolvable at first stamp
+  /// ([resolveMonotonicReader]): the sleep-aware nts bridge clock when
+  /// initialized — the same timeline `package:nts` anchors its own
+  /// samples on and [PlatformMonotonicClock.uptimeMs] reads — or a
+  /// suspend-frozen [Stopwatch]-equivalent fallback otherwise. Either
+  /// way readings only move forward and are immune to system clock
+  /// steps. The reader is latched on the first stamp and never
+  /// re-resolved: a bridge that initializes later must not switch the
+  /// timeline mid-process, which would mix epochs across the readings
+  /// consumers compare.
+  ///
+  /// Producers use this to stamp [receivedAtMs]; the absolute value is
+  /// meaningless across processes or reboots and must only be compared
+  /// with other readings from the same process.
+  static int monotonicReceiptNowMs() {
+    var reader = _receiptReader;
+    if (reader == null) {
+      reader = resolveMonotonicReader();
+      _receiptReader = reader;
+      _receiptOriginMicros = reader.read();
+    }
+    return (reader.read() - _receiptOriginMicros) ~/ 1000;
+  }
+
+  /// Replaces the latched receipt reader (test seam), capturing the
+  /// reader's current value as the new timeline origin. Pass `null` to
+  /// unlatch so the next stamp re-resolves the default reader.
+  @visibleForTesting
+  static void debugSetReceiptReader(MonotonicReader? reader) {
+    _receiptReader = reader;
+    _receiptOriginMicros = reader?.read() ?? 0;
+  }
 
   /// Returns a copy whose [interval] is shifted so it estimates the
   /// true time at [refMs] instead of at the receipt instant.
