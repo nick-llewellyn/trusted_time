@@ -403,6 +403,28 @@ abstract final class TrustedTime {
     return TrustedTimeImpl.instance.supportsSecureTime;
   }
 
+  /// Whether the projection behind [now] rides a sleep-aware monotonic
+  /// timeline.
+  ///
+  /// `true` when elapsed time since the last trust anchor is measured on
+  /// the `package:nts` monotonic clock (`CLOCK_BOOTTIME` /
+  /// `mach_continuous_time` / `QueryInterruptTimePrecise`), which keeps
+  /// counting through device suspend. `false` when the engine is on the
+  /// suspend-frozen `Stopwatch` fallback — HTTPS/NTP-only configs, web,
+  /// or a failed nts bridge bootstrap — where a device sleep between
+  /// syncs leaves [now] behind by the sleep duration until the next
+  /// sync or integrity reconciliation.
+  ///
+  /// Consumers for whom the frozen fallback is unacceptable should set
+  /// [TrustedTimeConfig.requireSleepAwareProjection] instead of polling
+  /// this getter; the config gate fails closed at [initialize] and
+  /// [now]. Under a [TrustedTimeMock] override this returns `true`
+  /// (mock time is script-driven and does not drift during suspend).
+  static bool get isProjectionSleepAware {
+    if (_override != null) return true;
+    return TrustedTimeImpl.instance.isProjectionSleepAware;
+  }
+
   /// Emits events when the engine detects potential temporal tampering.
   ///
   /// The engine proactively monitors for Monotonic-to-Wall drift. If a

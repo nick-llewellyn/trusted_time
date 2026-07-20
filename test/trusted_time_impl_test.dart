@@ -285,6 +285,153 @@ void main() {
     });
   });
 
+  group('sleep-aware projection surface', () {
+    tearDown(TrustedTime.resetOverride);
+
+    // A plain test isolate never initializes the nts bridge
+    // (nts.MonotonicClock.instance throws StateError by contract), so
+    // resolveMonotonicReader deterministically resolves the
+    // suspend-frozen Stopwatch fallback in every test below.
+
+    test(
+      'isProjectionSleepAware reports the fallback timeline honestly',
+      () async {
+        await TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+          ),
+        );
+        addTearDown(TrustedTimeImpl.instance.dispose);
+
+        expect(TrustedTime.isProjectionSleepAware, isFalse);
+      },
+    );
+
+    test('requireSleepAwareProjection fails initialize() fast when only '
+        'the suspend-frozen fallback is available', () async {
+      await expectLater(
+        TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+            requireSleepAwareProjection: true,
+          ),
+        ),
+        throwsA(isA<TrustedTimeSecurityException>()),
+      );
+    });
+
+    test('default (requireSleepAwareProjection: false) accepts the '
+        'fallback and initialize() completes', () async {
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      addTearDown(TrustedTimeImpl.instance.dispose);
+      // No throw; the degraded timeline is observable, not fatal.
+      expect(TrustedTime.isProjectionSleepAware, isFalse);
+    });
+
+    test('isProjectionSleepAware is true under a mock override', () {
+      final mock = TrustedTimeMock(initial: DateTime.utc(2024, 6, 15, 12));
+      addTearDown(mock.dispose);
+      TrustedTime.overrideForTesting(mock);
+
+      expect(TrustedTime.isProjectionSleepAware, isTrue);
+    });
+
+    test('a failed fail-fast initialize() leaves no stale singleton', () async {
+      // First, a successful init installs a live singleton.
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      expect(TrustedTimeImpl.instance, isNotNull);
+
+      // A re-initialize that trips the gate must not leave [instance]
+      // pointing at the disposed previous engine: the singleton is
+      // cleared before bootstrap, so a failed init lands in a clean
+      // "not initialized" state.
+      await expectLater(
+        TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+            requireSleepAwareProjection: true,
+          ),
+        ),
+        throwsA(isA<TrustedTimeSecurityException>()),
+      );
+
+      expect(() => TrustedTimeImpl.instance, throwsAssertionError);
+    });
+
+    test('a failed re-initialize() leaves the background channel handler '
+        'unbound', () async {
+      // Delivers an inbound platform message on the background channel
+      // and reports whether a Dart-side handler answered it: a bound
+      // handler produces a non-null reply envelope, an unbound channel
+      // replies null.
+      Future<bool> backgroundHandlerBound() async {
+        const codec = StandardMethodCodec();
+        final message = codec.encodeMethodCall(
+          const MethodCall('onBackgroundSync'),
+        );
+        ByteData? reply;
+        await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .handlePlatformMessage(
+              'trusted_time/background',
+              message,
+              (data) => reply = data,
+            );
+        return reply != null;
+      }
+
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          httpsSources: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      expect(await backgroundHandlerBound(), isTrue);
+
+      // The gate-tripping re-init disposes the previous engine, which
+      // must unbind the handler — otherwise platform callbacks would
+      // keep invoking the disposed instance.
+      await expectLater(
+        TrustedTime.initialize(
+          config: const TrustedTimeConfig(
+            ntpServers: [],
+            httpsSources: [],
+            ntsServers: [],
+            persistState: false,
+            requireSleepAwareProjection: true,
+          ),
+        ),
+        throwsA(isA<TrustedTimeSecurityException>()),
+      );
+
+      expect(await backgroundHandlerBound(), isFalse);
+    });
+  });
+
   group('TrustedTime refresh schedule control', () {
     // Live-engine tests; tear down any leftover override from earlier
     // groups so the static surface drops into the real
