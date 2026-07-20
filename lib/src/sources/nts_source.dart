@@ -101,7 +101,7 @@ final class NtsSource implements TimeSource, Warmable {
   /// `ntsServers.length + 2` so multi-host pools do not lose admission
   /// races against the global resolver pool.
   ///
-  /// [maxLatency] is forwarded as `ntsQuery`'s `timeoutMs`. [SyncEngine]
+  /// [maxLatency] is forwarded as `ntsQuery`'s `timeout`. [SyncEngine]
   /// passes [TrustedTimeConfig.maxLatency] so the inner per-query budget
   /// matches the outer `.timeout(_config.maxLatency)` wrapper. Without
   /// this, an inner timeout longer than the outer would always be
@@ -163,7 +163,7 @@ final class NtsSource implements TimeSource, Warmable {
     @visibleForTesting Future<nts.NtsTimeSample> Function()? debugQueryOverride,
   }) : _spec = nts.NtsServerSpec(host: _host, port: port),
        _dnsConcurrencyCap = dnsConcurrencyCap,
-       _timeoutMs = maxLatency.inMilliseconds,
+       _timeout = maxLatency,
        _trustMode = trustMode,
        _customRoots = customRoots,
        _onStratumObserved = onStratumObserved,
@@ -180,7 +180,7 @@ final class NtsSource implements TimeSource, Warmable {
   final String _host;
   final nts.NtsServerSpec _spec;
   final int _dnsConcurrencyCap;
-  final int _timeoutMs;
+  final Duration _timeout;
   final nts.TrustMode _trustMode;
   final List<int>? _customRoots;
   final void Function(int)? _onStratumObserved;
@@ -260,14 +260,14 @@ final class NtsSource implements TimeSource, Warmable {
       );
       runQuery = () => client.query(
         spec: _spec,
-        timeoutMs: _timeoutMs,
+        timeout: _timeout,
         dnsConcurrencyCap: _dnsConcurrencyCap,
       );
     }
 
     // Launch the burst concurrently. All attempts share this source's
     // session table (one cookie per attempt, spent up-front) and each
-    // carries its own timeoutMs budget, so a straggler times out
+    // carries its own timeout budget, so a straggler times out
     // inside the same window a single query would have. Every attempt
     // guards its own failure; the burst as a whole succeeds when at
     // least one attempt lands. Each attempt returns its result rather

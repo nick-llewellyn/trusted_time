@@ -26,7 +26,9 @@ typedef NtsBurstClientFactory = NtsBurstClient Function(String host, int port);
 /// a long-lived [NtsBurstClient] whose cached NTS-KE session and
 /// freshly-rotated cookies are reused across same-host bursts.
 NtsBurstClient defaultNtsBurstClientFactory(String host, int port) =>
-    NtsBurstClient(spec: nts.NtsServerSpec(host: host, port: port));
+    NtsBurstClient(
+      spec: nts.NtsServerSpec(host: host, port: port),
+    );
 
 /// Operator-driven UI for firing a single per-host NTS burst against a
 /// chosen server with configurable size and inter-burst spacing mode,
@@ -193,8 +195,9 @@ class _BurstProbePanelState extends State<BurstProbePanel> {
     // non-repeatable Iterables that yield duplicates across
     // iterations (e.g. a chained .followedBy(...) view that
     // overlaps with its base).
-    final hosts =
-        LinkedHashSet<String>.of(widget.candidateHosts).toList(growable: false);
+    final hosts = LinkedHashSet<String>.of(
+      widget.candidateHosts,
+    ).toList(growable: false);
     final effectiveHost = _selectedHost ?? hosts.firstOrNull;
 
     return Column(
@@ -452,9 +455,7 @@ class _BurstResultCard extends StatelessWidget {
     return _resultBox(
       title: 'Last burst: ${r.host} (${r.mode.name})',
       titleColor: failed ? Theme.of(context).colorScheme.error : Colors.green,
-      body: _BurstResultBody(
-        result: r,
-      ),
+      body: _BurstResultBody(result: r),
     );
   }
 
@@ -475,10 +476,7 @@ class _BurstResultCard extends StatelessWidget {
         children: [
           Text(
             title,
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              color: titleColor,
-            ),
+            style: TextStyle(fontWeight: FontWeight.bold, color: titleColor),
           ),
           const SizedBox(height: 8),
           body,
@@ -489,9 +487,7 @@ class _BurstResultCard extends StatelessWidget {
 }
 
 class _BurstResultBody extends StatelessWidget {
-  const _BurstResultBody({
-    required this.result,
-  });
+  const _BurstResultBody({required this.result});
 
   final BurstResult result;
 
@@ -503,9 +499,10 @@ class _BurstResultBody extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _statRow(
-            'Issued',
-            '$issued (${r.queries.length} ok, '
-                '${r.failures.length} failed)'),
+          'Issued',
+          '$issued (${r.queries.length} ok, '
+              '${r.failures.length} failed)',
+        ),
         if (r.hasResult) ...[
           _statRow('Min RTT', '${_us(r.minRttMicros)} ms'),
           _statRow('Median RTT', '${_us(r.medianRttMicros)} ms'),
@@ -548,20 +545,14 @@ class _BurstResultBody extends StatelessWidget {
               expandedCrossAxisAlignment: CrossAxisAlignment.start,
               title: Text(
                 '#${f.index}: ${f.error}',
-                style: const TextStyle(
-                  fontFamily: 'monospace',
-                  fontSize: 12,
-                ),
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
               ),
               children: [
                 Text(
                   f.stackTrace == StackTrace.empty
                       ? '(no stack trace captured)'
                       : f.stackTrace.toString(),
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontSize: 11,
-                  ),
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
                 ),
               ],
             ),

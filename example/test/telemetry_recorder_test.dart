@@ -113,88 +113,77 @@ void main() {
       },
     );
 
-    test(
-      'TransientSourceError wrapping NtsErrorTimeout surfaces both '
-      'the transient tag and the per-phase tag',
-      () {
-        final recorder = TelemetryRecorder();
-        addTearDown(recorder.dispose);
+    test('TransientSourceError wrapping NtsErrorTimeout surfaces both '
+        'the transient tag and the per-phase tag', () {
+      final recorder = TelemetryRecorder();
+      addTearDown(recorder.dispose);
 
-        recorder.onSourceFailed(
-          'nts-cloudflare',
-          TransientSourceError(
-            NtsError.timeout(phase: TimeoutPhase.dnsSaturation),
-          ),
-        );
+      recorder.onSourceFailed(
+        'nts-cloudflare',
+        TransientSourceError(
+          NtsError.timeout(phase: TimeoutPhase.dnsSaturation),
+        ),
+      );
 
-        final detail = recorder.events.last.detail;
-        expect(
-          detail,
-          'nts-cloudflare [transient, no cooldown]: '
-          'timeout during dnsSaturation',
-        );
-      },
-    );
+      final detail = recorder.events.last.detail;
+      expect(
+        detail,
+        'nts-cloudflare [transient, no cooldown]: '
+        'timeout during dnsSaturation',
+      );
+    });
 
-    test(
-      'TransientSourceError wrapping a non-NTS cause surfaces the '
-      'transient tag and unwraps the cause',
-      () {
-        final recorder = TelemetryRecorder();
-        addTearDown(recorder.dispose);
+    test('TransientSourceError wrapping a non-NTS cause surfaces the '
+        'transient tag and unwraps the cause', () {
+      final recorder = TelemetryRecorder();
+      addTearDown(recorder.dispose);
 
-        recorder.onSourceFailed(
-          'http-time',
-          const TransientSourceError('socket exhausted'),
-        );
+      recorder.onSourceFailed(
+        'http-time',
+        const TransientSourceError('socket exhausted'),
+      );
 
-        final detail = recorder.events.last.detail;
-        expect(
-          detail,
-          'http-time [transient, no cooldown]: socket exhausted',
-        );
-      },
-    );
+      final detail = recorder.events.last.detail;
+      expect(detail, 'http-time [transient, no cooldown]: socket exhausted');
+    });
   });
 
   group('TelemetryRecorder.reset preserves elapsed-time origin', () {
-    test(
-      'event recorded after reset has elapsedMs greater than event '
-      'recorded before reset (trusted_time-0hc)',
-      () async {
-        // Regression: reset() previously called `_start..reset()..start()`
-        // along with clearing the event buffer. Calling Clear in the
-        // UI mid-sync-cycle would rewind the elapsed-time origin, so
-        // the remaining callbacks for the in-flight cycle (sample,
-        // sourceFailed, consensus, metrics) would record `elapsedMs`
-        // values starting near zero even though chronologically they
-        // were many hundreds of milliseconds into a cycle that began
-        // before the reset. The on-screen terminal would surface the
-        // rewound ordering and BenchmarkLogger would persist it to
-        // disk.
-        final recorder = TelemetryRecorder();
-        addTearDown(recorder.dispose);
+    test('event recorded after reset has elapsedMs greater than event '
+        'recorded before reset (trusted_time-0hc)', () async {
+      // Regression: reset() previously called `_start..reset()..start()`
+      // along with clearing the event buffer. Calling Clear in the
+      // UI mid-sync-cycle would rewind the elapsed-time origin, so
+      // the remaining callbacks for the in-flight cycle (sample,
+      // sourceFailed, consensus, metrics) would record `elapsedMs`
+      // values starting near zero even though chronologically they
+      // were many hundreds of milliseconds into a cycle that began
+      // before the reset. The on-screen terminal would surface the
+      // rewound ordering and BenchmarkLogger would persist it to
+      // disk.
+      final recorder = TelemetryRecorder();
+      addTearDown(recorder.dispose);
 
-        recorder.onSyncStarted();
-        final beforeReset = recorder.events.last.elapsedMs;
+      recorder.onSyncStarted();
+      final beforeReset = recorder.events.last.elapsedMs;
 
-        // Sleep long enough for the elapsed-time origin difference to
-        // be observable above scheduler jitter on slow CI.
-        await Future<void>.delayed(const Duration(milliseconds: 50));
+      // Sleep long enough for the elapsed-time origin difference to
+      // be observable above scheduler jitter on slow CI.
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
-        recorder.reset();
+      recorder.reset();
 
-        recorder.onSyncStarted();
-        final afterReset = recorder.events.last.elapsedMs;
+      recorder.onSyncStarted();
+      final afterReset = recorder.events.last.elapsedMs;
 
-        expect(
-          afterReset,
-          greaterThan(beforeReset),
-          reason: 'reset() must preserve the elapsed-time origin; '
-              'resetting it mid-cycle would misorder events from any '
-              'in-flight sync cycle in the persisted session log.',
-        );
-      },
-    );
+      expect(
+        afterReset,
+        greaterThan(beforeReset),
+        reason:
+            'reset() must preserve the elapsed-time origin; '
+            'resetting it mid-cycle would misorder events from any '
+            'in-flight sync cycle in the persisted session log.',
+      );
+    });
   });
 }

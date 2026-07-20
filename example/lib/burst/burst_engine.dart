@@ -24,14 +24,11 @@ class NtsBurstClient {
   /// cookies and the AEAD-NTPv4 session persist across queries within
   /// the same burst — bursts after the first issued against this
   /// client never repeat the NTS-KE handshake.
-  NtsBurstClient({
-    required this.spec,
-    nts.NtsClient? client,
-    Random? random,
-  })  : _client = client ?? nts.NtsClient(),
-        _random = random ?? Random(),
-        _queryFn = null,
-        _nowUtcMicros = defaultNowUtcMicros;
+  NtsBurstClient({required this.spec, nts.NtsClient? client, Random? random})
+    : _client = client ?? nts.NtsClient(),
+      _random = random ?? Random(),
+      _queryFn = null,
+      _nowUtcMicros = defaultNowUtcMicros;
 
   /// Test constructor. Bypasses the real `package:nts` client by
   /// taking an injectable [_queryFn] and an injectable [_nowUtcMicros]
@@ -43,10 +40,10 @@ class NtsBurstClient {
     required Future<nts.NtsTimeSample> Function(int issueIndex) queryFn,
     required int Function() nowUtcMicros,
     Random? random,
-  })  : _client = null,
-        _random = random ?? Random(),
-        _queryFn = queryFn,
-        _nowUtcMicros = nowUtcMicros;
+  }) : _client = null,
+       _random = random ?? Random(),
+       _queryFn = queryFn,
+       _nowUtcMicros = nowUtcMicros;
 
   /// Server connection spec passed unchanged to `package:nts` on every
   /// query. The hostname surfaced on [BurstResult.host] is derived
@@ -84,7 +81,7 @@ class NtsBurstClient {
     BurstMode mode = BurstMode.parallel,
     Duration jitterWindow = const Duration(milliseconds: 200),
     Duration sequentialSpacing = const Duration(milliseconds: 500),
-    int timeoutMs = nts.kDefaultTimeoutMs,
+    Duration timeout = nts.kDefaultTimeout,
   }) async {
     if (jitterWindow < Duration.zero || jitterWindow > _maxBurstWindow) {
       throw ArgumentError.value(
@@ -119,7 +116,7 @@ class NtsBurstClient {
       // best independence" guarantee the mode promises.
       for (var i = 0; i < effectiveCount; i++) {
         if (i > 0) await Future.delayed(sequentialSpacing);
-        await _issueOne(i, timeoutMs, results, failures);
+        await _issueOne(i, timeout, results, failures);
       }
     } else {
       final issueDelays = _planParallelDelays(
@@ -131,7 +128,7 @@ class NtsBurstClient {
         for (var i = 0; i < effectiveCount; i++)
           Future.delayed(
             issueDelays[i],
-            () => _issueOne(i, timeoutMs, results, failures),
+            () => _issueOne(i, timeout, results, failures),
           ),
       ];
       await Future.wait(futures);
@@ -147,13 +144,13 @@ class NtsBurstClient {
 
   Future<void> _issueOne(
     int idx,
-    int timeoutMs,
+    Duration timeout,
     List<BurstQueryResult> results,
     List<BurstFailure> failures,
   ) async {
     final sendUtcMicros = _nowUtcMicros();
     try {
-      final sample = await _runQuery(idx, timeoutMs);
+      final sample = await _runQuery(idx, timeout);
       results.add(_buildQueryResult(sample, sendUtcMicros));
     } catch (err, st) {
       // Capture the stack trace alongside the error so callers
@@ -164,10 +161,10 @@ class NtsBurstClient {
     }
   }
 
-  Future<nts.NtsTimeSample> _runQuery(int issueIndex, int timeoutMs) {
+  Future<nts.NtsTimeSample> _runQuery(int issueIndex, Duration timeout) {
     final fn = _queryFn;
     if (fn != null) return fn(issueIndex);
-    return _client!.query(spec: spec, timeoutMs: timeoutMs);
+    return _client!.query(spec: spec, timeout: timeout);
   }
 
   BurstQueryResult _buildQueryResult(

@@ -23,8 +23,10 @@ NtsBurstClient testClient({
   // host; [testClientFactory] overrides it with the panel-selected
   // `(host, port)` so [BurstResult.host] matches what the dropdown
   // shows in widget tests.
-  nts.NtsServerSpec spec =
-      const nts.NtsServerSpec(host: 'test.local', port: 4460),
+  nts.NtsServerSpec spec = const nts.NtsServerSpec(
+    host: 'test.local',
+    port: 4460,
+  ),
   Random? random,
   Duration? queryDelay,
   void Function()? onIssue,
