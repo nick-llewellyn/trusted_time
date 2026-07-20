@@ -58,9 +58,7 @@ void main() {
       await tester.pumpWidget(_harness(hosts: const []));
 
       expect(
-        find.text(
-          'No NTS hosts available — pick at least one in Section 7.',
-        ),
+        find.text('No NTS hosts available — pick at least one in Section 7.'),
         findsOneWidget,
       );
       // Run button must be disabled when no host is selectable.
@@ -74,9 +72,7 @@ void main() {
       'renders host dropdown with all candidates and default form state',
       (tester) async {
         await tester.pumpWidget(
-          _harness(
-            hosts: const ['time.cloudflare.com', 'mmo1.nts.netnod.se'],
-          ),
+          _harness(hosts: const ['time.cloudflare.com', 'mmo1.nts.netnod.se']),
         );
 
         expect(find.text('Target host'), findsOneWidget);
@@ -93,54 +89,36 @@ void main() {
       },
     );
 
-    testWidgets(
-      'switching to jittered mode reveals the jitter-window slider',
-      (tester) async {
-        await tester.pumpWidget(
-          _harness(hosts: const ['time.cloudflare.com']),
-        );
+    testWidgets('switching to jittered mode reveals the jitter-window slider', (
+      tester,
+    ) async {
+      await tester.pumpWidget(_harness(hosts: const ['time.cloudflare.com']));
 
-        // The mode dropdown is the second DropdownButtonFormField in
-        // the tree (host dropdown is first); tap it to open the menu.
-        await tester.tap(
-          find.text('parallel — fire all queries at t = 0'),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.text('jittered — random delays within a window').last,
-        );
-        await tester.pumpAndSettle();
+      // The mode dropdown is the second DropdownButtonFormField in
+      // the tree (host dropdown is first); tap it to open the menu.
+      await tester.tap(find.text('parallel — fire all queries at t = 0'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.text('jittered — random delays within a window').last,
+      );
+      await tester.pumpAndSettle();
 
-        expect(
-          find.textContaining('Jitter window: 200 ms'),
-          findsOneWidget,
-        );
-      },
-    );
+      expect(find.textContaining('Jitter window: 200 ms'), findsOneWidget);
+    });
 
-    testWidgets(
-      'switching to sequential mode reveals the spacing slider',
-      (tester) async {
-        await tester.pumpWidget(
-          _harness(hosts: const ['time.cloudflare.com']),
-        );
+    testWidgets('switching to sequential mode reveals the spacing slider', (
+      tester,
+    ) async {
+      await tester.pumpWidget(_harness(hosts: const ['time.cloudflare.com']));
 
-        await tester.tap(
-          find.text('parallel — fire all queries at t = 0'),
-        );
-        await tester.pumpAndSettle();
-        await tester.tap(
-          find.text('sequential — wait between completions').last,
-        );
-        await tester.pumpAndSettle();
+      await tester.tap(find.text('parallel — fire all queries at t = 0'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('sequential — wait between completions').last);
+      await tester.pumpAndSettle();
 
-        expect(
-          find.textContaining('Sequential spacing'),
-          findsOneWidget,
-        );
-        expect(find.textContaining('500 ms'), findsOneWidget);
-      },
-    );
+      expect(find.textContaining('Sequential spacing'), findsOneWidget);
+      expect(find.textContaining('500 ms'), findsOneWidget);
+    });
 
     testWidgets(
       'didUpdateWidget drops the auto-default host when it disappears',
@@ -250,9 +228,7 @@ void main() {
         // unselectable on platforms whose Slider interpolation
         // surfaces sub-integer values at the max division. round()
         // closes that gap. Pin it.
-        await tester.pumpWidget(
-          _harness(hosts: const ['time.cloudflare.com']),
-        );
+        await tester.pumpWidget(_harness(hosts: const ['time.cloudflare.com']));
 
         // Default is 4; verify the label shows that before the drag.
         expect(
@@ -308,60 +284,56 @@ void main() {
       },
     );
 
-    testWidgets(
-      'a whole-burst failure renders the failure message',
-      (tester) async {
-        await tester.pumpWidget(
-          _harness(
-            hosts: const ['mmo1.nts.netnod.se'],
-            clientFactory: testClientFactory(
-              nowFn: () => 1000000000,
-              // Every query throws, so the burst returns with no
-              // successful samples (hasResult == false).
-              rtts: const [-1, -1, -1, -1],
-              serverOffsetMicros: 5000,
-            ),
+    testWidgets('a whole-burst failure renders the failure message', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _harness(
+          hosts: const ['mmo1.nts.netnod.se'],
+          clientFactory: testClientFactory(
+            nowFn: () => 1000000000,
+            // Every query throws, so the burst returns with no
+            // successful samples (hasResult == false).
+            rtts: const [-1, -1, -1, -1],
+            serverOffsetMicros: 5000,
           ),
-        );
+        ),
+      );
 
-        await _runBurstAndSettle(tester);
+      await _runBurstAndSettle(tester);
 
-        expect(
-          find.text('Whole burst failed; no aggregated stats available.'),
-          findsOneWidget,
-        );
-        // Count line still reflects the failures.
-        expect(find.text('4 (0 ok, 4 failed)'), findsOneWidget);
-      },
-    );
+      expect(
+        find.text('Whole burst failed; no aggregated stats available.'),
+        findsOneWidget,
+      );
+      // Count line still reflects the failures.
+      expect(find.text('4 (0 ok, 4 failed)'), findsOneWidget);
+    });
 
-    testWidgets(
-      'the injected client factory is consulted once per host across '
-      'repeated bursts',
-      (tester) async {
-        // Pins the panel's per-(host, port) client caching: a second
-        // burst against the same host must reuse the cached client
-        // rather than re-invoking the factory (which, in production,
-        // would re-pay the NTS-KE handshake).
-        final created = <String>[];
-        await tester.pumpWidget(
-          _harness(
-            hosts: const ['time.cloudflare.com'],
-            clientFactory: testClientFactory(
-              nowFn: () => 1000000000,
-              rtts: const [10000, 20000, 30000, 40000],
-              serverOffsetMicros: 5000,
-              onCreate: (host, port) => created.add('$host:$port'),
-            ),
+    testWidgets('the injected client factory is consulted once per host across '
+        'repeated bursts', (tester) async {
+      // Pins the panel's per-(host, port) client caching: a second
+      // burst against the same host must reuse the cached client
+      // rather than re-invoking the factory (which, in production,
+      // would re-pay the NTS-KE handshake).
+      final created = <String>[];
+      await tester.pumpWidget(
+        _harness(
+          hosts: const ['time.cloudflare.com'],
+          clientFactory: testClientFactory(
+            nowFn: () => 1000000000,
+            rtts: const [10000, 20000, 30000, 40000],
+            serverOffsetMicros: 5000,
+            onCreate: (host, port) => created.add('$host:$port'),
           ),
-        );
+        ),
+      );
 
-        await _runBurstAndSettle(tester);
-        await _runBurstAndSettle(tester);
+      await _runBurstAndSettle(tester);
+      await _runBurstAndSettle(tester);
 
-        expect(created, ['time.cloudflare.com:4460']);
-      },
-    );
+      expect(created, ['time.cloudflare.com:4460']);
+    });
 
     testWidgets(
       'rebuilding with a new clientFactory invalidates the cached client '
@@ -376,9 +348,9 @@ void main() {
         final second = <String>[];
 
         Widget build(NtsBurstClientFactory factory) => _harness(
-              hosts: const ['time.cloudflare.com'],
-              clientFactory: factory,
-            );
+          hosts: const ['time.cloudflare.com'],
+          clientFactory: factory,
+        );
 
         await tester.pumpWidget(
           build(

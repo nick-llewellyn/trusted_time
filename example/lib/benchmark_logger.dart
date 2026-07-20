@@ -34,9 +34,8 @@ import 'sync_telemetry.dart';
 /// core `trusted_time` package itself remains web-compatible — only
 /// this example-only diagnostic instrument is native-scoped.
 class BenchmarkLogger {
-  BenchmarkLogger({
-    Duration flushInterval = const Duration(seconds: 5),
-  }) : _flushInterval = flushInterval;
+  BenchmarkLogger({Duration flushInterval = const Duration(seconds: 5)})
+    : _flushInterval = flushInterval;
 
   final Duration _flushInterval;
 
@@ -150,7 +149,8 @@ class BenchmarkLogger {
   static String _formatStamp(DateTime t) {
     String two(int v) => v.toString().padLeft(2, '0');
     String three(int v) => v.toString().padLeft(3, '0');
-    final d = '${t.year.toString().padLeft(4, '0')}'
+    final d =
+        '${t.year.toString().padLeft(4, '0')}'
         '${two(t.month)}${two(t.day)}';
     final h = '${two(t.hour)}${two(t.minute)}${two(t.second)}';
     // Millisecond suffix so two BenchmarkLoggers started in the same

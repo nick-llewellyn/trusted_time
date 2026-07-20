@@ -49,9 +49,9 @@ void main() {
   const monotonicChannel = MethodChannel('trusted_time/monotonic');
   TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
       .setMockMethodCallHandler(monotonicChannel, (call) async {
-    if (call.method == 'getUptimeMs') return 1000;
-    return null;
-  });
+        if (call.method == 'getUptimeMs') return 1000;
+        return null;
+      });
 
   const backgroundChannel = MethodChannel('trusted_time/background');
   TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -86,76 +86,77 @@ void main() {
     expect(find.text('Section 1 — Live Clock'), findsOneWidget);
   });
 
-  testWidgets(
-    'Section 7 FilterChips reflect TrustedTime.config.ntsServers',
-    (WidgetTester tester) async {
-      // Widget-layer contract test. Pins that _BenchmarkingPanel's
-      // FilterChip selection state is derived from
-      // `TrustedTime.config.ntsServers` and nothing else. Uses the
-      // override path so the assertion targets the widget code
-      // exclusively without depending on engine behaviour. The
-      // companion test below exercises the same code path against
-      // the real TrustedTimeImpl.
-      final mock = TrustedTimeMock(initial: DateTime.utc(2024, 1, 1, 12));
-      addTearDown(() {
-        TrustedTime.resetOverride();
-        mock.dispose();
-      });
-      TrustedTime.overrideForTesting(mock);
+  testWidgets('Section 7 FilterChips reflect TrustedTime.config.ntsServers', (
+    WidgetTester tester,
+  ) async {
+    // Widget-layer contract test. Pins that _BenchmarkingPanel's
+    // FilterChip selection state is derived from
+    // `TrustedTime.config.ntsServers` and nothing else. Uses the
+    // override path so the assertion targets the widget code
+    // exclusively without depending on engine behaviour. The
+    // companion test below exercises the same code path against
+    // the real TrustedTimeImpl.
+    final mock = TrustedTimeMock(initial: DateTime.utc(2024, 1, 1, 12));
+    addTearDown(() {
+      TrustedTime.resetOverride();
+      mock.dispose();
+    });
+    TrustedTime.overrideForTesting(mock);
 
-      // Under an override, TrustedTime.config returns
-      // `const TrustedTimeConfig()`. Snapshot the active host set off
-      // the live getter rather than hard-coding it, so the assertion
-      // automatically tracks any future change to the default
-      // ntsServers list in TrustedTimeConfig's constructor.
-      final activeServers = TrustedTime.config.ntsServers.toSet();
+    // Under an override, TrustedTime.config returns
+    // `const TrustedTimeConfig()`. Snapshot the active host set off
+    // the live getter rather than hard-coding it, so the assertion
+    // automatically tracks any future change to the default
+    // ntsServers list in TrustedTimeConfig's constructor.
+    final activeServers = TrustedTime.config.ntsServers.toSet();
+    expect(
+      activeServers,
+      isNotEmpty,
+      reason:
+          'Default TrustedTimeConfig.ntsServers must seed at '
+          'least one host for this test to be meaningful',
+    );
+
+    await tester.pumpWidget(MyApp(telemetry: TelemetryRecorder()));
+    // Bounded pumps for the same reason as the sibling test above:
+    // _HomePageState's 1 s UI ticker prevents pumpAndSettle from
+    // ever returning. Two pumps are enough to lay out Section 7.
+    await tester.pump();
+    await tester.pump();
+
+    final chipFinder = find.byType(FilterChip);
+    expect(chipFinder, findsWidgets);
+
+    // The chip pool is the static union of curated + extended pools
+    // (see nts_sources.dart), so the rendered chip count is
+    // strictly greater than the active server count.
+    final chips = tester.widgetList<FilterChip>(chipFinder).toList();
+    final renderedSelection = <String, bool>{
+      for (final chip in chips) (chip.label as Text).data!: chip.selected,
+    };
+
+    // Every active host must be present and selected. Every other
+    // rendered chip must be unselected. Together these pin the
+    // bidirectional sync between the engine config (via the public
+    // TrustedTime.config getter) and the UI.
+    for (final host in activeServers) {
       expect(
-        activeServers,
-        isNotEmpty,
-        reason: 'Default TrustedTimeConfig.ntsServers must seed at '
-            'least one host for this test to be meaningful',
+        renderedSelection[host],
+        isTrue,
+        reason: 'Active host $host must be a selected chip',
       );
-
-      await tester.pumpWidget(MyApp(telemetry: TelemetryRecorder()));
-      // Bounded pumps for the same reason as the sibling test above:
-      // _HomePageState's 1 s UI ticker prevents pumpAndSettle from
-      // ever returning. Two pumps are enough to lay out Section 7.
-      await tester.pump();
-      await tester.pump();
-
-      final chipFinder = find.byType(FilterChip);
-      expect(chipFinder, findsWidgets);
-
-      // The chip pool is the static union of curated + extended pools
-      // (see nts_sources.dart), so the rendered chip count is
-      // strictly greater than the active server count.
-      final chips = tester.widgetList<FilterChip>(chipFinder).toList();
-      final renderedSelection = <String, bool>{
-        for (final chip in chips) (chip.label as Text).data!: chip.selected,
-      };
-
-      // Every active host must be present and selected. Every other
-      // rendered chip must be unselected. Together these pin the
-      // bidirectional sync between the engine config (via the public
-      // TrustedTime.config getter) and the UI.
-      for (final host in activeServers) {
-        expect(
-          renderedSelection[host],
-          isTrue,
-          reason: 'Active host $host must be a selected chip',
-        );
-      }
-      for (final entry in renderedSelection.entries) {
-        final shouldBeSelected = activeServers.contains(entry.key);
-        expect(
-          entry.value,
-          shouldBeSelected,
-          reason: 'Chip ${entry.key} selected=${entry.value} '
-              'does not match TrustedTime.config.ntsServers',
-        );
-      }
-    },
-  );
+    }
+    for (final entry in renderedSelection.entries) {
+      final shouldBeSelected = activeServers.contains(entry.key);
+      expect(
+        entry.value,
+        shouldBeSelected,
+        reason:
+            'Chip ${entry.key} selected=${entry.value} '
+            'does not match TrustedTime.config.ntsServers',
+      );
+    }
+  });
 
   testWidgets(
     'real engine: chips reflect TrustedTime.config after initialize',
@@ -258,8 +259,9 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      final chips =
-          tester.widgetList<FilterChip>(find.byType(FilterChip)).toList();
+      final chips = tester
+          .widgetList<FilterChip>(find.byType(FilterChip))
+          .toList();
       expect(chips, isNotEmpty);
 
       final renderedSelection = <String, bool>{
@@ -270,7 +272,8 @@ void main() {
         expect(
           renderedSelection[host],
           isTrue,
-          reason: 'Active host $host (from real engine config) must be a '
+          reason:
+              'Active host $host (from real engine config) must be a '
               'selected chip',
         );
       }
@@ -278,7 +281,8 @@ void main() {
         expect(
           entry.value,
           activeServers.contains(entry.key),
-          reason: 'Chip ${entry.key} selected=${entry.value} does not match '
+          reason:
+              'Chip ${entry.key} selected=${entry.value} does not match '
               'real engine TrustedTime.config.ntsServers',
         );
       }

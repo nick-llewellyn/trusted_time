@@ -27,8 +27,9 @@ import 'sync_telemetry.dart';
 /// cycle so diagnostic comparisons are not confounded by random subset
 /// selection.
 TrustedTimeConfig buildStressConfig() {
-  final ntsSubset = (List<String>.of(curatedNtsPool)..shuffle(Random()))
-      .toList(growable: false);
+  final ntsSubset = (List<String>.of(
+    curatedNtsPool,
+  )..shuffle(Random())).toList(growable: false);
   return TrustedTimeConfig(
     ntpServers: const [],
     httpsSources: const [],
@@ -480,7 +481,7 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _worldwideRotationOffset =
             (_worldwideRotationOffset + _worldwideSubsetSize) %
-                extendedNtsPool.length;
+            extendedNtsPool.length;
       });
       unawaited(_reconfigureEngine(_currentWorldwideSubset()));
     });
@@ -637,8 +638,9 @@ class _HomePageState extends State<HomePage> {
     setState(() => _reconfiguring = true);
     var failed = false;
     try {
-      final shuffled =
-          (List<String>.of(servers)..shuffle(Random())).toList(growable: false);
+      final shuffled = (List<String>.of(
+        servers,
+      )..shuffle(Random())).toList(growable: false);
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
@@ -889,13 +891,9 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
             _sectionHeader('Section 5b — Background Sync Log (headless)'),
-            _card(
-              child: const _BackgroundSyncLogPanel(),
-            ),
+            _card(child: const _BackgroundSyncLogPanel()),
             _sectionHeader('Section 6 — Sync Telemetry'),
-            _card(
-              child: _SyncTelemetryPanel(recorder: widget.telemetry),
-            ),
+            _card(child: _SyncTelemetryPanel(recorder: widget.telemetry)),
             _sectionHeader('Section 7 — Benchmarking Configuration'),
             _card(
               child: _BenchmarkingPanel(
@@ -1085,7 +1083,7 @@ class _BackgroundSyncLogPanelState extends State<_BackgroundSyncLogPanel> {
               _loading
                   ? 'Loading…'
                   : '${_lines.length} entr${_lines.length == 1 ? 'y' : 'ies'} '
-                      '(newest first)',
+                        '(newest first)',
               style: const TextStyle(fontWeight: FontWeight.w600),
             ),
             Row(
@@ -1129,10 +1127,10 @@ class _BackgroundSyncLogPanelState extends State<_BackgroundSyncLogPanel> {
                     // background path never ran.
                     BackgroundSyncFileLog.enabled
                         ? 'No background fires recorded yet.\n'
-                            'Trigger one, then Refresh.'
+                              'Trigger one, then Refresh.'
                         : 'Transcript logging is disabled in this build.\n'
-                            'Rebuild with --dart-define=BG_SYNC_LOG=true '
-                            'to enable it.',
+                              'Rebuild with --dart-define=BG_SYNC_LOG=true '
+                              'to enable it.',
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: Colors.white38, fontSize: 12),
                   ),
@@ -1287,7 +1285,8 @@ class _SyncTelemetryPanelState extends State<_SyncTelemetryPanel> {
           // (controller not yet attached), in which case we skip the
           // jump entirely — the initial layout already lands at
           // offset 0 with no content above it.
-          final wasNearBottom = _scrollController.hasClients &&
+          final wasNearBottom =
+              _scrollController.hasClients &&
               (_scrollController.position.maxScrollExtent -
                       _scrollController.position.pixels) <=
                   _stickyThresholdPx;
@@ -1519,8 +1518,8 @@ class _BenchmarkingPanel extends StatelessWidget {
                       reconfiguring
                           ? 'Reconfiguring…'
                           : worldwideRotationActive
-                              ? 'Rotation running…'
-                              : 'Run Worldwide Beauty Parade',
+                          ? 'Rotation running…'
+                          : 'Run Worldwide Beauty Parade',
                     ),
                     onPressed: (reconfiguring || worldwideRotationActive)
                         ? null
@@ -1585,7 +1584,7 @@ class _BenchmarkingPanel extends StatelessWidget {
           subtitle: Text(
             continuousEnabled
                 ? 'Chains forceResync after every cycle '
-                    '(delay: ${interCycleDelaySeconds}s)'
+                      '(delay: ${interCycleDelaySeconds}s)'
                 : 'Single-shot mode (use Force Resync in Section 1)',
             style: const TextStyle(fontSize: 12),
           ),
@@ -1720,9 +1719,9 @@ class _DnsPoolStatsBar extends StatelessWidget {
     final detail = s == null
         ? 'DNS pool: n/a (NTS disabled or NtsRustLib not initialised)'
         : 'DNS pool — inFlight: ${s.inFlight}  '
-            'hwm: ${s.highWaterMark}  '
-            'recovered: ${s.recovered}  '
-            'refused: ${s.refused}';
+              'hwm: ${s.highWaterMark}  '
+              'recovered: ${s.recovered}  '
+              'refused: ${s.refused}';
     return Text(
       detail,
       style: TextStyle(
@@ -1759,9 +1758,9 @@ class _TrustStatusBar extends StatelessWidget {
     final detail = s == null
         ? 'Trust status: n/a (NTS disabled or NtsRustLib not initialised)'
         : 'Trust status — '
-            'singleton: ${s.defaultClientBackend?.name ?? 'idle'}  '
-            'androidInit: ${s.androidPlatformInitSucceeded}  '
-            'hybridFallbacks: ${s.androidHybridFallbackCount}';
+              'singleton: ${s.defaultClientBackend?.name ?? 'idle'}  '
+              'androidInit: ${s.androidPlatformInitSucceeded}  '
+              'hybridFallbacks: ${s.androidHybridFallbackCount}';
     return Text(
       detail,
       style: TextStyle(
@@ -1804,8 +1803,9 @@ class _DnsCapOverridePanel extends StatelessWidget {
     // so the manual mode begins from the same effective budget the
     // engine was already using. Subsequent toggles preserve the
     // operator's chosen value.
-    final sliderValue =
-        (capOverride ?? defaultBudget).clamp(_minCap, _maxCap).toDouble();
+    final sliderValue = (capOverride ?? defaultBudget)
+        .clamp(_minCap, _maxCap)
+        .toDouble();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1816,14 +1816,12 @@ class _DnsCapOverridePanel extends StatelessWidget {
           subtitle: Text(
             autoOn
                 ? 'Engine uses its unified DNS budget (default '
-                    '$defaultBudget)'
+                      '$defaultBudget)'
                 : 'Manual override: $capOverride',
             style: const TextStyle(fontSize: 12),
           ),
           value: autoOn,
-          onChanged: (val) => onChanged(
-            val ? null : sliderValue.toInt(),
-          ),
+          onChanged: (val) => onChanged(val ? null : sliderValue.toInt()),
         ),
         if (!autoOn)
           Padding(

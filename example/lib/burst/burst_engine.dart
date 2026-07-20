@@ -24,14 +24,11 @@ class NtsBurstClient {
   /// cookies and the AEAD-NTPv4 session persist across queries within
   /// the same burst — bursts after the first issued against this
   /// client never repeat the NTS-KE handshake.
-  NtsBurstClient({
-    required this.spec,
-    nts.NtsClient? client,
-    Random? random,
-  })  : _client = client ?? nts.NtsClient(),
-        _random = random ?? Random(),
-        _queryFn = null,
-        _nowUtcMicros = defaultNowUtcMicros;
+  NtsBurstClient({required this.spec, nts.NtsClient? client, Random? random})
+    : _client = client ?? nts.NtsClient(),
+      _random = random ?? Random(),
+      _queryFn = null,
+      _nowUtcMicros = defaultNowUtcMicros;
 
   /// Test constructor. Bypasses the real `package:nts` client by
   /// taking an injectable [_queryFn] and an injectable [_nowUtcMicros]
@@ -43,10 +40,10 @@ class NtsBurstClient {
     required Future<nts.NtsTimeSample> Function(int issueIndex) queryFn,
     required int Function() nowUtcMicros,
     Random? random,
-  })  : _client = null,
-        _random = random ?? Random(),
-        _queryFn = queryFn,
-        _nowUtcMicros = nowUtcMicros;
+  }) : _client = null,
+       _random = random ?? Random(),
+       _queryFn = queryFn,
+       _nowUtcMicros = nowUtcMicros;
 
   /// Server connection spec passed unchanged to `package:nts` on every
   /// query. The hostname surfaced on [BurstResult.host] is derived
