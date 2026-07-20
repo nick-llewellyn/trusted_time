@@ -82,10 +82,29 @@ void main() {
   });
 
   group('PlatformMonotonicClock under an initialized bridge', () {
+    // "Never touches the channel" must not depend on no handler being
+    // installed — another file leaking a trusted_time/monotonic
+    // handler would turn that into a silent false positive. Install a
+    // handler that fails on any call, and clear it so this file leaks
+    // nothing in turn.
+    const monotonicChannel = MethodChannel('trusted_time/monotonic');
+
+    setUpAll(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(monotonicChannel, (call) async {
+            fail(
+              'uptimeMs must ride the bridge; unexpected '
+              'trusted_time/monotonic call: ${call.method}',
+            );
+          });
+    });
+
+    tearDownAll(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(monotonicChannel, null);
+    });
+
     test('uptimeMs reads the bridge, never the method channel', () async {
-      // No channel handler is installed in this file: if uptimeMs fell
-      // back to the async channel path it would fail on the missing
-      // plugin instead of returning the stub reading.
       final clock = PlatformMonotonicClock();
       expect(await clock.uptimeMs(), api.nowMicros ~/ 1000);
     });
@@ -121,16 +140,22 @@ void main() {
   });
 
   group('TrustedTime.initialize under an initialized bridge', () {
+    // initialize() touches secure storage teardown paths even with
+    // persistState: false; a null-returning handler keeps the test
+    // hermetic. Cleared in tearDownAll — leaked handlers race with
+    // other files on the same channel (see security_policy_test.dart).
+    const storageChannel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
+
     setUpAll(() {
-      // initialize() touches secure storage teardown paths even with
-      // persistState: false; a null-returning handler keeps the test
-      // hermetic. uptimeMs itself rides the bridge stub, not the
-      // trusted_time/monotonic channel.
-      const storageChannel = MethodChannel(
-        'plugins.it_nomads.com/flutter_secure_storage',
-      );
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(storageChannel, (call) async => null);
+    });
+
+    tearDownAll(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, null);
     });
 
     test('requireSleepAwareProjection passes the fail-fast gate', () async {
