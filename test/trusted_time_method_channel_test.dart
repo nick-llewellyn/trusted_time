@@ -72,5 +72,62 @@ void main() {
       final clock = PlatformMonotonicClock();
       expect(await clock.getBootId(), isNull);
     });
+
+    test('uptimeMs prefers a sleep-aware reader over the channel', () async {
+      var channelCalls = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (methodCall) async {
+            channelCalls++;
+            return 42000;
+          });
+
+      final clock = PlatformMonotonicClock(
+        readerFactory: () =>
+            const MonotonicReader(read: _read7500000, isSleepAware: true),
+      );
+      expect(await clock.uptimeMs(), 7500);
+      expect(channelCalls, 0);
+    });
+
+    test('uptimeMs falls back to the channel when the reader is not '
+        'sleep-aware', () async {
+      var readerReads = 0;
+      final clock = PlatformMonotonicClock(
+        readerFactory: () => MonotonicReader(
+          read: () {
+            readerReads++;
+            return 7500000;
+          },
+          isSleepAware: false,
+        ),
+      );
+      expect(await clock.uptimeMs(), 42000);
+      expect(readerReads, 0);
+    });
+
+    test('getBootId uses the channel even with a sleep-aware reader', () async {
+      var bootIdCalls = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (methodCall) async {
+            if (methodCall.method == 'getBootId') {
+              bootIdCalls++;
+              return 'boot-uuid-1';
+            }
+            return null;
+          });
+
+      var readerResolutions = 0;
+      final clock = PlatformMonotonicClock(
+        readerFactory: () {
+          readerResolutions++;
+          return const MonotonicReader(read: _read7500000, isSleepAware: true);
+        },
+      );
+      expect(await clock.getBootId(), 'boot-uuid-1');
+      expect(bootIdCalls, 1);
+      expect(readerResolutions, 0);
+    });
   });
 }
+
+int _read7500000() => 7500000;
