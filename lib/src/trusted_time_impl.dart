@@ -116,13 +116,21 @@ final class TrustedTimeImpl {
   // against the same source.
   bool _validateInProgress = false;
 
-  /// Monotonic clock used to measure how long the app spent backgrounded.
+  /// Monotonic reader used to measure how long the app spent backgrounded.
   /// Deliberately *not* wall-clock time: a trusted-time library must not
   /// trust [DateTime.now] to gate its own freshness checks, since a
   /// backward clock jump would yield a negative duration and skip the
-  /// validate cycle precisely when drift is most likely. [Stopwatch] is
-  /// backed by a monotonic platform clock and is immune to such jumps.
-  final Stopwatch _monotonic = Stopwatch()..start();
+  /// validate cycle precisely when drift is most likely. Resolved via
+  /// [resolveMonotonicReader], so on bridge-initialized configs the
+  /// reading rides the sleep-aware nts clock and background time spent
+  /// in device suspend counts toward the foreground-validate threshold;
+  /// bridge-less configs fall back to a suspend-frozen [Stopwatch]
+  /// timeline. Only differences between readings are meaningful.
+  final int Function() _monotonicRead = resolveMonotonicReader();
+
+  /// Current reading of [_monotonicRead] as a [Duration] since the
+  /// reader's arbitrary epoch. Only differences are meaningful.
+  Duration get _monotonicElapsed => Duration(microseconds: _monotonicRead());
 
   /// Synchronous re-entry guard for [_performSync], paired with
   /// [_syncInProgress]. The Completer-based check is the canonical
@@ -683,7 +691,7 @@ final class TrustedTimeImpl {
     _scheduleValidate();
     if (kIsWeb) return;
     final observer = _AppLifecycleObserver(
-      (state) => _handleAppLifecycleState(state, _monotonic.elapsed),
+      (state) => _handleAppLifecycleState(state, _monotonicElapsed),
     );
     try {
       WidgetsBinding.instance.addObserver(observer);
@@ -767,7 +775,8 @@ final class TrustedTimeImpl {
   /// a monotonic clock, and on the next [AppLifecycleState.resumed] runs
   /// a validate cycle iff the app was backgrounded for at least
   /// [TrustedTimeConfig.foregroundValidateThreshold]. [now] is a
-  /// monotonic elapsed reading (see [_monotonic]), never wall-clock time,
+  /// monotonic elapsed reading (see [_monotonicElapsed]), never wall-clock
+  /// time,
   /// so a backward clock jump can neither produce a negative duration nor
   /// suppress the probe. Gated on [CadenceMode.tieredMobile] so the
   /// legacy mode never reacts to lifecycle events.
@@ -831,7 +840,7 @@ final class TrustedTimeImpl {
   void debugHandleAppLifecycleState(
     AppLifecycleState state, {
     Duration? elapsed,
-  }) => _handleAppLifecycleState(state, elapsed ?? _monotonic.elapsed);
+  }) => _handleAppLifecycleState(state, elapsed ?? _monotonicElapsed);
 
   static const _bgChannel = MethodChannel('trusted_time/background');
 

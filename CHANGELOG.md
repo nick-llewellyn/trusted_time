@@ -40,6 +40,23 @@
   `final x = ...`. Behaviour is otherwise unchanged for valid
   intervals.
 
+### Fixed
+
+- **Projected time no longer freezes during device sleep** (with NTS
+  configured). `SyncClock` — the sub-microsecond projection behind
+  `now()` — and the foreground-validate background-duration reading
+  previously measured elapsed time with Dart's `Stopwatch`, whose
+  underlying clock (`CLOCK_MONOTONIC` / `mach_absolute_time`) stops
+  during suspend. A device that slept between syncs returned a
+  projected time behind by the sleep duration until the next sync or
+  reconciliation. Both now prefer the sleep-aware
+  `nts.MonotonicClock` (`CLOCK_BOOTTIME` / `mach_continuous_time` /
+  `QueryInterruptTimePrecise`), resolved per anchor update so a
+  bridge initialized after startup is picked up at the next sync.
+  Configs that never initialize the nts bridge (HTTPS/NTP-only, web)
+  keep the previous `Stopwatch` behaviour. `SyncClock` gains an
+  injectable `readerFactory` seam for tests.
+
 ## [2.1.0]
 
 ### Breaking Changes
