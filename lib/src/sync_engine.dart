@@ -928,20 +928,28 @@ final class SyncEngine {
       );
     }
 
-    final uptimeMs = await _clock.uptimeMs();
     // Stamp the boot-session identity so warm restore can compare it
     // against the device's current boot ID. Null on platforms without a
     // boot concept (web), where the anchor cannot outlive the session
-    // anyway.
+    // anyway. Read *before* the clock readings below: bootId is a
+    // platform-channel round trip whose latency must not fall between
+    // the uptime reading and the age measurement, or it would be
+    // subtracted from an uptime it never aged (over-backdating).
     final bootId = await _clock.getBootId();
+    final uptimeMs = await _clock.uptimeMs();
     final wallMs = DateTime.now().millisecondsSinceEpoch;
+    // Age reference stamp, taken synchronously right after the readings
+    // it corrects so the interval [receipt reference → this stamp]
+    // brackets uptimeMs/wallMs as tightly as possible. Only the
+    // uptimeMs channel-return latency remains inside the measurement.
+    final currentReceiptMs = TimeSample.monotonicReceiptNowMs();
 
     // Backdate the anchor readings to the consensus reference instant.
     // The consensus UTC estimates the true time at the normalization
     // reference (the latest receipt stamp, which every normalized
     // participant carries after normalizedTo), while uptimeMs / wallMs
     // above were read moments *later* — after stream processing,
-    // consensus resolution, and the two awaits. Left uncorrected, that
+    // consensus resolution, and the awaits. Left uncorrected, that
     // age is baked into the anchor as permanent skew: projection pairs
     // an older UTC with younger clock readings. Subtracting the age
     // makes all three anchor fields describe the same instant.
@@ -965,7 +973,7 @@ final class SyncEngine {
     }
     var ageMs = 0;
     if (refMs != null) {
-      final rawAge = TimeSample.monotonicReceiptNowMs() - refMs;
+      final rawAge = currentReceiptMs - refMs;
       if (rawAge > 0 &&
           rawAge <= _config.maxLatency.inMilliseconds &&
           rawAge <= uptimeMs) {
