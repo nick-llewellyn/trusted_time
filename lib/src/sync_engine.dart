@@ -375,8 +375,8 @@ final class SyncEngine {
   /// of whole-round-trip delay units. Prefers the measured delay
   /// [TimeSample.delayMs] (δ — network-only peer delay for nts 7.1
   /// clock-filter samples, whole RTT otherwise) and falls back to
-  /// `2 * `[TimeSample.uncertaintyMs] when a source did not time the
-  /// round trip — the interval half-width is ≈ δ/2, so doubling it
+  /// doubling [TimeSample.uncertaintyMs] when a source did not time
+  /// the round trip — the interval half-width is ≈ δ/2, so doubling it
   /// keeps the key in delay units and avoids mixing δ with δ/2 across
   /// samples. All samples in a burst come from one source, so the key
   /// is internally consistent even when δ is unmeasured.
