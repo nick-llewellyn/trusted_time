@@ -183,10 +183,12 @@ final class IntegrityMonitor {
           );
       }
     } catch (e, st) {
-      TrustedTimeLog.log(
-        TrustedTimeLogLevel.error,
-        '[TrustedTime] Critical failure in native event dispatcher: $e\n$st',
-      );
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.error,
+          '[TrustedTime] Critical failure in native event dispatcher: $e\n$st',
+        );
+      }
     }
   }
 

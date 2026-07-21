@@ -65,10 +65,18 @@ abstract final class TrustedTimeLog {
   /// Routes [message] to the installed sink, or to [debugPrint] in
   /// debug builds when no sink is installed. A sink takes over
   /// routing entirely — messages are not additionally [debugPrint]ed.
+  ///
+  /// A sink that throws (despite the [TrustedTimeLogSink] contract) is
+  /// contained here: logging is a side channel, and a consumer logging
+  /// bug must not take down a sync or background-sync flow.
   static void log(TrustedTimeLogLevel level, String message) {
     final sink = _sink;
     if (sink != null) {
-      sink(level, message);
+      try {
+        sink(level, message);
+      } catch (e) {
+        if (kDebugMode) debugPrint('[TrustedTime] log sink threw: $e');
+      }
       return;
     }
     if (kDebugMode) debugPrint(message);

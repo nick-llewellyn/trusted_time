@@ -809,19 +809,22 @@ final class SyncEngine {
         // Attribution: which of the collected population the anchor is
         // actually standing on (won) versus which entered consensus but
         // were filtered by Marzullo / the tier truth box (rejected).
+        // Both lists are sorted (and rejected de-duplicated) so the
+        // structured line is stable for log parsers and tests.
         final truthBoxDropped = result.droppedOutsideTruthBox
             .map((s) => s.sourceId)
             .toSet();
-        final rejected = <String>[
+        final won = participantIds.toList()..sort();
+        final rejected = <String>{
           for (final s in samples)
             if (!participantIds.contains(s.sourceId))
               truthBoxDropped.contains(s.sourceId)
                   ? '${s.sourceId} (outside truth box)'
                   : '${s.sourceId} (outlier)',
-        ];
+        }.toList()..sort();
         TrustedTimeLog.log(
           TrustedTimeLogLevel.debug,
-          '[TrustedTime] consensus won=[${participantIds.join(', ')}] '
+          '[TrustedTime] consensus won=[${won.join(', ')}] '
           'rejected=[${rejected.join(', ')}] '
           'receiptSpread=$spread '
           '(${receipts.length}/${samples.length} stamped) '
