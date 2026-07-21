@@ -459,6 +459,26 @@ void main() {
       expect(sample.rootDistanceMs, 18);
     });
 
+    test('sub-millisecond server error budget rounds up, never to '
+        'zero', () async {
+      // rootDelay/2 + rootDispersion = 250 + 900 = 1150µs → 2ms after
+      // ceiling. Λ is a bound: conversion error must widen it, not
+      // truncate a non-zero budget away.
+      final sample = await convert(
+        rawSample(
+          roundTripMicros: 80000,
+          utcUnixMicros: 1000000000000,
+          peerDelayMicros: 20000,
+          rootDelayMicros: 500,
+          rootDispersionMicros: 900,
+        ),
+      );
+
+      expect(sample.dispersionMs, 2);
+      // Half-width Λ = δ/2 + E = 10 + 2 = 12ms.
+      expect(sample.uncertaintyMs, 12);
+    });
+
     test('zero peer delay (sentinel) keeps the legacy RTT/2 shape', () async {
       final sample = await convert(
         rawSample(

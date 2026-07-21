@@ -23,7 +23,9 @@ import 'nts_auth_level.dart';
 typedef NtsBurstReducer = TimeSample Function(List<TimeSample> samples);
 
 /// Default [NtsBurstReducer]: keeps the sample with the smallest
-/// measured network delay.
+/// measured delay ([TimeSample.delayMs] — the network-only peer delay
+/// δ for samples carrying the 7.1 clock-filter fields, else the whole
+/// round trip).
 ///
 /// The minimum measured delay is the tightest, least path-asymmetric
 /// estimate in the burst — the burst-and-pick-min strategy
@@ -434,9 +436,12 @@ final class NtsSource implements TimeSource, Warmable {
       // Server-side error budget E = rootDelay/2 + rootDispersion,
       // kept on [TimeSample.dispersionMs] so
       // [TimeSample.rootDistanceMs] (Λ = E + δ/2) reproduces the
-      // half-width used here.
-      dispersionMs =
-          (result.rootDelayMicros ~/ 2 + result.rootDispersionMicros) ~/ 1000;
+      // half-width used here. Summed in µs and rounded *up* to ms so
+      // a sub-millisecond budget is never truncated to zero — Λ is a
+      // bound, so conversion error must widen it, not shrink it.
+      final errorBudgetMicros =
+          result.rootDelayMicros ~/ 2 + result.rootDispersionMicros;
+      dispersionMs = (errorBudgetMicros + 999) ~/ 1000;
       uncertaintyMs = peerDelayMicros ~/ 2000 + dispersionMs;
     } else {
       timestampMs = result.utcUnixMicros ~/ 1000;
