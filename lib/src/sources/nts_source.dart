@@ -23,17 +23,23 @@ import 'nts_auth_level.dart';
 typedef NtsBurstReducer = TimeSample Function(List<TimeSample> samples);
 
 /// Default [NtsBurstReducer]: keeps the sample with the smallest
-/// round-trip delay.
+/// measured delay ([TimeSample.delayMs] — the network-only peer delay
+/// δ for samples carrying the 7.1 clock-filter fields, else the whole
+/// round trip).
 ///
-/// The minimum measured RTT is the tightest, least path-asymmetric
+/// The minimum measured delay is the tightest, least path-asymmetric
 /// estimate in the burst — the burst-and-pick-min strategy
 /// `package:nts` documents, and the same reduction the validate tier
 /// applies via `SyncEngine.validate()`. The comparison key matches
 /// `SyncEngine._rttKey`: [TimeSample.delayMs] when measured, else
 /// `2 × uncertaintyMs` (the interval half-width is ≈ δ/2, so doubling
-/// keeps the key in RTT units). All samples in a burst come from one
-/// source, so the key is internally consistent even when δ is
-/// unmeasured.
+/// keeps the key in delay units). For NTS samples carrying the 7.1
+/// clock-filter fields, [TimeSample.delayMs] is the RFC 5905 peer
+/// delay δ (round trip minus server processing time), so the key
+/// excludes server-side latency and selects on pure network delay;
+/// pre-7.1 samples carry the whole RTT there and reduce exactly as
+/// before. All samples in a burst come from one source, so the key is
+/// internally consistent even when δ is unmeasured.
 TimeSample lowestRttReducer(List<TimeSample> samples) {
   assert(samples.isNotEmpty, 'reducer requires at least one sample');
   var best = samples.first;
@@ -398,11 +404,51 @@ final class NtsSource implements TimeSource, Warmable {
   /// Converts one successful raw query result into the [TimeSample]
   /// shape the engine consumes, stamped with that attempt's own
   /// receipt instant.
+  ///
+  /// When the 7.1 clock-filter fields are available (peer delay δ
+  /// inside its documented plausibility window `(0, roundTripMicros]`),
+  /// the interval follows RFC 5905: the midpoint is the server
+  /// transmit time compensated by half the network delay
+  /// (`utcUnixMicros + δ/2`, the server's clock at the moment the
+  /// reply arrived) and the half-width is the root distance
+  /// `Λ = δ/2 + rootDelay/2 + rootDispersion` — a provably correct
+  /// bound that excludes server processing time, so it is materially
+  /// tighter than the RTT/2 worst case against distant servers with
+  /// fast processing. A zero or implausible δ means the fields are
+  /// unavailable (pre-7.1 fixture) or a local clock step corrupted the
+  /// exchange; those samples keep the legacy `utcUnixMicros ± RTT/2`
+  /// shape byte-for-byte.
   TimeSample _toTimeSample(nts.NtsTimeSample result, int receivedAtMs) {
-    // Calculate uncertainty from network RTT (convert microseconds to
-    // milliseconds).
-    final uncertaintyMs = result.roundTripMicros ~/ 2000;
-    final timestampMs = result.utcUnixMicros ~/ 1000;
+    final rttMicros = result.roundTripMicros;
+    final peerDelayMicros = result.peerDelayMicros;
+    // Upstream's documented plausibility check: δ outside
+    // (0, roundTripMicros] signals "not available" (zero sentinel) or
+    // a local clock step mid-exchange — fall back to whole-RTT math.
+    final hasClockFilter = peerDelayMicros > 0 && peerDelayMicros <= rttMicros;
+
+    final int timestampMs;
+    final int uncertaintyMs;
+    final int delayMs;
+    final int dispersionMs;
+    if (hasClockFilter) {
+      timestampMs = (result.utcUnixMicros + peerDelayMicros ~/ 2) ~/ 1000;
+      delayMs = peerDelayMicros ~/ 1000;
+      // Server-side error budget E = rootDelay/2 + rootDispersion,
+      // kept on [TimeSample.dispersionMs] so
+      // [TimeSample.rootDistanceMs] (Λ = E + δ/2) reproduces the
+      // half-width used here. rootDelay/2 and the ms conversion both
+      // round *up* so no division ever shrinks the budget — Λ is a
+      // bound, so conversion error must widen it, not shrink it.
+      final errorBudgetMicros =
+          (result.rootDelayMicros + 1) ~/ 2 + result.rootDispersionMicros;
+      dispersionMs = (errorBudgetMicros + 999) ~/ 1000;
+      uncertaintyMs = peerDelayMicros ~/ 2000 + dispersionMs;
+    } else {
+      timestampMs = result.utcUnixMicros ~/ 1000;
+      delayMs = rttMicros ~/ 1000;
+      dispersionMs = 0;
+      uncertaintyMs = rttMicros ~/ 2000;
+    }
 
     return TimeSample(
       interval: TimeInterval(
@@ -415,10 +461,12 @@ final class NtsSource implements TimeSource, Warmable {
       // received at different points in the cycle to one reference
       // instant before Marzullo intersection.
       receivedAtMs: receivedAtMs,
-      // Whole round-trip delay δ (RTT), kept separate from the interval
-      // half-width so root distance (Λ = E + δ/2) is computable. The
-      // interval math above is unchanged.
-      delayMs: result.roundTripMicros ~/ 1000,
+      // Network delay δ — peer delay when the clock-filter fields are
+      // plausible, else the whole RTT — kept separate from the
+      // interval half-width so root distance (Λ = E + δ/2) is
+      // computable and burst reduction keys on network delay.
+      delayMs: delayMs,
+      dispersionMs: dispersionMs,
       // Classify by the trust anchor that authenticated this handshake
       // rather than assuming every successful NTS query is verified: a
       // platform-mediated path (which may chain through a

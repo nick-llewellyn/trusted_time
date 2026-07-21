@@ -72,10 +72,13 @@ final class TimeSample {
   /// one each individual handshake actually resolved to.
   final nts.TrustBackend? trustBackend;
 
-  /// The round-trip delay `δ` for this sample, in milliseconds — the
-  /// whole measured RTT, not the half-width. Null when the source did
-  /// not measure a round trip, in which case [rootDistanceMs] falls
-  /// back to the interval half-width for the `δ/2` term.
+  /// The network delay `δ` for this sample, in milliseconds — a whole
+  /// round trip, not the half-width. For NTS samples carrying the
+  /// nts 7.1 clock-filter fields this is the RFC 5905 peer delay
+  /// (round trip minus server processing time); for all other samples
+  /// it is the whole measured RTT. Null when the source did not
+  /// measure a round trip, in which case [rootDistanceMs] falls back
+  /// to the interval half-width for the `δ/2` term.
   final int? delayMs;
 
   /// The dispersion `E` for this sample, in milliseconds — accumulated
@@ -192,7 +195,7 @@ final class TimeSample {
   int get uncertaintyMs => interval.width ~/ 2;
 
   /// NTPv4 root distance: `Λ = E + δ/2` (dispersion plus half the
-  /// round-trip delay). Lower is better.
+  /// network delay [delayMs]). Lower is better.
   ///
   /// Falls back to [uncertaintyMs] (the interval half-width) for the
   /// `δ/2` term when [delayMs] is unset, so the metric is always

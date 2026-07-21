@@ -7,10 +7,15 @@ import 'package:trusted_time/src/sources/nts_auth_level.dart';
 import 'package:trusted_time/src/sources/nts_source.dart';
 
 /// Fixture: a raw query result with the given RTT (µs) and timestamp.
+/// The 7.1 clock-filter fields default to their `0` "not available"
+/// sentinels, matching pre-7.1-shaped samples.
 nts.NtsTimeSample rawSample({
   required int roundTripMicros,
   int utcUnixMicros = 1000000000000,
   int serverStratum = 2,
+  int peerDelayMicros = 0,
+  int rootDelayMicros = 0,
+  int rootDispersionMicros = 0,
 }) {
   return nts.NtsTimeSample(
     utcUnixMicros: utcUnixMicros,
@@ -25,6 +30,9 @@ nts.NtsTimeSample rawSample({
       keRecordIoMicros: 0,
     ),
     trustBackend: nts.TrustBackend.webpkiRoots,
+    peerDelayMicros: peerDelayMicros,
+    rootDelayMicros: rootDelayMicros,
+    rootDispersionMicros: rootDispersionMicros,
   );
 }
 
@@ -410,6 +418,149 @@ void main() {
       // The assertion fires inside getTime()'s awaited work, so the
       // expectation must await the Future to reliably observe it.
       await expectLater(source.getTime(), throwsAssertionError);
+    });
+  });
+
+  group('RFC 5905 clock-filter interval shaping (nts 7.1)', () {
+    // One helper per case: run a single-query burst through
+    // debugQueryOverride so the sample crosses the real _toTimeSample
+    // conversion.
+    Future<TimeSample> convert(nts.NtsTimeSample raw) async {
+      final source = NtsSource(
+        'test.example',
+        debugQueryOverride: () async => raw,
+      );
+      return source.getTime();
+    }
+
+    test('plausible peer delay yields the root-distance interval', () async {
+      // RTT 80ms, δ 20ms (server spent 60ms processing), root delay
+      // 10ms, root dispersion 3ms.
+      final sample = await convert(
+        rawSample(
+          roundTripMicros: 80000,
+          utcUnixMicros: 1000000000000,
+          peerDelayMicros: 20000,
+          rootDelayMicros: 10000,
+          rootDispersionMicros: 3000,
+        ),
+      );
+
+      // Midpoint: server transmit time + δ/2 = 1000000000ms + 10ms.
+      expect(sample.interval.midpoint, 1000000010);
+      // Half-width Λ = δ/2 + rootDelay/2 + rootDispersion
+      //             = 10 + 5 + 3 = 18ms (vs 40ms under RTT/2).
+      expect(sample.uncertaintyMs, 18);
+      // δ is the network-only peer delay, not the whole RTT.
+      expect(sample.delayMs, 20);
+      // E = rootDelay/2 + rootDispersion = 8ms, so Λ = E + δ/2
+      // reproduces the half-width.
+      expect(sample.dispersionMs, 8);
+      expect(sample.rootDistanceMs, 18);
+    });
+
+    test('sub-millisecond server error budget rounds up, never to '
+        'zero', () async {
+      // rootDelay/2 + rootDispersion = 250 + 900 = 1150µs → 2ms after
+      // ceiling. Λ is a bound: conversion error must widen it, not
+      // truncate a non-zero budget away.
+      final sample = await convert(
+        rawSample(
+          roundTripMicros: 80000,
+          utcUnixMicros: 1000000000000,
+          peerDelayMicros: 20000,
+          rootDelayMicros: 500,
+          rootDispersionMicros: 900,
+        ),
+      );
+
+      expect(sample.dispersionMs, 2);
+      // Half-width Λ = δ/2 + E = 10 + 2 = 12ms.
+      expect(sample.uncertaintyMs, 12);
+    });
+
+    test('zero peer delay (sentinel) keeps the legacy RTT/2 shape', () async {
+      final sample = await convert(
+        rawSample(
+          roundTripMicros: 80000,
+          utcUnixMicros: 1000000000000,
+          // peerDelayMicros defaults to 0: pre-7.1-shaped sample.
+          rootDelayMicros: 10000,
+          rootDispersionMicros: 3000,
+        ),
+      );
+
+      expect(sample.interval.midpoint, 1000000000);
+      expect(sample.uncertaintyMs, 40);
+      expect(sample.delayMs, 80);
+      expect(sample.dispersionMs, 0);
+    });
+
+    test('implausible peer delay (> RTT) falls back to RTT/2', () async {
+      // δ above the round trip signals a local clock step
+      // mid-exchange; the clock-filter fields must be ignored.
+      final sample = await convert(
+        rawSample(
+          roundTripMicros: 80000,
+          utcUnixMicros: 1000000000000,
+          peerDelayMicros: 90000,
+          rootDelayMicros: 10000,
+          rootDispersionMicros: 3000,
+        ),
+      );
+
+      expect(sample.interval.midpoint, 1000000000);
+      expect(sample.uncertaintyMs, 40);
+      expect(sample.delayMs, 80);
+      expect(sample.dispersionMs, 0);
+    });
+
+    test('burst reduction keys on peer delay, not whole RTT', () async {
+      // Attempt 0: lower RTT but higher network delay (fast server
+      // processing far away). Attempt 1: higher RTT but lower δ (slow
+      // server processing nearby). The reducer must pick attempt 1 —
+      // the least path-asymmetric sample.
+      var call = 0;
+      final raws = [
+        rawSample(
+          roundTripMicros: 50000,
+          peerDelayMicros: 45000,
+          utcUnixMicros: 1000000000000,
+        ),
+        rawSample(
+          roundTripMicros: 70000,
+          peerDelayMicros: 15000,
+          utcUnixMicros: 1000000000000,
+        ),
+      ];
+      final source = NtsSource(
+        'test.example',
+        burstCount: 2,
+        debugQueryOverride: () async => raws[call++],
+      );
+
+      final sample = await source.getTime();
+      expect(sample.delayMs, 15);
+    });
+
+    test('mixed burst: plausible-δ sample outranks a sentinel sample '
+        'only when its δ is smaller', () async {
+      // Sentinel attempt keys on its whole RTT (30ms); the
+      // clock-filter attempt keys on δ = 12ms and wins despite its
+      // larger RTT.
+      var call = 0;
+      final raws = [
+        rawSample(roundTripMicros: 30000),
+        rawSample(roundTripMicros: 60000, peerDelayMicros: 12000),
+      ];
+      final source = NtsSource(
+        'test.example',
+        burstCount: 2,
+        debugQueryOverride: () async => raws[call++],
+      );
+
+      final sample = await source.getTime();
+      expect(sample.delayMs, 12);
     });
   });
 }
