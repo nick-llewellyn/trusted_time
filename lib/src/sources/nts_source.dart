@@ -436,11 +436,11 @@ final class NtsSource implements TimeSource, Warmable {
       // Server-side error budget E = rootDelay/2 + rootDispersion,
       // kept on [TimeSample.dispersionMs] so
       // [TimeSample.rootDistanceMs] (Λ = E + δ/2) reproduces the
-      // half-width used here. Summed in µs and rounded *up* to ms so
-      // a sub-millisecond budget is never truncated to zero — Λ is a
+      // half-width used here. rootDelay/2 and the ms conversion both
+      // round *up* so no division ever shrinks the budget — Λ is a
       // bound, so conversion error must widen it, not shrink it.
       final errorBudgetMicros =
-          result.rootDelayMicros ~/ 2 + result.rootDispersionMicros;
+          (result.rootDelayMicros + 1) ~/ 2 + result.rootDispersionMicros;
       dispersionMs = (errorBudgetMicros + 999) ~/ 1000;
       uncertaintyMs = peerDelayMicros ~/ 2000 + dispersionMs;
     } else {

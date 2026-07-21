@@ -240,12 +240,14 @@ final class SyncEngine {
   /// Unlike [sync], this runs no Marzullo consensus and builds no truth
   /// box: it bursts a short series of authenticated NTS queries against
   /// the highest-quality healthy NTS source and returns the single
-  /// sample with the smallest round-trip delay. The burst size is
+  /// sample with the smallest measured delay ([TimeSample.delayMs] —
+  /// the network-only peer delay δ for samples carrying the nts 7.1
+  /// clock-filter fields, else the whole RTT). The burst size is
   /// [TrustedTimeConfig.validateBurstCount]; each query past the first
   /// spends one in-band-refilled cookie (a single UDP round-trip, no
-  /// new NTS-KE handshake), and the lowest-RTT sample is the tightest,
-  /// least path-asymmetric estimate (the burst-and-pick-min strategy
-  /// package:nts documents). The caller
+  /// new NTS-KE handshake), and the lowest-delay sample is the
+  /// tightest, least path-asymmetric estimate (the burst-and-pick-min
+  /// strategy package:nts documents). The caller
   /// (`TrustedTimeImpl.validateFreshness`) compares that sample against
   /// the live anchor to decide whether the anchor is still fresh.
   ///
@@ -326,7 +328,7 @@ final class SyncEngine {
 
     // Phase B (burst): query the selected source up to
     // [TrustedTimeConfig.validateBurstCount] times and keep the
-    // lowest-RTT sample. After warming, each query spends one
+    // lowest-delay sample. After warming, each query spends one
     // in-band-refilled cookie — a single UDP round-trip, no new NTS-KE
     // handshake — so the marginal cost of extra samples is small, and
     // the minimum measured delay is the tightest, least path-asymmetric
@@ -369,13 +371,15 @@ final class SyncEngine {
     throw probeFailure;
   }
 
-  /// Lowest-RTT sort key for the [validate] burst, in milliseconds of
-  /// round-trip delay. Prefers the whole measured RTT [TimeSample.delayMs]
-  /// (δ) and falls back to `2 * `[TimeSample.uncertaintyMs] when a source
-  /// did not time the round trip — the interval half-width is ≈ δ/2, so
-  /// doubling it keeps the key in RTT units and avoids mixing δ with δ/2
-  /// across samples. All samples in a burst come from one source, so the
-  /// key is internally consistent even when δ is unmeasured.
+  /// Lowest-delay sort key for the [validate] burst, in milliseconds
+  /// of whole-round-trip delay units. Prefers the measured delay
+  /// [TimeSample.delayMs] (δ — network-only peer delay for nts 7.1
+  /// clock-filter samples, whole RTT otherwise) and falls back to
+  /// `2 * `[TimeSample.uncertaintyMs] when a source did not time the
+  /// round trip — the interval half-width is ≈ δ/2, so doubling it
+  /// keeps the key in delay units and avoids mixing δ with δ/2 across
+  /// samples. All samples in a burst come from one source, so the key
+  /// is internally consistent even when δ is unmeasured.
   static int _rttKey(TimeSample sample) =>
       sample.delayMs ?? (2 * sample.uncertaintyMs);
 
