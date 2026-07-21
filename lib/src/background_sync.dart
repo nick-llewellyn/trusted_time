@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'anchor_store.dart';
 import 'exceptions.dart';
 import 'models.dart';
+import 'infra/trusted_time_log.dart';
 import 'monotonic_clock.dart';
 import 'nts_bootstrap.dart';
 import 'sync_cycle.dart';
@@ -315,8 +316,9 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
       // non-retryable so the OS scheduler gives up on this interval too
       // (Android maps this to Result.failure()).
       if (isTransientSyncError(e)) {
-        if (kDebugMode) {
-          debugPrint(
+        if (TrustedTimeLog.enabled) {
+          TrustedTimeLog.log(
+            TrustedTimeLogLevel.info,
             '[TrustedTime] Background sync attempt $attempt/$maxAttempts '
             'failed: $e',
           );
@@ -326,8 +328,11 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
         }
       } else {
         lastErrorRetryable = false;
-        if (kDebugMode) {
-          debugPrint('[TrustedTime] Background sync failed: $e');
+        if (TrustedTimeLog.enabled) {
+          TrustedTimeLog.log(
+            TrustedTimeLogLevel.warning,
+            '[TrustedTime] Background sync failed: $e',
+          );
         }
         break;
       }

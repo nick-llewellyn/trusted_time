@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'infra/trusted_time_log.dart';
 import 'integrity_event.dart';
 import 'models.dart';
 import 'monotonic_clock.dart';
@@ -182,9 +183,12 @@ final class IntegrityMonitor {
           );
       }
     } catch (e, st) {
-      debugPrint(
-        '[TrustedTime] Critical failure in native event dispatcher: $e\n$st',
-      );
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.error,
+          '[TrustedTime] Critical failure in native event dispatcher: $e\n$st',
+        );
+      }
     }
   }
 

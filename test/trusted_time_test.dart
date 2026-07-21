@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/infra/trusted_time_log.dart'
+    show TrustedTimeLog, TrustedTimeLogLevel;
 import 'package:trusted_time/trusted_time.dart';
 
 void main() {
@@ -125,6 +127,30 @@ void main() {
         expect(tokyoTime.hour, 21); // 12:00 UTC + 9h = 21:00.
       },
     );
+
+    test('initialize(onLog:) installs the process-global sink even when '
+        'a mock short-circuits engine init', () async {
+      final lines = <(TrustedTimeLogLevel, String)>[];
+      await TrustedTime.initialize(
+        onLog: (level, message) => lines.add((level, message)),
+      );
+      addTearDown(() => TrustedTimeLog.sink = null);
+
+      TrustedTimeLog.log(TrustedTimeLogLevel.info, '[TrustedTime] probe');
+
+      expect(lines, [(TrustedTimeLogLevel.info, '[TrustedTime] probe')]);
+    });
+
+    test('a throwing sink is contained by the router instead of '
+        'propagating into engine flows', () {
+      TrustedTimeLog.sink = (level, message) => throw StateError('sink bug');
+      addTearDown(() => TrustedTimeLog.sink = null);
+
+      expect(
+        () => TrustedTimeLog.log(TrustedTimeLogLevel.info, '[TrustedTime] x'),
+        returnsNormally,
+      );
+    });
 
     test('Exception: trustedLocalTimeIn() throws for unknown identifiers', () {
       expect(

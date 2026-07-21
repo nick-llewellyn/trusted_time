@@ -10,6 +10,7 @@ import 'package:trusted_time/src/exceptions.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
 import 'package:trusted_time/src/infra/sync_observer.dart';
 import 'package:trusted_time/src/integrity_event.dart';
+import 'package:trusted_time/src/infra/trusted_time_log.dart';
 import 'package:trusted_time/src/models.dart';
 import 'package:trusted_time/src/monotonic_clock.dart';
 import 'package:trusted_time/src/sources/nts_auth_level.dart';
@@ -334,6 +335,145 @@ void main() {
         containsAll(<String>['nts:x', 'ntp:y', 'ntp:z']),
       );
       expect(events, isEmpty);
+    });
+  });
+
+  group('SyncEngine observability logging', () {
+    final lines = <(TrustedTimeLogLevel, String)>[];
+
+    setUp(() {
+      lines.clear();
+      TrustedTimeLog.sink = (level, message) => lines.add((level, message));
+    });
+
+    tearDown(() => TrustedTimeLog.sink = null);
+
+    test('every queried source gets one sample line, symmetric across '
+        'kinds, and the consensus line names won and rejected '
+        'sources', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      final engine = _engineFor(
+        [
+          _TierSource(
+            id: 'nts:v1',
+            groupId: 'g1',
+            startMs: 1000,
+            endMs: 1020,
+            authLevel: NtsAuthLevel.verified,
+            trustBackend: nts.TrustBackend.webpkiRoots,
+          ),
+          _TierSource(
+            id: 'nts:v2',
+            groupId: 'g2',
+            startMs: 1005,
+            endMs: 1025,
+            authLevel: NtsAuthLevel.verified,
+            trustBackend: nts.TrustBackend.webpkiRoots,
+          ),
+          _TierSource(id: 'ntp:in', groupId: 'g3', startMs: 1010, endMs: 1015),
+          _TierSource(id: 'ntp:out', groupId: 'g4', startMs: 1100, endMs: 1120),
+          _FailingNtsSource(),
+        ],
+        observer: observer,
+        events: events,
+      );
+
+      await engine.sync();
+
+      final sampleLines = lines
+          .map((l) => l.$2)
+          .where((m) => m.contains('] sample '))
+          .toList();
+      // One ok line per succeeding source regardless of kind — NTP
+      // included, which was previously silent.
+      for (final id in ['nts:v1', 'nts:v2', 'ntp:in', 'ntp:out']) {
+        expect(
+          sampleLines.where((m) => m.contains('sample $id ok')),
+          hasLength(1),
+          reason: 'expected exactly one ok line for $id',
+        );
+      }
+      // The failure path gets a line too.
+      expect(
+        sampleLines.where((m) => m.contains('sample nts:fail fail reason=')),
+        hasLength(1),
+      );
+      // ok lines carry rtt/offset/authLevel fields.
+      final okLine = sampleLines.firstWhere(
+        (m) => m.contains('sample nts:v1 ok'),
+      );
+      expect(okLine, contains('rtt='));
+      expect(okLine, contains('offset='));
+      expect(okLine, contains('authLevel=verified'));
+
+      // Consensus attribution names identities, not just counts.
+      final consensusLine = lines
+          .map((l) => l.$2)
+          .singleWhere((m) => m.contains('] consensus '));
+      expect(consensusLine, contains('won=['));
+      expect(consensusLine, contains('nts:v1'));
+      expect(consensusLine, contains('nts:v2'));
+      expect(consensusLine, contains('ntp:in'));
+      expect(consensusLine, contains('ntp:out (outside truth box)'));
+      expect(consensusLine, contains('authLevel=verified'));
+      expect(consensusLine, isNot(contains('won=[nts:fail')));
+    });
+
+    test('a degraded cycle emits an explicit warning naming the '
+        'requireSecure consequence', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      final engine = _engineFor(
+        [
+          _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+          _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+        ],
+        observer: observer,
+        events: events,
+      );
+
+      await engine.sync();
+
+      final degraded = lines.singleWhere(
+        (l) => l.$2.contains('anchor DEGRADED'),
+      );
+      expect(degraded.$1, TrustedTimeLogLevel.warning);
+      expect(degraded.$2, contains('authLevel=none'));
+      expect(degraded.$2, contains('requireSecure'));
+      // The integrity event still fires alongside the log line.
+      expect(events.single.reason, TamperReason.degradedTier);
+    });
+
+    test('a healthy verified cycle emits no DEGRADED warning', () async {
+      final observer = _RecordingObserver();
+      final events = <IntegrityEvent>[];
+      final engine = _engineFor(
+        [
+          _TierSource(
+            id: 'nts:v1',
+            groupId: 'g1',
+            startMs: 1000,
+            endMs: 1020,
+            authLevel: NtsAuthLevel.verified,
+            trustBackend: nts.TrustBackend.webpkiRoots,
+          ),
+          _TierSource(
+            id: 'nts:v2',
+            groupId: 'g2',
+            startMs: 1005,
+            endMs: 1025,
+            authLevel: NtsAuthLevel.verified,
+            trustBackend: nts.TrustBackend.webpkiRoots,
+          ),
+        ],
+        observer: observer,
+        events: events,
+      );
+
+      await engine.sync();
+
+      expect(lines.where((l) => l.$2.contains('anchor DEGRADED')), isEmpty);
     });
   });
 

@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart' as nts;
 
 import '../domain/time_sample.dart';
+import '../infra/trusted_time_log.dart';
 import '../domain/time_source.dart';
 import '../domain/time_interval.dart';
 import '../exceptions.dart';
@@ -331,7 +332,7 @@ final class NtsSource implements TimeSource, Warmable {
       growable: false,
     );
 
-    if (kDebugMode) {
+    if (TrustedTimeLog.enabled) {
       final rtts = successes
           .map((s) => (s.raw.roundTripMicros / 1000).toStringAsFixed(1))
           .join(', ');
@@ -348,7 +349,8 @@ final class NtsSource implements TimeSource, Warmable {
             .map((s) => '+${s.receivedAtMs - earliest}')
             .join(', ');
       }
-      debugPrint(
+      TrustedTimeLog.log(
+        TrustedTimeLogLevel.debug,
         '[TrustedTime] nts:$_host burst '
         '${successes.length}/$_burstCount succeeded rtts=[$rtts]ms '
         'receipts=[$receipts]ms',

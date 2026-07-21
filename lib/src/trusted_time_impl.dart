@@ -13,6 +13,7 @@ import 'sync_engine.dart';
 import 'sources/nts_auth_level.dart';
 import 'infra/sync_observer.dart';
 import 'infra/consensus_cache.dart';
+import 'infra/trusted_time_log.dart';
 import 'domain/time_sample.dart';
 import 'domain/marzullo_engine.dart';
 import 'drift_calibrator.dart';
@@ -405,8 +406,9 @@ final class TrustedTimeImpl {
     if (kIsWeb) return;
     if (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS) {
-      if (kDebugMode && interval.inMinutes < 15) {
-        debugPrint(
+      if (interval.inMinutes < 15) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.warning,
           '[TrustedTime] Background sync interval below the platform '
           'scheduler floor (15 min); clamped up.',
         );
@@ -591,7 +593,12 @@ final class TrustedTimeImpl {
       _offlineLastWallMs = anchor.wallMs;
       _scheduleRefresh();
     } catch (e) {
-      if (kDebugMode) debugPrint('[TrustedTime] Sync failed: $e');
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.warning,
+          '[TrustedTime] Sync failed: $e',
+        );
+      }
       _trusted = false;
       // Same transient/non-transient verdict as the background path
       // (see isTransientSyncError): only network-weather failures are
@@ -761,8 +768,9 @@ final class TrustedTimeImpl {
       // No widgets binding (e.g. a headless background isolate). The
       // periodic validate timer still drives cadence; only the
       // foreground-resume trigger is unavailable in this context.
-      if (kDebugMode) {
-        debugPrint(
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.info,
           '[TrustedTime] Foreground-validate observer not installed: $e',
         );
       }
@@ -821,7 +829,12 @@ final class TrustedTimeImpl {
     } on TrustedTimeFreshnessProbeException {
       return;
     } catch (e) {
-      if (kDebugMode) debugPrint('[TrustedTime] Validate probe error: $e');
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.warning,
+          '[TrustedTime] Validate probe error: $e',
+        );
+      }
       return;
     } finally {
       _validateInProgress = false;
@@ -929,7 +942,12 @@ final class TrustedTimeImpl {
         'intervalMinutes': minutes.clamp(_minBgSyncMinutes, _maxBgSyncMinutes),
       });
     } catch (e) {
-      if (kDebugMode) debugPrint('[TrustedTime] Background sync failed: $e');
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.warning,
+          '[TrustedTime] Background sync failed: $e',
+        );
+      }
     }
   }
 

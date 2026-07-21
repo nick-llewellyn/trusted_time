@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart' as nts;
+import 'infra/trusted_time_log.dart';
 import 'models.dart';
 
 /// Signature of the NTS runtime initialiser.
@@ -77,8 +77,11 @@ Future<TrustedTimeConfig> ensureNtsRuntime(
         e is StateError && message.contains('flutter_rust_bridge');
     if (alreadyInitialised) return config;
 
-    if (kDebugMode) {
-      debugPrint('[TrustedTime] NTS disabled — NtsRustLib.init failed: $e');
+    if (TrustedTimeLog.enabled) {
+      TrustedTimeLog.log(
+        TrustedTimeLogLevel.warning,
+        '[TrustedTime] NTS disabled — NtsRustLib.init failed: $e',
+      );
     }
     return config.copyWith(ntsServers: const []);
   }
