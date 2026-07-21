@@ -114,12 +114,14 @@ final class SyncEngine {
         legacyCap != null &&
         !_deprecationWarned) {
       _deprecationWarned = true;
-      TrustedTimeLog.log(
-        TrustedTimeLogLevel.warning,
-        '[TrustedTime] TrustedTimeConfig.ntsDnsConcurrencyCap is '
-        'deprecated; use maxConcurrentDnsLookups. Honouring the legacy '
-        'value ($cap) as the unified DNS budget. See ADR 0008.',
-      );
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.warning,
+          '[TrustedTime] TrustedTimeConfig.ntsDnsConcurrencyCap is '
+          'deprecated; use maxConcurrentDnsLookups. Honouring the legacy '
+          'value ($cap) as the unified DNS budget. See ADR 0008.',
+        );
+      }
     }
     return DnsBudget(cap, acquireTimeout: _config.maxLatency);
   }
