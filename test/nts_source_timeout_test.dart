@@ -47,6 +47,12 @@ ffi.PhaseTimings _ffiTimings() => const ffi.PhaseTimings(
 
 /// Fixture: a raw FFI-layer query result. The wrapper converts this
 /// to the public NtsTimeSample shape before NtsSource sees it.
+///
+/// The 7.1 clock-filter and receipt-stamp fields are pinned to `0` —
+/// the documented "not available" sentinels — so the wrapper takes
+/// the pre-7.1 fallback paths (round-trip delay compensation,
+/// post-await anchor). This test asserts argument forwarding at the
+/// FFI boundary, not delay-compensation arithmetic.
 ffi.NtsTimeSample _ffiSample({
   int roundTripMicros = 30000,
   int utcUnixMicros = 1000000000000,
@@ -59,6 +65,12 @@ ffi.NtsTimeSample _ffiSample({
   freshCookies: 2,
   phaseTimings: _ffiTimings(),
   trustBackend: ffi.TrustBackend.webpkiRoots,
+  recvBoottimeMicros: 0,
+  offsetMicros: 0,
+  peerDelayMicros: 0,
+  rootDelayMicros: 0,
+  rootDispersionMicros: 0,
+  serverPrecision: 0,
 );
 
 ffi.NtsWarmCookiesOutcome _ffiWarmOutcome() => ffi.NtsWarmCookiesOutcome(
