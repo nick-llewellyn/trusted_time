@@ -6,9 +6,9 @@ import 'package:flutter/foundation.dart';
 /// forward each message to its own logger at the equivalent level:
 ///
 /// - [debug] — high-volume per-cycle diagnostics (per-source sample
-///   lines, consensus attribution, NTS burst telemetry).
-/// - [info] — noteworthy but expected events (a source query failing,
-///   a sample rejected by outlier filtering).
+///   lines, consensus attribution — including which samples were
+///   rejected as outliers — and NTS burst telemetry).
+/// - [info] — noteworthy but expected events (a source query failing).
 /// - [warning] — conditions an operator should look at (sync cycle
 ///   failed, anchor minted degraded, deprecated configuration).
 /// - [error] — unexpected internal failures.
