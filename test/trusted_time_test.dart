@@ -1,7 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/infra/trusted_time_log.dart'
-    show TrustedTimeLog;
+    show TrustedTimeLog, TrustedTimeLogLevel;
 import 'package:trusted_time/trusted_time.dart';
 
 void main() {

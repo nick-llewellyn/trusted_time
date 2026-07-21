@@ -77,10 +77,12 @@ Future<TrustedTimeConfig> ensureNtsRuntime(
         e is StateError && message.contains('flutter_rust_bridge');
     if (alreadyInitialised) return config;
 
-    TrustedTimeLog.log(
-      TrustedTimeLogLevel.warning,
-      '[TrustedTime] NTS disabled — NtsRustLib.init failed: $e',
-    );
+    if (TrustedTimeLog.enabled) {
+      TrustedTimeLog.log(
+        TrustedTimeLogLevel.warning,
+        '[TrustedTime] NTS disabled — NtsRustLib.init failed: $e',
+      );
+    }
     return config.copyWith(ntsServers: const []);
   }
 }

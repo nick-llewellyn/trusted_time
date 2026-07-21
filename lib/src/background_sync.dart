@@ -316,20 +316,24 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
       // non-retryable so the OS scheduler gives up on this interval too
       // (Android maps this to Result.failure()).
       if (isTransientSyncError(e)) {
-        TrustedTimeLog.log(
-          TrustedTimeLogLevel.info,
-          '[TrustedTime] Background sync attempt $attempt/$maxAttempts '
-          'failed: $e',
-        );
+        if (TrustedTimeLog.enabled) {
+          TrustedTimeLog.log(
+            TrustedTimeLogLevel.info,
+            '[TrustedTime] Background sync attempt $attempt/$maxAttempts '
+            'failed: $e',
+          );
+        }
         if (attempt < maxAttempts) {
           await Future<void>.delayed(delays[attempt - 1]);
         }
       } else {
         lastErrorRetryable = false;
-        TrustedTimeLog.log(
-          TrustedTimeLogLevel.warning,
-          '[TrustedTime] Background sync failed: $e',
-        );
+        if (TrustedTimeLog.enabled) {
+          TrustedTimeLog.log(
+            TrustedTimeLogLevel.warning,
+            '[TrustedTime] Background sync failed: $e',
+          );
+        }
         break;
       }
     } finally {

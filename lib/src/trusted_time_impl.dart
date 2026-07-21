@@ -593,10 +593,12 @@ final class TrustedTimeImpl {
       _offlineLastWallMs = anchor.wallMs;
       _scheduleRefresh();
     } catch (e) {
-      TrustedTimeLog.log(
-        TrustedTimeLogLevel.warning,
-        '[TrustedTime] Sync failed: $e',
-      );
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.warning,
+          '[TrustedTime] Sync failed: $e',
+        );
+      }
       _trusted = false;
       // Same transient/non-transient verdict as the background path
       // (see isTransientSyncError): only network-weather failures are
@@ -766,10 +768,12 @@ final class TrustedTimeImpl {
       // No widgets binding (e.g. a headless background isolate). The
       // periodic validate timer still drives cadence; only the
       // foreground-resume trigger is unavailable in this context.
-      TrustedTimeLog.log(
-        TrustedTimeLogLevel.info,
-        '[TrustedTime] Foreground-validate observer not installed: $e',
-      );
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.info,
+          '[TrustedTime] Foreground-validate observer not installed: $e',
+        );
+      }
     }
   }
 
@@ -825,10 +829,12 @@ final class TrustedTimeImpl {
     } on TrustedTimeFreshnessProbeException {
       return;
     } catch (e) {
-      TrustedTimeLog.log(
-        TrustedTimeLogLevel.warning,
-        '[TrustedTime] Validate probe error: $e',
-      );
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.warning,
+          '[TrustedTime] Validate probe error: $e',
+        );
+      }
       return;
     } finally {
       _validateInProgress = false;
@@ -936,10 +942,12 @@ final class TrustedTimeImpl {
         'intervalMinutes': minutes.clamp(_minBgSyncMinutes, _maxBgSyncMinutes),
       });
     } catch (e) {
-      TrustedTimeLog.log(
-        TrustedTimeLogLevel.warning,
-        '[TrustedTime] Background sync failed: $e',
-      );
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.warning,
+          '[TrustedTime] Background sync failed: $e',
+        );
+      }
     }
   }
 
