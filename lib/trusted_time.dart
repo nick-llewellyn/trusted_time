@@ -524,10 +524,13 @@ abstract final class TrustedTime {
   /// against a single source (typically ~50–200 ms in total), keeps the
   /// lowest round-trip sample, and compares that against the existing
   /// anchor instead of tearing the anchor down and rebuilding consensus
-  /// from every source. The burst size is
-  /// [TrustedTimeConfig.validateBurstCount]. Use it on a frequent
-  /// cadence (or when the app returns to the foreground) to catch drift
-  /// between the infrequent full establish ([forceResync]) cycles.
+  /// from every source. The wire-level burst happens inside the source
+  /// itself (up to [TrustedTimeConfig.ntsBurstCount] queries per
+  /// `getTime()` call); [TrustedTimeConfig.validateBurstCount] controls
+  /// how many such calls the probe makes (default `1`). Use it on a
+  /// frequent cadence (or when the app returns to the foreground) to
+  /// catch drift between the infrequent full establish ([forceResync])
+  /// cycles.
   ///
   /// Returns:
   ///  * `true` — the probe agrees with the anchor within

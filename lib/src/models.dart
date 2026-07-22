@@ -106,7 +106,7 @@ final class TrustedTimeConfig {
     this.backgroundSyncInterval,
     this.transientStreakThreshold = 5,
     this.cadenceMode = CadenceMode.singleTier30m,
-    this.validateBurstCount = 8,
+    this.validateBurstCount = 1,
     this.validateInterval = const Duration(hours: 1),
     this.foregroundValidateThreshold = const Duration(minutes: 15),
     this.ntsBurstCount = 8,
@@ -177,10 +177,11 @@ final class TrustedTimeConfig {
   ///   on battery-conscious devices.
   /// * [backgroundSyncInterval] is 24h, aligning the background
   ///   maintenance cadence with the establish tier.
-  /// * [validateBurstCount] is `8`: each validate probe bursts the
-  ///   selected NTS source eight times and keeps the lowest-RTT sample,
-  ///   trading seven extra post-warm UDP round-trips for a tighter
-  ///   freshness measurement.
+  /// * [validateBurstCount] keeps the global default of `1`: each
+  ///   validate probe makes a single `getTime()` call, and the built-in
+  ///   `NtsSource` itself bursts up to [ntsBurstCount] queries inside
+  ///   that call and returns the lowest-RTT sample — so one attempt
+  ///   already delivers the full burst-and-pick-min measurement.
   ///
   /// The cheap ~1h validate cadence is owned by the tiered scheduler
   /// rather than this factory; this factory selects the mode and the
@@ -191,7 +192,6 @@ final class TrustedTimeConfig {
       oscillatorDriftFactor: 0.000015,
       refreshInterval: Duration(hours: 24),
       backgroundSyncInterval: Duration(hours: 24),
-      validateBurstCount: 8,
       validateInterval: Duration(hours: 1),
       foregroundValidateThreshold: Duration(minutes: 15),
     );
@@ -465,21 +465,21 @@ final class TrustedTimeConfig {
   /// issues against the selected NTS source per freshness probe
   /// (ADR 0006). After warming the source,
   /// [TrustedTime.validateFreshness] calls it this many times and keeps
-  /// the sample with the smallest round-trip delay — the tightest, least
-  /// path-asymmetric measurement, following the burst-and-pick-min
-  /// strategy `package:nts` documents.
+  /// the sample with the smallest round-trip delay.
   ///
   /// This counts `getTime()` attempts, not on-the-wire queries: a
-  /// built-in `NtsSource` may itself issue up to [ntsBurstCount]
-  /// sequential queries per attempt, so a probe can place up to
-  /// `validateBurstCount * ntsBurstCount` authenticated queries on the
-  /// wire. Each successful query spends one in-band-refilled cookie (a
-  /// single UDP round-trip, no new NTS-KE handshake), and the
-  /// sequential ordering lets each refill land before the next query
-  /// spends — but a failed query spends its cookie without a refill,
-  /// so cookie economics follow the per-source burst behaviour
-  /// documented on [ntsBurstCount].
-  /// Defaults to `8`; must be at least `1`. Has no effect outside the
+  /// built-in `NtsSource` itself issues up to [ntsBurstCount]
+  /// sequential queries per attempt and returns the lowest-RTT sample,
+  /// so a single attempt already delivers the full burst-and-pick-min
+  /// measurement `package:nts` documents. Raising this multiplies the
+  /// wire cost — a probe places up to
+  /// `validateBurstCount * ntsBurstCount` authenticated queries — and
+  /// each attempt carries its own [maxLatency] timeout, so the probe's
+  /// worst-case duration also scales linearly. Cookie economics follow
+  /// the per-source burst behaviour documented on [ntsBurstCount]:
+  /// each successful query spends one in-band-refilled cookie, and the
+  /// sequential ordering lets each refill land before the next spend.
+  /// Defaults to `1`; must be at least `1`. Has no effect outside the
   /// validate tier.
   final int validateBurstCount;
 

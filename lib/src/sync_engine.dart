@@ -335,14 +335,14 @@ final class SyncEngine {
 
     // Phase B (burst): query the selected source up to
     // [TrustedTimeConfig.validateBurstCount] times and keep the
-    // lowest-delay sample. After warming, each query spends one
-    // in-band-refilled cookie — a single UDP round-trip, no new NTS-KE
-    // handshake — so the marginal cost of extra samples is small, and
-    // the minimum measured delay is the tightest, least path-asymmetric
-    // estimate (the burst-and-pick-min strategy package:nts documents).
-    // Queries run sequentially so each cookie is refilled before the
-    // next is spent. Individual failures are tolerated: a probe surfaces
-    // as failed only when every attempt in the burst fails.
+    // lowest-delay sample. A built-in NtsSource already bursts up to
+    // ntsBurstCount sequential queries inside a single getTime() and
+    // returns the lowest-RTT sample, so the default of one attempt
+    // delivers a full burst-and-pick-min measurement; extra attempts
+    // are retry insurance, each carrying its own maxLatency timeout.
+    // Attempts run sequentially so each in-band-refilled cookie lands
+    // before the next spend. Individual failures are tolerated: a probe
+    // surfaces as failed only when every attempt in the burst fails.
     final burst = _config.validateBurstCount < 1
         ? 1
         : _config.validateBurstCount;
