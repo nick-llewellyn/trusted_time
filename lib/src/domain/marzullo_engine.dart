@@ -121,7 +121,7 @@ final class ConsensusResult {
   /// cycle. Tier-aware results that formed a truth box report `false`.
   final bool degradedTier;
 
-  /// Lower-tier samples (platform-mediated NTS or plain NTP/HTTPS) that were
+  /// Lower-tier samples (platform-mediated NTS or plain NTP) that were
   /// excluded because their interval did not intersect the Tier 1 truth box.
   ///
   /// Always empty on degraded ([degradedTier] `true`) and legacy results.
@@ -203,7 +203,7 @@ final class MarzulloEngine {
   ///    may define the authoritative consensus interval. A Marzullo
   ///    reduction over the verified subset alone produces the *truth box*.
   /// 2. **Re-admission pass.** Every lower-tier sample (platform-mediated
-  ///    NTS or plain NTP/HTTPS) whose interval intersects the truth box is
+  ///    NTS or plain NTP) whose interval intersects the truth box is
   ///    folded into a merged set; non-intersecting samples are dropped and
   ///    surfaced on [ConsensusResult.droppedOutsideTruthBox].
   /// 3. **Final reduction.** A Marzullo reduction over the merged set
@@ -538,7 +538,7 @@ enum _Tier {
   /// NTS. Admitted only if it intersects the verified truth box.
   platformNts,
 
-  /// `NtsAuthLevel.none` with a null `trustBackend`: plain NTP / HTTPS /
+  /// `NtsAuthLevel.none` with a null `trustBackend`: plain NTP /
   /// additional sources. Admitted under the same intersection rule;
   /// indistinguishable from [platformNts] at admission time.
   best,
@@ -546,7 +546,7 @@ enum _Tier {
 
 /// Classifies a sample into its trust tier. Only `NtsSource` ever sets
 /// `trustBackend`, so the joint shape uniquely separates platform-mediated
-/// NTS from plain NTP/HTTPS without a dedicated field.
+/// NTS from plain NTP without a dedicated field.
 _Tier _tierOf(TimeSample s) {
   if (s.authLevel == NtsAuthLevel.verified) return _Tier.verified;
   if (s.trustBackend != null) return _Tier.platformNts;

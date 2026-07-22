@@ -9,7 +9,7 @@
 /// sources and [NtsAuthLevel.verified] for cryptographically authenticated
 /// ones.
 enum NtsAuthLevel {
-  /// No authentication performed (plain NTP or HTTPS `Date` header).
+  /// No authentication performed (plain NTP or custom sources).
   none,
 
   /// Full RFC 8915 cryptographic authentication via `package:nts`.

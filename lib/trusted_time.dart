@@ -350,7 +350,7 @@ abstract final class TrustedTime {
   ///   is [NtsAuthLevel.verified] — established from a Tier 1 truth box of NTS
   ///   samples authenticated against a library-controlled trust store
   ///   (bundled webpki-roots or custom roots). Anchors established under
-  ///   platform-mediated trust, or degraded to lower-tier (NTP/HTTPS)
+  ///   platform-mediated trust, or degraded to lower-tier (NTP)
   ///   consensus, are [NtsAuthLevel.none] and throw.
   /// * Set [minConfidence] to enforce a minimum qualitative trust level.
   ///
@@ -361,9 +361,9 @@ abstract final class TrustedTime {
   ///   session. Staleness is governed separately, by [confidenceScore],
   ///   [validateFreshness], and the refresh scheduler; combine the gate
   ///   with [minConfidence] or a [confidenceScore] check when age matters.
-  /// * HTTPS-Date sources never satisfy the gate: authenticated transport
-  ///   is not authenticated time (no application-layer signature over the
-  ///   timestamp), so an anchor built from HTTPS/NTP consensus is
+  /// * Unauthenticated sources never satisfy the gate: plain NTP and
+  ///   custom `additionalSources` carry no application-layer signature
+  ///   over the timestamp, so an anchor built from such consensus is
   ///   [NtsAuthLevel.none] even though best-effort calls keep working.
   /// * If every NTS server becomes unreachable after a verified anchor was
   ///   established, the anchor's verified label persists across *failed*
@@ -391,7 +391,7 @@ abstract final class TrustedTime {
         'a library-controlled trust store (bundled webpki-roots or '
         'custom roots), but the active anchor is not verified. This '
         'happens when NTS was unavailable and the engine fell back to '
-        'lower-tier (NTP/HTTPS) consensus, or when NTS was validated '
+        'lower-tier (NTP) consensus, or when NTS was validated '
         'under platform-mediated trust rather than the library-controlled '
         'store. To satisfy requireSecure: true, configure reachable NTS '
         'servers (so a verified anchor can be established) and keep '
@@ -425,7 +425,7 @@ abstract final class TrustedTime {
   /// the `package:nts` monotonic clock (`CLOCK_BOOTTIME` /
   /// `mach_continuous_time` / `QueryInterruptTimePrecise`), which keeps
   /// counting through device suspend. `false` when the engine is on the
-  /// suspend-frozen `Stopwatch` fallback — HTTPS/NTP-only configs, web,
+  /// suspend-frozen `Stopwatch` fallback — NTP-only configs, web,
   /// or a failed nts bridge bootstrap — where a device sleep between
   /// syncs leaves [now] behind by the sleep duration until the next
   /// sync or integrity reconciliation.
@@ -456,7 +456,7 @@ abstract final class TrustedTime {
   /// against a library-controlled trust store (RFC 8915).
   ///
   /// Equivalent to `authLevel == NtsAuthLevel.verified`. Returns `false` for
-  /// platform-mediated NTS and for lower-tier (NTP/HTTPS) or degraded
+  /// platform-mediated NTS and for lower-tier (NTP) or degraded
   /// consensus. This is the boundary [getTime] enforces under
   /// `requireSecure: true`.
   static bool get isSecure {

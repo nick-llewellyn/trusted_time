@@ -1012,7 +1012,7 @@ void main() {
         // the ntsServers comprehension, so an invalid config
         // (usePlatformTrust: true + non-empty customRootCerts) with an
         // empty ntsServers list skipped the ArgumentError entirely and
-        // still built NTP/HTTPS/additional sources — bypassing the
+        // still built NTP/additional sources — bypassing the
         // "fail closed before any source is built" guarantee asserted in
         // the Secure Time Contract. The resolver is now read once up
         // front in _buildSources, so source construction fails closed

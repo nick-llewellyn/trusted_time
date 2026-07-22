@@ -94,8 +94,7 @@ final class SyncEngine {
   /// Lazily-initialized list of authoritative time sources.
   ///
   /// DNS concurrency is governed by the shared [_dnsBudget] (ADR 0008):
-  /// NTP and HTTPS sources resolve through it cache-first (HTTPS via a
-  /// pre-resolve step that warms the platform cache), and its value is
+  /// NTP sources resolve through it cache-first, and its value is
   /// forwarded as each NTS source's `dnsConcurrencyCap` so all source
   /// kinds draw on one unified cold-start budget rather than the former
   /// NTS-only `ntsServers.length + 2` auto-size.
@@ -132,7 +131,7 @@ final class SyncEngine {
   /// `customRootCerts`) fails closed with [ArgumentError] regardless of
   /// whether any NTS servers are configured. Resolving it inside the
   /// `ntsServers` comprehension would skip the check whenever that list
-  /// is empty, letting an invalid config build NTP/HTTPS/additional
+  /// is empty, letting an invalid config build NTP/additional
   /// sources and silently bypass the "fail closed" guarantee. The
   /// resolved mode is then reused for every [NtsSource].
   List<TimeSource> _buildSources() {
@@ -1078,7 +1077,7 @@ final class SyncEngine {
   }
 
   /// One structured `sample <id> ok|fail` line per source per query,
-  /// symmetric across source kinds (NTP, HTTPS, NTS, additional) so
+  /// symmetric across source kinds (NTP, NTS, additional) so
   /// "is NTP working?" is answerable from the log stream directly
   /// rather than by subtracting NTS burst counts from consensus totals.
   void _logSample(TimeSample sample) {

@@ -38,7 +38,7 @@ final class TimeSample {
   /// Trust-anchor backend that authenticated the TLS chain for this
   /// sample, if applicable.
   ///
-  /// Always `null` for non-NTS samples (NTP, HTTPS) — they do not run
+  /// Always `null` for non-NTS samples (NTP) — they do not run
   /// `rustls-platform-verifier` and have no equivalent concept. For
   /// NTS samples this is the value `package:nts` returned on
   /// `NtsTimeSample.trustBackend` for the handshake that produced the

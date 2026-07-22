@@ -22,7 +22,7 @@ enum ConfidenceLevel {
   medium,
 
   /// A high-integrity quorum has been reached with broad diversity across
-  /// protocols (NTP, HTTPS, NTS) and extremely low population variance.
+  /// protocols (NTP, NTS) and extremely low population variance.
   high,
 }
 
@@ -175,7 +175,7 @@ final class TrustedTimeConfig {
   /// [ntsDnsConcurrencyCap] during migration.
   ///
   /// Six sits between the carrier-conservative (4) and WiFi-optimistic
-  /// (8) envelopes: it covers a typical NTS pool plus HTTPS headroom
+  /// (8) envelopes: it covers a typical NTS pool plus NTP headroom
   /// while staying inside the CGNAT serialisation threshold a cold-start
   /// burst tends to hit. See ADR 0008.
   final int? maxConcurrentDnsLookups;
@@ -192,7 +192,7 @@ final class TrustedTimeConfig {
   @Deprecated(
     'Use maxConcurrentDnsLookups instead; it governs DNS concurrency '
     'across the engine-resolved NTP and NTS lookups rather than NTS alone '
-    '(HTTPS DNS stays OS-resolver-governed for now; see ADR 0008). '
+    '(see ADR 0008). '
     'Honoured as the unified budget while maxConcurrentDnsLookups is '
     'unset; removal is deferred to the fork 2.x release.',
   )
@@ -334,7 +334,7 @@ final class TrustedTimeConfig {
   /// is the sleep-aware `nts.MonotonicClock` — `CLOCK_BOOTTIME` /
   /// `mach_continuous_time` / `QueryInterruptTimePrecise` — which
   /// keeps counting through device suspend. Without the bridge
-  /// (HTTPS/NTP-only configs, web, or after a genuine bridge init
+  /// (NTP-only configs, web, or after a genuine bridge init
   /// failure) the engine falls back to a Dart `Stopwatch`, which
   /// freezes during suspend: a device that sleeps between syncs then
   /// reports a projected time behind by the sleep duration until the

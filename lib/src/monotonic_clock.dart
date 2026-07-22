@@ -27,7 +27,7 @@ typedef MonotonicReaderFactory = MonotonicReader Function();
 /// Prefers the sleep-aware [nts.MonotonicClock] (`CLOCK_BOOTTIME` /
 /// `mach_continuous_time` / `QueryInterruptTimePrecise` via the Rust
 /// bridge), whose readings keep advancing while the device is in deep
-/// sleep. When the bridge is not initialized — HTTPS/NTP-only configs
+/// sleep. When the bridge is not initialized — NTP-only configs
 /// that never call `NtsRustLib.init()`, web, or plain unit-test
 /// isolates — falls back to a fresh [Stopwatch], which is monotonic
 /// but freezes during suspend (the pre-existing behaviour). The
