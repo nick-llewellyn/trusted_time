@@ -429,6 +429,8 @@ void main() {
       // ntsBurstCount.
       expect(() => NtsSource('h', burstCount: 0), throwsRangeError);
       expect(() => NtsSource('h', burstCount: 9), throwsRangeError);
+      // The inclusive upper bound is accepted.
+      expect(() => NtsSource('h', burstCount: 8), returnsNormally);
     });
 
     test('warm() is a no-op under debugQueryOverride', () async {

@@ -455,16 +455,24 @@ final class TrustedTimeConfig {
   /// platform-tuned drift and interval constants.
   final CadenceMode cadenceMode;
 
-  /// The number of authenticated NTS queries the validate tier issues
-  /// per freshness probe (ADR 0006). After warming the selected source,
-  /// [TrustedTime.validateFreshness] bursts it this many times and keeps
+  /// The number of sequential `getTime()` attempts the validate tier
+  /// issues against the selected NTS source per freshness probe
+  /// (ADR 0006). After warming the source,
+  /// [TrustedTime.validateFreshness] calls it this many times and keeps
   /// the sample with the smallest round-trip delay — the tightest, least
   /// path-asymmetric measurement, following the burst-and-pick-min
-  /// strategy `package:nts` documents. Each query past the first spends
-  /// one in-band-refilled cookie (a single UDP round-trip, no new
-  /// NTS-KE handshake), so the marginal cost is small. The burst is
-  /// sequential, so each success refills the jar before the next query
-  /// spends a cookie — the probe is cookie-neutral at any size.
+  /// strategy `package:nts` documents.
+  ///
+  /// This counts `getTime()` attempts, not on-the-wire queries: a
+  /// built-in `NtsSource` may itself issue up to [ntsBurstCount]
+  /// sequential queries per attempt, so a probe can place up to
+  /// `validateBurstCount * ntsBurstCount` authenticated queries on the
+  /// wire. Each successful query spends one in-band-refilled cookie (a
+  /// single UDP round-trip, no new NTS-KE handshake), and the
+  /// sequential ordering lets each refill land before the next query
+  /// spends — but a failed query spends its cookie without a refill,
+  /// so cookie economics follow the per-source burst behaviour
+  /// documented on [ntsBurstCount].
   /// Defaults to `8`; must be at least `1`. Has no effect outside the
   /// validate tier.
   final int validateBurstCount;
