@@ -74,7 +74,9 @@ final class NtpProtocolException implements Exception {
   String toString() => 'NtpProtocolException: $message';
 }
 
-/// Default [NtpExchange]: one UDP mode-3 query against `address:123`.
+/// Default [NtpExchange]: one UDP mode-3 query against `address:port`
+/// (123 unless overridden, which only tests running a loopback server
+/// on an unprivileged port need to do).
 ///
 /// The transmit-timestamp field carries 8 random bytes rather than the
 /// local clock: the server echoes it back verbatim in the originate
@@ -88,6 +90,7 @@ final class NtpProtocolException implements Exception {
 Future<NtpExchangeResult> defaultNtpExchange(
   String address, {
   Duration timeout = const Duration(seconds: 5),
+  int port = 123,
 }) async {
   final addr =
       InternetAddress.tryParse(address) ??
@@ -121,7 +124,7 @@ Future<NtpExchangeResult> defaultNtpExchange(
 
     final rtt = Stopwatch()..start();
     final t1Micros = DateTime.now().toUtc().microsecondsSinceEpoch;
-    if (socket.send(packet, addr, 123) != packet.length) {
+    if (socket.send(packet, addr, port) != packet.length) {
       throw const SocketException('NTP request was not sent in full');
     }
     final Datagram datagram;

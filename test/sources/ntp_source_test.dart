@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:io' show InternetAddress, gzip;
+import 'dart:io'
+    show Datagram, InternetAddress, RawDatagramSocket, RawSocketEvent, gzip;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -615,6 +616,117 @@ void main() {
             contains('nonce'),
           ),
         ),
+      );
+    });
+  });
+
+  group('defaultNtpExchange (loopback UDP round trip)', () {
+    const ntpToUnixSeconds = 2208988800;
+
+    /// Binds a loopback UDP server that answers the first datagram with
+    /// [respond]'s bytes (or stays silent when it returns null) and
+    /// records the request for wire-format assertions.
+    Future<({RawDatagramSocket socket, Future<Datagram> request})> serve(
+      Uint8List? Function(Datagram request) respond,
+    ) async {
+      final socket = await RawDatagramSocket.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      final request = Completer<Datagram>();
+      socket.listen((event) {
+        if (event != RawSocketEvent.read) return;
+        final d = socket.receive();
+        if (d == null) return;
+        if (!request.isCompleted) request.complete(d);
+        final replyBytes = respond(d);
+        if (replyBytes != null) socket.send(replyBytes, d.address, d.port);
+      });
+      return (socket: socket, request: request.future);
+    }
+
+    /// Builds a well-formed mode-4 reply to [request]: the request's
+    /// transmit nonce is echoed into the originate field and T2/T3
+    /// report a server clock [offsetMicros] ahead of the local one.
+    Uint8List serverReply(Datagram request, {int offsetMicros = 0}) {
+      final data = Uint8List(48);
+      final bd = ByteData.sublistView(data);
+      data[0] = (4 << 3) | 4; // LI = 0, VN = 4, Mode = 4 (server).
+      data[1] = 2; // Stratum.
+      data.setRange(24, 32, request.data.sublist(40, 48));
+      final now = DateTime.now().toUtc().microsecondsSinceEpoch + offsetMicros;
+      bd.setUint32(32, now ~/ 1000000 + ntpToUnixSeconds);
+      bd.setUint32(36, ((now % 1000000) << 32) ~/ 1000000);
+      bd.setUint32(40, now ~/ 1000000 + ntpToUnixSeconds);
+      bd.setUint32(44, ((now % 1000000) << 32) ~/ 1000000);
+      return data;
+    }
+
+    test('completes an exchange and sends a well-formed request', () async {
+      final server = await serve(
+        (request) => serverReply(request, offsetMicros: 1000000),
+      );
+      addTearDown(server.socket.close);
+
+      final result = await defaultNtpExchange(
+        '127.0.0.1',
+        timeout: const Duration(seconds: 5),
+        port: server.socket.port,
+      );
+
+      final request = await server.request;
+      expect(request.data.length, 48);
+      // LI = 0, VN = 4, Mode = 3 (client).
+      expect(request.data[0], 0x23);
+      // The transmit field carries a nonce rather than the local clock,
+      // and every other field is zero: nothing about the local clock
+      // goes on the wire.
+      expect(request.data.sublist(40, 48).any((b) => b != 0), isTrue);
+      expect(request.data.sublist(1, 40).any((b) => b != 0), isFalse);
+
+      // The server reported itself 1s ahead; the loopback round trip
+      // contributes at most a few ms of skew to θ.
+      expect(result.offsetMicros, closeTo(1000000, 100000));
+      expect(result.delayMicros, greaterThanOrEqualTo(0));
+      expect(result.delayMicros, lessThan(1000000));
+      expect(result.stratum, 2);
+    });
+
+    test('rejects a reply that does not echo the nonce', () async {
+      final server = await serve((request) {
+        final data = serverReply(request);
+        data.setRange(24, 32, List.filled(8, 9));
+        return data;
+      });
+      addTearDown(server.socket.close);
+
+      await expectLater(
+        defaultNtpExchange(
+          '127.0.0.1',
+          timeout: const Duration(seconds: 5),
+          port: server.socket.port,
+        ),
+        throwsA(
+          isA<NtpProtocolException>().having(
+            (e) => e.message,
+            'message',
+            contains('nonce'),
+          ),
+        ),
+      );
+    });
+
+    test('times out when the server never replies', () async {
+      final server = await serve((_) => null);
+      addTearDown(server.socket.close);
+
+      await expectLater(
+        defaultNtpExchange(
+          '127.0.0.1',
+          timeout: const Duration(milliseconds: 100),
+          port: server.socket.port,
+        ),
+        throwsA(isA<TimeoutException>()),
       );
     });
   });
