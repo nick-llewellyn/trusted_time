@@ -1,3 +1,4 @@
+import 'dart:async' show TimeoutException;
 import 'dart:io' show InternetAddress, InternetAddressType;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
@@ -7,6 +8,7 @@ import '../domain/time_source.dart';
 import '../domain/time_interval.dart';
 import '../infra/dns_budget.dart';
 import '../infra/trusted_time_log.dart';
+import '../monotonic_clock.dart';
 import 'ntp_client.dart';
 
 /// Resolves [host] to its addresses. Injectable so tests can supply a
@@ -37,13 +39,13 @@ final class NtpSource implements TimeSource {
   /// cache-first; when `null` (direct callers, tests) resolution runs
   /// ungoverned.
   ///
-  /// [maxLatency] is the total wall-clock budget for the whole query
-  /// burst, shared across the sequential attempts as one shrinking
-  /// deadline: each attempt's exchange receives the remaining balance
-  /// as its timeout, so the burst as a whole completes within
-  /// [maxLatency]. [SyncEngine] passes [TrustedTimeConfig.maxLatency]
-  /// so this inner budget matches the outer
-  /// `.timeout(_config.maxLatency)` wrapper.
+  /// [maxLatency] is the total wall-clock budget for one [getTime]
+  /// call — host resolution plus the whole query burst — shared as
+  /// one shrinking deadline: the clock starts before resolution and
+  /// each attempt's exchange receives the remaining balance as its
+  /// timeout, so the call as a whole completes within [maxLatency].
+  /// [SyncEngine] passes [TrustedTimeConfig.maxLatency] so this inner
+  /// budget matches the outer `.timeout(_config.maxLatency)` wrapper.
   ///
   /// [burstCount] is the maximum number of sequential exchanges
   /// [getTime] issues per call within the [maxLatency] budget; the
@@ -201,6 +203,19 @@ final class NtpSource implements TimeSource {
 
   @override
   Future<TimeSample> getTime() async {
+    // The whole call — host resolution *and* the query burst — shares
+    // one [_timeout] wall-clock budget, measured on the resolved
+    // monotonic reader (sleep-aware when the nts bridge is
+    // initialized). Starting the clock before resolution keeps the
+    // inner budget aligned with SyncEngine's outer
+    // `.timeout(_config.maxLatency)` wrapper: a slow DNS lookup eats
+    // into the burst's balance instead of letting the outer timeout
+    // pre-empt an in-flight exchange (which would discard the
+    // underlying protocol error and leave the UDP wait running past
+    // the engine's window).
+    final clock = resolveMonotonicReader();
+    final startMicros = clock.read();
+
     // Resolve the host once so the ASN-derived groupId and every
     // exchange in the burst describe the *same* server. Round-robin
     // pools (e.g. pool.ntp.org) can hand back a different IP across
@@ -220,28 +235,37 @@ final class NtpSource implements TimeSource {
     // queries let the local interface queue drain between samples so
     // each observes an independent snapshot of the path.
     //
-    // The whole burst shares one [_timeout] wall-clock budget as a
-    // shrinking deadline: the first attempt receives the configured
-    // budget verbatim (always dispatching), each later attempt
-    // receives the remaining balance, and once the balance dips below
-    // the floor the remaining attempts are skipped — the burst
+    // The budget acts as a shrinking deadline: every attempt
+    // (including the first, whose balance is the configured budget
+    // minus whatever resolution consumed) receives the remaining
+    // balance as its exchange timeout, and once the balance dips
+    // below the floor the remaining attempts are skipped — the burst
     // degrades to fewer samples rather than overrunning the window a
-    // single query would have had. An all-fail burst thus always
-    // carries a concrete underlying error. Every attempt guards its
-    // own failure; the burst as a whole succeeds when at least one
-    // attempt lands. Sequential execution appends successes in
-    // attempt-index order, so the lowest-δ pick's "first wins"
+    // single query would have had. A budget exhausted before the
+    // first attempt throws [TimeoutException], so an all-fail burst
+    // always carries a concrete underlying error. Every attempt
+    // guards its own failure; the burst as a whole succeeds when at
+    // least one attempt lands. Sequential execution appends successes
+    // in attempt-index order, so the lowest-δ pick's "first wins"
     // tie-break stays deterministic.
     var attempts = 0;
     Object? lastError;
     StackTrace? lastStackTrace;
 
     const floor = Duration(milliseconds: 1);
-    final deadline = Stopwatch()..start();
     final successes = <_BurstSuccess>[];
     for (var attempt = 0; attempt < _burstCount; attempt++) {
-      final remaining = attempt == 0 ? _timeout : _timeout - deadline.elapsed;
-      if (attempt > 0 && remaining < floor) break;
+      final remaining =
+          _timeout - Duration(microseconds: clock.read() - startMicros);
+      if (remaining < floor) {
+        if (attempt == 0) {
+          throw TimeoutException(
+            'NTP burst budget exhausted by host resolution',
+            _timeout,
+          );
+        }
+        break;
+      }
       attempts++;
       try {
         final result = await _exchange(address, timeout: remaining);

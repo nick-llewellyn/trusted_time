@@ -353,9 +353,12 @@ void main() {
 
       await source.getTime();
       expect(budgets, hasLength(3));
-      expect(budgets.first, const Duration(milliseconds: 750));
-      for (final b in budgets.skip(1)) {
-        expect(b, lessThanOrEqualTo(const Duration(milliseconds: 750)));
+      // The deadline starts before host resolution, so even the first
+      // attempt sees only the remaining balance.
+      var previous = const Duration(milliseconds: 750);
+      for (final b in budgets) {
+        expect(b, lessThanOrEqualTo(previous));
+        previous = b;
       }
     });
 
@@ -368,7 +371,7 @@ void main() {
         exchange: (address, {timeout = Duration.zero}) async {
           call++;
           // Each attempt outlives the whole budget, so only the
-          // first attempt (which always dispatches) runs.
+          // first attempt runs.
           await Future<void>.delayed(const Duration(milliseconds: 40));
           return okResult();
         },
@@ -377,6 +380,56 @@ void main() {
       final sample = await source.getTime();
       expect(call, 1);
       expect(sample.delayMs, 30);
+    });
+
+    test('slow host resolution depletes the burst budget', () async {
+      // The deadline starts before host resolution, so a slow lookup
+      // is charged against the same maxLatency the burst shares. Here
+      // resolution outlives the whole budget: attempt 0 is never
+      // dispatched and the call fails with a concrete TimeoutException
+      // instead of silently exceeding maxLatency.
+      var call = 0;
+      final source = NtpSource(
+        'time.example',
+        hostResolver: (host) async {
+          await Future<void>.delayed(const Duration(milliseconds: 40));
+          return [InternetAddress('1.2.3.4')];
+        },
+        exchange: (address, {timeout = Duration.zero}) async {
+          call++;
+          return okResult();
+        },
+        maxLatency: const Duration(milliseconds: 20),
+        burstCount: 4,
+      );
+
+      await expectLater(source.getTime(), throwsA(isA<TimeoutException>()));
+      expect(call, 0);
+    });
+
+    test('host resolution time shrinks the first attempt\'s budget', () async {
+      final budgets = <Duration>[];
+      final source = NtpSource(
+        'time.example',
+        hostResolver: (host) async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+          return [InternetAddress('1.2.3.4')];
+        },
+        exchange: (address, {timeout = Duration.zero}) async {
+          budgets.add(timeout);
+          return okResult();
+        },
+        maxLatency: const Duration(milliseconds: 500),
+        burstCount: 1,
+      );
+
+      await source.getTime();
+      expect(budgets, hasLength(1));
+      expect(
+        budgets.first,
+        lessThanOrEqualTo(const Duration(milliseconds: 450)),
+      );
+      expect(budgets.first, greaterThan(Duration.zero));
     });
 
     test('recovers when a failed attempt has a successful sibling', () async {
