@@ -1099,9 +1099,9 @@ void main() {
 
     test('a foreground resume does not start a probe that overlaps an '
         'in-flight validate cycle (shared in-flight guard)', () async {
-      // burst of 1 keeps the probe to a single getTime() so the query
-      // tally is exactly "one burst == one query"; the two sources share
-      // one counter so the assertion holds regardless of which ranked
+      // A probe is a single getTime() call, so the query tally is
+      // exactly "one probe == one query"; the two sources share one
+      // counter so the assertion holds regardless of which ranked
       // source the validate tier selects.
       final counter = _ProbeCounter();
       final box = freshBox();
@@ -1113,7 +1113,6 @@ void main() {
           persistState: false,
           earlyExit: false,
           cadenceMode: CadenceMode.tieredMobile,
-          validateBurstCount: 1,
           additionalSources: [
             _CountingSource(box, id: 'nts:a', groupId: 'g1', counter: counter),
             _CountingSource(box, id: 'nts:b', groupId: 'g2', counter: counter),

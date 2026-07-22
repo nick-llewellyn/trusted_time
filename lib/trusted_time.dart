@@ -526,11 +526,10 @@ abstract final class TrustedTime {
   /// anchor instead of tearing the anchor down and rebuilding consensus
   /// from every source. The wire-level burst happens inside the source
   /// itself (up to [TrustedTimeConfig.ntsBurstCount] queries per
-  /// `getTime()` call); [TrustedTimeConfig.validateBurstCount] controls
-  /// how many such calls the probe makes (default `1`). Use it on a
-  /// frequent cadence (or when the app returns to the foreground) to
-  /// catch drift between the infrequent full establish ([forceResync])
-  /// cycles.
+  /// `getTime()` call); the probe makes exactly one such call. Use it
+  /// on a frequent cadence (or when the app returns to the foreground)
+  /// to catch drift between the infrequent full establish
+  /// ([forceResync]) cycles.
   ///
   /// Returns:
   ///  * `true` — the probe agrees with the anchor within
@@ -542,7 +541,7 @@ abstract final class TrustedTime {
   /// Throws [TrustedTimeFreshnessProbeException] when the probe cannot
   /// run at all — no anchor established yet, no NTS source configured
   /// (the validate tier requires NTS), all NTS sources in cooldown, or
-  /// every query in the burst failed. This "freshness unknown" outcome
+  /// the probe query failed. This "freshness unknown" outcome
   /// is deliberately distinct from the `false` "anchor drifted"
   /// observation.
   ///

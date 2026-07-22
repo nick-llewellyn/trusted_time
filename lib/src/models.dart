@@ -106,18 +106,12 @@ final class TrustedTimeConfig {
     this.backgroundSyncInterval,
     this.transientStreakThreshold = 5,
     this.cadenceMode = CadenceMode.singleTier30m,
-    this.validateBurstCount = 1,
     this.validateInterval = const Duration(hours: 1),
     this.foregroundValidateThreshold = const Duration(minutes: 15),
     this.ntsBurstCount = 8,
     this.ntpBurstCount = 8,
     this.requireSleepAwareProjection = false,
   }) : assert(
-         validateBurstCount >= 1,
-         'validateBurstCount must be at least 1: the validate tier must '
-         'make at least one getTime() attempt per probe.',
-       ),
-       assert(
          ntsBurstCount >= 1 && ntsBurstCount <= 8,
          'ntsBurstCount must be in 1..8: 8 matches the fixed burst size '
          'of package:nts\'s own one-call getTime and bounds the '
@@ -177,11 +171,6 @@ final class TrustedTimeConfig {
   ///   on battery-conscious devices.
   /// * [backgroundSyncInterval] is 24h, aligning the background
   ///   maintenance cadence with the establish tier.
-  /// * [validateBurstCount] keeps the global default of `1`: each
-  ///   validate probe makes a single `getTime()` call, and the built-in
-  ///   `NtsSource` itself bursts up to [ntsBurstCount] queries inside
-  ///   that call and returns the lowest-RTT sample — so one attempt
-  ///   already delivers the full burst-and-pick-min measurement.
   ///
   /// The cheap ~1h validate cadence is owned by the tiered scheduler
   /// rather than this factory; this factory selects the mode and the
@@ -461,35 +450,15 @@ final class TrustedTimeConfig {
   /// platform-tuned drift and interval constants.
   final CadenceMode cadenceMode;
 
-  /// The number of sequential `getTime()` attempts the validate tier
-  /// issues against the selected NTS source per freshness probe
-  /// (ADR 0006). After warming the source,
-  /// [TrustedTime.validateFreshness] calls it this many times and keeps
-  /// the sample with the smallest round-trip delay.
-  ///
-  /// This counts `getTime()` attempts, not on-the-wire queries: a
-  /// built-in `NtsSource` itself issues up to [ntsBurstCount]
-  /// sequential queries per attempt and returns the lowest-RTT sample,
-  /// so a single attempt already delivers the full burst-and-pick-min
-  /// measurement `package:nts` documents. Raising this multiplies the
-  /// wire cost — a probe places up to
-  /// `validateBurstCount * ntsBurstCount` authenticated queries — and
-  /// each attempt carries its own [maxLatency] timeout, so the probe's
-  /// worst-case duration also scales linearly. Cookie economics follow
-  /// the per-source burst behaviour documented on [ntsBurstCount]:
-  /// each successful query spends one in-band-refilled cookie, and the
-  /// sequential ordering lets each refill land before the next spend.
-  /// Defaults to `1`; must be at least `1`. Has no effect outside the
-  /// validate tier.
-  final int validateBurstCount;
-
   /// The maximum number of sequential authenticated queries each
-  /// [NtsSource] issues per establish-tier sync cycle.
+  /// [NtsSource] issues per `getTime()` call — one call per
+  /// establish-tier sync cycle, and one per validate-tier freshness
+  /// probe (ADR 0006).
   ///
   /// Every query in the burst produces an independent measurement; the
-  /// source reduces them to the single lowest-RTT sample — the same
-  /// burst-and-pick-min strategy the validate tier uses via
-  /// [validateBurstCount] — so a transient path delay on one query
+  /// source reduces them to the single lowest-RTT sample — the
+  /// burst-and-pick-min strategy `package:nts` documents — so a
+  /// transient path delay on one query
   /// cannot widen the interval the consensus sees. The burst is
   /// sequential by design, mirroring `package:nts`'s own one-call
   /// `getTime`: concurrent samples fired at one server share any
@@ -623,7 +592,6 @@ final class TrustedTimeConfig {
     Duration? backgroundSyncInterval,
     int? transientStreakThreshold,
     CadenceMode? cadenceMode,
-    int? validateBurstCount,
     Duration? validateInterval,
     Duration? foregroundValidateThreshold,
     int? ntsBurstCount,
@@ -658,7 +626,6 @@ final class TrustedTimeConfig {
       transientStreakThreshold:
           transientStreakThreshold ?? this.transientStreakThreshold,
       cadenceMode: cadenceMode ?? this.cadenceMode,
-      validateBurstCount: validateBurstCount ?? this.validateBurstCount,
       validateInterval: validateInterval ?? this.validateInterval,
       foregroundValidateThreshold:
           foregroundValidateThreshold ?? this.foregroundValidateThreshold,
@@ -695,7 +662,6 @@ final class TrustedTimeConfig {
         other.backgroundSyncInterval == backgroundSyncInterval &&
         other.transientStreakThreshold == transientStreakThreshold &&
         other.cadenceMode == cadenceMode &&
-        other.validateBurstCount == validateBurstCount &&
         other.validateInterval == validateInterval &&
         other.foregroundValidateThreshold == foregroundValidateThreshold &&
         other.ntsBurstCount == ntsBurstCount &&
@@ -727,7 +693,6 @@ final class TrustedTimeConfig {
     backgroundSyncInterval,
     transientStreakThreshold,
     cadenceMode,
-    validateBurstCount,
     validateInterval,
     foregroundValidateThreshold,
     ntsBurstCount,
@@ -771,7 +736,6 @@ final class TrustedTimeConfig {
         '  backgroundSyncInterval: $backgroundSyncInterval,\n'
         '  transientStreakThreshold: $transientStreakThreshold,\n'
         '  cadenceMode: $cadenceMode,\n'
-        '  validateBurstCount: $validateBurstCount,\n'
         '  validateInterval: $validateInterval,\n'
         '  foregroundValidateThreshold: $foregroundValidateThreshold,\n'
         '  ntsBurstCount: $ntsBurstCount,\n'

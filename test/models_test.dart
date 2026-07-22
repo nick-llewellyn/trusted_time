@@ -283,50 +283,6 @@ void main() {
     });
   });
 
-  group('TrustedTimeConfig validateBurstCount (ADR 0006)', () {
-    test('defaults to a single attempt (source burst covers sampling)', () {
-      expect(const TrustedTimeConfig().validateBurstCount, 1);
-    });
-
-    test('mobileDefaults() keeps the single-attempt default', () {
-      expect(TrustedTimeConfig.mobileDefaults().validateBurstCount, 1);
-    });
-
-    test('asserts the burst is at least 1', () {
-      expect(
-        () => TrustedTimeConfig(validateBurstCount: 0),
-        throwsA(isA<AssertionError>()),
-      );
-    });
-
-    test('round-trips through copyWith', () {
-      const original = TrustedTimeConfig();
-      final updated = original.copyWith(validateBurstCount: 7);
-      expect(updated.validateBurstCount, 7);
-      // Purely additive: an omitted value preserves the existing one.
-      final untouched = updated.copyWith(
-        maxLatency: const Duration(seconds: 7),
-      );
-      expect(untouched.validateBurstCount, 7);
-    });
-
-    test('participates in equality and hashCode', () {
-      const base = TrustedTimeConfig();
-      const bursty = TrustedTimeConfig(validateBurstCount: 3);
-      expect(base == bursty, isFalse);
-
-      const a = TrustedTimeConfig(validateBurstCount: 3);
-      const b = TrustedTimeConfig(validateBurstCount: 3);
-      expect(a, equals(b));
-      expect(a.hashCode, equals(b.hashCode));
-    });
-
-    test('appears in toString output', () {
-      const config = TrustedTimeConfig(validateBurstCount: 6);
-      expect(config.toString(), contains('validateBurstCount: 6'));
-    });
-  });
-
   group('TrustedTimeConfig ntpBurstCount', () {
     test('defaults to 8', () {
       expect(const TrustedTimeConfig().ntpBurstCount, 8);

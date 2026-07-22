@@ -245,16 +245,15 @@ final class SyncEngine {
   /// (ADR 0006) and returns the resulting [TimeSample].
   ///
   /// Unlike [sync], this runs no Marzullo consensus and builds no truth
-  /// box: it bursts a short series of authenticated NTS queries against
-  /// the highest-quality healthy NTS source and returns the single
-  /// sample with the smallest measured delay ([TimeSample.delayMs] —
-  /// the network-only peer delay δ for samples carrying the nts 7.1
-  /// clock-filter fields, else the whole RTT). The burst size is
-  /// [TrustedTimeConfig.validateBurstCount]; each query past the first
-  /// spends one in-band-refilled cookie (a single UDP round-trip, no
-  /// new NTS-KE handshake), and the lowest-delay sample is the
-  /// tightest, least path-asymmetric estimate (the burst-and-pick-min
-  /// strategy package:nts documents). The caller
+  /// box: it makes a single `getTime()` call against the
+  /// highest-quality healthy NTS source. The wire-level sampling lives
+  /// inside the source itself — a built-in `NtsSource` bursts up to
+  /// [TrustedTimeConfig.ntsBurstCount] sequential authenticated
+  /// queries within that one call and returns the sample with the
+  /// smallest measured delay ([TimeSample.delayMs] — the network-only
+  /// peer delay δ for samples carrying the nts 7.1 clock-filter
+  /// fields, else the whole RTT): the burst-and-pick-min strategy
+  /// package:nts documents. The caller
   /// (`TrustedTimeImpl.validateFreshness`) compares that sample against
   /// the live anchor to decide whether the anchor is still fresh.
   ///
@@ -267,8 +266,8 @@ final class SyncEngine {
   /// establish-pool source or perturb its ranking.
   ///
   /// Throws [TrustedTimeFreshnessProbeException] when no NTS source is
-  /// configured, every NTS source is in cooldown, or every query in the
-  /// burst fails or times out.
+  /// configured, every NTS source is in cooldown, or the probe query
+  /// fails or times out.
   Future<TimeSample> validate() async {
     final now = DateTime.now();
     final ntsSources = _sources
@@ -316,8 +315,8 @@ final class SyncEngine {
     // carry its own bound — without it, a hung handshake would stall
     // validateFreshness() indefinitely. The cap matches sync()'s
     // warming-barrier cap; on timeout the probe proceeds and Phase B's
-    // per-query maxLatency bound covers the still-cold source (getTime's
-    // JIT warm await re-joins the same memoized warm future inside that
+    // maxLatency bound covers the still-cold source (getTime's JIT
+    // warm await re-joins the same memoized warm future inside that
     // budget).
     if (source is Warmable) {
       try {
@@ -328,67 +327,36 @@ final class SyncEngine {
         // Best-effort, mirroring sync()'s warm-phase handling: surface
         // the failure to the observer so a Warmable that violates the
         // "must not throw" contract is diagnosable, then proceed to the
-        // cold getTime() burst regardless.
+        // cold getTime() regardless.
         _observer?.onSourceFailed(source.id, 'warm: $e');
       }
     }
 
-    // Phase B (burst): query the selected source up to
-    // [TrustedTimeConfig.validateBurstCount] times and keep the
-    // lowest-delay sample. A built-in NtsSource already bursts up to
-    // ntsBurstCount sequential queries inside a single getTime() and
-    // returns the lowest-RTT sample, so the default of one attempt
-    // delivers a full burst-and-pick-min measurement; extra attempts
-    // are retry insurance, each carrying its own maxLatency timeout.
-    // Attempts run sequentially so each in-band-refilled cookie lands
-    // before the next spend. Individual failures are tolerated: a probe
-    // surfaces as failed only when every attempt in the burst fails.
-    final burst = _config.validateBurstCount < 1
-        ? 1
-        : _config.validateBurstCount;
-    TimeSample? best;
-    Object? lastError;
-    StackTrace? lastStackTrace;
-    for (var attempt = 0; attempt < burst; attempt++) {
-      try {
-        final sample = await source.getTime().timeout(_config.maxLatency);
-        if (best == null || _rttKey(sample) < _rttKey(best)) {
-          best = sample;
-        }
-      } catch (e, st) {
-        lastError = e;
-        lastStackTrace = st;
-        // Mirror sync()'s _querySafe and hand the observer the raw error
-        // object (not a pre-stringified message) so consumers can inspect
-        // the error type — e.g. TimeoutException vs other failures.
-        _observer?.onSourceFailed(source.id, e);
-      }
+    // Phase B (query): a single getTime() call under the maxLatency
+    // budget. The burst-and-pick-min sampling lives inside the source:
+    // a built-in NtsSource issues up to ntsBurstCount sequential
+    // queries within this one call (sharing the same maxLatency as a
+    // shrinking deadline) and returns the lowest-RTT sample, so no
+    // engine-level loop or reduction is needed. A throw here means the
+    // source's entire internal burst failed.
+    try {
+      return await source.getTime().timeout(_config.maxLatency);
+    } catch (e, st) {
+      // Mirror sync()'s _querySafe and hand the observer the raw error
+      // object (not a pre-stringified message) so consumers can inspect
+      // the error type — e.g. TimeoutException vs other failures.
+      _observer?.onSourceFailed(source.id, e);
+      // Wrap the outcome as "freshness unknown", but preserve the
+      // originating stack trace so callers retain debugging context for
+      // the underlying error.
+      Error.throwWithStackTrace(
+        TrustedTimeFreshnessProbeException(
+          'Freshness probe against ${source.id} failed: $e',
+        ),
+        st,
+      );
     }
-    if (best != null) return best;
-    // Every attempt in the burst failed. Wrap the outcome as "freshness
-    // unknown", but preserve the originating stack trace so callers
-    // retain debugging context for the underlying error.
-    final probeFailure = TrustedTimeFreshnessProbeException(
-      'Freshness probe against ${source.id} failed across all $burst '
-      'attempt(s): $lastError',
-    );
-    if (lastStackTrace != null) {
-      Error.throwWithStackTrace(probeFailure, lastStackTrace);
-    }
-    throw probeFailure;
   }
-
-  /// Lowest-delay sort key for the [validate] burst, in milliseconds
-  /// of whole-round-trip delay units. Prefers the measured delay
-  /// [TimeSample.delayMs] (δ — network-only peer delay for nts 7.1
-  /// clock-filter samples, whole RTT otherwise) and falls back to
-  /// doubling [TimeSample.uncertaintyMs] when a source did not time
-  /// the round trip — the interval half-width is ≈ δ/2, so doubling it
-  /// keeps the key in delay units and avoids mixing δ with δ/2 across
-  /// samples. All samples in a burst come from one source, so the key
-  /// is internally consistent even when δ is unmeasured.
-  static int _rttKey(TimeSample sample) =>
-      sample.delayMs ?? (2 * sample.uncertaintyMs);
 
   /// Executes a full synchronization cycle across all healthy sources.
   ///
