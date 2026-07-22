@@ -284,12 +284,12 @@ void main() {
   });
 
   group('TrustedTimeConfig validateBurstCount (ADR 0006)', () {
-    test('defaults to 8', () {
-      expect(const TrustedTimeConfig().validateBurstCount, 8);
+    test('defaults to a single attempt (source burst covers sampling)', () {
+      expect(const TrustedTimeConfig().validateBurstCount, 1);
     });
 
-    test('mobileDefaults() pins an 8-sample validate burst', () {
-      expect(TrustedTimeConfig.mobileDefaults().validateBurstCount, 8);
+    test('mobileDefaults() keeps the single-attempt default', () {
+      expect(TrustedTimeConfig.mobileDefaults().validateBurstCount, 1);
     });
 
     test('asserts the burst is at least 1', () {
