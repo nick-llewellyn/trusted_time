@@ -71,10 +71,9 @@ class _FailingNtsSource implements TimeSource {
 }
 
 /// An NTS [TimeSource] that returns a scripted sequence of round-trip
-/// delays across successive [getTime] calls, so the validate-tier
-/// burst's lowest-RTT selection can be exercised deterministically. A
-/// `null` entry makes that call throw, exercising partial-failure
-/// tolerance.
+/// delays across successive [getTime] calls and counts those calls, so
+/// the validate tier's "one probe = one getTime()" contract can be
+/// pinned deterministically. A `null` entry makes that call throw.
 class _BurstNtsSource implements TimeSource {
   _BurstNtsSource(this._delaysMs);
 
@@ -149,24 +148,19 @@ SyncEngine _engineFor(
   List<TimeSource> sources, {
   required _RecordingObserver observer,
   required List<IntegrityEvent> events,
-  int? validateBurstCount,
   MonotonicClock? clock,
 }) {
   return SyncEngine(
-    config:
-        const TrustedTimeConfig(
-          minimumQuorum: 2,
-          minGroupCount: 1,
-          // Wait for every source each cycle so admission is deterministic and
-          // does not depend on which sample wins the early-exit race.
-          earlyExit: false,
-          ntpServers: [],
-          httpsSources: [],
-          ntsServers: [],
-        ).copyWith(
-          additionalSources: sources,
-          validateBurstCount: validateBurstCount,
-        ),
+    config: const TrustedTimeConfig(
+      minimumQuorum: 2,
+      minGroupCount: 1,
+      // Wait for every source each cycle so admission is deterministic and
+      // does not depend on which sample wins the early-exit race.
+      earlyExit: false,
+      ntpServers: [],
+      httpsSources: [],
+      ntsServers: [],
+    ).copyWith(additionalSources: sources),
     clock: clock ?? _MockClock(),
     observer: observer,
     onIntegrityEvent: events.add,
@@ -583,12 +577,12 @@ void main() {
       expect(observer.failures.any((f) => f.sourceId == 'nts:fail'), isTrue);
     });
 
-    test('defaults to a single getTime() attempt per probe', () async {
+    test('makes exactly one getTime() call per probe', () async {
       final observer = _RecordingObserver();
       final events = <IntegrityEvent>[];
       // The wire-level burst lives inside the source's own getTime();
-      // by default the probe makes exactly one call rather than
-      // multiplying the source burst by an engine-level loop.
+      // the probe makes exactly one call rather than multiplying the
+      // source burst by an engine-level loop.
       final source = _BurstNtsSource([80, 20, 50]);
       final engine = _engineFor([source], observer: observer, events: events);
 
@@ -596,66 +590,6 @@ void main() {
 
       expect(source.calls, 1);
       expect(sample.delayMs, 80);
-    });
-
-    test('an explicit burst returns the lowest-RTT sample', () async {
-      final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
-      // Burst of 8; the second attempt has the smallest delay.
-      final source = _BurstNtsSource([80, 20, 50, 60, 90, 70, 40, 30]);
-      final engine = _engineFor(
-        [source],
-        observer: observer,
-        events: events,
-        validateBurstCount: 8,
-      );
-
-      final sample = await engine.validate();
-
-      expect(source.calls, 8);
-      expect(sample.delayMs, 20);
-      expect(sample.uncertaintyMs, 10);
-    });
-
-    test('tolerates partial failures and returns the best success', () async {
-      final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
-      // Three of eight attempts fail; the best successful delay is 10.
-      final source = _BurstNtsSource([null, 30, null, 10, 40, null, 60, 20]);
-      final engine = _engineFor(
-        [source],
-        observer: observer,
-        events: events,
-        validateBurstCount: 8,
-      );
-
-      final sample = await engine.validate();
-
-      expect(source.calls, 8);
-      expect(sample.delayMs, 10);
-      // Each failed attempt is reported to the observer.
-      expect(
-        observer.failures.where((f) => f.sourceId == 'nts:burst').length,
-        3,
-      );
-    });
-
-    test('honors a configured validateBurstCount', () async {
-      final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
-      final source = _BurstNtsSource([50, 10, 5, 1]);
-      final engine = _engineFor(
-        [source],
-        observer: observer,
-        events: events,
-        validateBurstCount: 2,
-      );
-
-      final sample = await engine.validate();
-
-      // Only the first two attempts run; min(50, 10) = 10.
-      expect(source.calls, 2);
-      expect(sample.delayMs, 10);
     });
 
     test('a hung warm() cannot stall the probe past warmBarrierCap', () {

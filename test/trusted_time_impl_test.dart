@@ -1099,10 +1099,10 @@ void main() {
 
     test('a foreground resume does not start a probe that overlaps an '
         'in-flight validate cycle (shared in-flight guard)', () async {
-      // burst of 1 keeps the probe to a single getTime() so the query
-      // tally is exactly "one burst == one query"; the two sources share
-      // one counter so the assertion holds regardless of which ranked
-      // source the validate tier selects.
+      // A probe is a single getTime() call, so the counter tallies
+      // exactly "one probe == one getTime() call"; the two sources
+      // share one counter so the assertion holds regardless of which
+      // ranked source the validate tier selects.
       final counter = _ProbeCounter();
       final box = freshBox();
       await TrustedTime.initialize(
@@ -1113,7 +1113,6 @@ void main() {
           persistState: false,
           earlyExit: false,
           cadenceMode: CadenceMode.tieredMobile,
-          validateBurstCount: 1,
           additionalSources: [
             _CountingSource(box, id: 'nts:a', groupId: 'g1', counter: counter),
             _CountingSource(box, id: 'nts:b', groupId: 'g2', counter: counter),
@@ -1124,13 +1123,13 @@ void main() {
       final impl = TrustedTimeImpl.instance;
 
       // The bootstrap establish cycle queried the sources; only
-      // post-init probe queries are relevant to the guard.
+      // post-init probe getTime() calls are relevant to the guard.
       counter.count = 0;
 
       // Two foreground resumes dispatched in the same synchronous turn.
       // The first drives _runValidateCycle to its first await — setting
       // the in-flight flag before yielding — so the second must observe
-      // the flag and return before issuing any probe query.
+      // the flag and return before issuing any probe getTime() call.
       const bg1 = Duration(hours: 5);
       impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg1);
       impl.debugHandleAppLifecycleState(
@@ -1147,8 +1146,8 @@ void main() {
       await Future.delayed(const Duration(milliseconds: 30));
 
       // Both resumes register as attempts, but the guard let only one
-      // burst reach a source: a single probe query, not two overlapping
-      // bursts contending on shared per-source state.
+      // probe reach a source: a single getTime() call, not two
+      // overlapping probes contending on shared per-source state.
       expect(impl.debugValidateCycleCount, 2);
       expect(counter.count, 1);
       expect(TrustedTime.isTrusted, isTrue);
