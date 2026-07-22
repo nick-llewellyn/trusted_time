@@ -5,6 +5,17 @@
 - Tracking issue: `trusted_time-e0v` (mismatch audit: `trusted_time-41d`)
 - Depends on: ADR 0001 (NTS integration), `package:nts` ≥ 1.3.0
 
+> **[Amendment — 2026-07-22]** The back-compat connectivity fallback
+> (decision point 5 below) has been **removed** (issue
+> `trusted_time-4lu`). It was the only network endpoint in the package
+> not derived from user-configured time sources: an HTTPS HEAD probe
+> against `https://www.google.com`. A background fire without a
+> registered callback (or, on iOS, without the plugin registrant) is
+> now a no-op that performs no network activity; the anchor is
+> refreshed on the next foreground launch. All network traffic is
+> strictly limited to the configured time sources. References to the
+> fallback in the decision text below are retained as history.
+
 > **[Implementation note — 2026-07-02]** The original implementation of
 > this ADR landed pre-pivot under the `trusted_time_nts` namespace and
 > survives only on `archive/legacy-fork-main`, which shares no git history

@@ -213,9 +213,11 @@ private enum class SyncVerdict { SUCCESS, FAILED_RETRYABLE, FAILED_PERMANENT }
  * `TrustedTime.runBackgroundSync()`), and waits for completion via the
  * `trusted_time/background.notifyBackgroundComplete` method-channel call.
  *
- * If no callback is registered, this falls back to a connectivity-only
- * HTTPS HEAD probe, preserving the previous behaviour for integrators that
- * have not yet adopted the host-registered callback pattern.
+ * If no callback is registered, the fire is a deliberate no-op: the
+ * package performs no network activity of its own (all traffic is
+ * strictly limited to the user-configured time sources reached through
+ * the Dart callback), and the anchor is refreshed on the next foreground
+ * launch instead.
  */
 class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
 
@@ -224,15 +226,15 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
             TrustedTimePlugin.PREFS, Context.MODE_PRIVATE,
         )
         val handle = prefs.getLong(TrustedTimePlugin.KEY_HANDLE, 0L)
-        when {
-            handle == 0L -> runConnectivityFallback()
-            else -> {
-                val callbackInfo =
-                    FlutterCallbackInformation.lookupCallbackInformation(handle)
-                if (callbackInfo == null) runConnectivityFallback()
-                else runHeadlessSync(callbackInfo)
-            }
-        }
+        val callbackInfo =
+            if (handle == 0L) null
+            else FlutterCallbackInformation.lookupCallbackInformation(handle)
+        // No registered callback: succeed without doing anything so the
+        // periodic schedule stays alive (a later launch may register the
+        // callback) and no retry/backoff churn is triggered for a state
+        // that only an app launch can change.
+        if (callbackInfo == null) Result.success()
+        else runHeadlessSync(callbackInfo)
     } catch (e: CancellationException) {
         // WorkManager cancelling the worker must propagate.
         throw e
@@ -365,26 +367,5 @@ class BackgroundSyncWorker(ctx: Context, params: WorkerParameters) : CoroutineWo
                 engine?.destroy()
             }
         }
-    }
-
-    private fun runConnectivityFallback(): Result = try {
-        val url = java.net.URL("https://www.google.com")
-        val conn = url.openConnection() as java.net.HttpURLConnection
-        try {
-            conn.requestMethod = "HEAD"
-            conn.connectTimeout = 5000
-            conn.readTimeout = 5000
-            conn.connect()
-            // HttpURLConnection.connect() does not throw on non-2xx responses,
-            // so a captive portal returning 302/403 would otherwise be reported
-            // as a success and suppress WorkManager's backoff. Gate on the 2xx
-            // range to match the iOS performConnectivityFallback semantics.
-            val code = conn.responseCode
-            if (code in 200..299) Result.success() else Result.retry()
-        } finally {
-            conn.disconnect()
-        }
-    } catch (_: Exception) {
-        Result.retry()
     }
 }
