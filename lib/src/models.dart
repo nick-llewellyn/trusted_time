@@ -114,7 +114,7 @@ final class TrustedTimeConfig {
   }) : assert(
          validateBurstCount >= 1,
          'validateBurstCount must be at least 1: the validate tier must '
-         'issue at least one NTS query per probe.',
+         'make at least one getTime() attempt per probe.',
        ),
        assert(
          ntsBurstCount >= 1 && ntsBurstCount <= 8,
