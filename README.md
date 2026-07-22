@@ -16,7 +16,7 @@ A tamper-proof UTC clock for Flutter. `trusted_time` anchors network-verified ti
 - **Integrity monitoring** — automatically detects system clock jumps and device reboots and re-syncs
 - **Background sync** — keeps the anchor fresh while the app is backgrounded (Android WorkManager, iOS BGAppRefreshTask, desktop Timer)
 - **Offline safe** — projects time from the last known anchor using the monotonic clock when the network is unavailable
-- **All platforms** — Android, iOS, macOS, Windows, Linux, Web
+- **Cross-platform** — Android, iOS, macOS, Windows, Linux
 
 ---
 
@@ -29,11 +29,8 @@ A tamper-proof UTC clock for Flutter. `trusted_time` anchors network-verified ti
 | macOS    | `systemUptime` | Timer.periodic | NTP, NTS | NotificationCenter |
 | Windows  | `GetTickCount64()` | Timer.periodic | NTP, NTS | WM_TIMECHANGE |
 | Linux    | `CLOCK_BOOTTIME` | Timer.periodic | NTP, NTS | timerfd |
-| Web/WASM | `performance.now()` | — | custom `additionalSources` only | visibilitychange |
 
 > **Mobile background sync note:** On Android and iOS, background fires perform a real headless anchor refresh **if** the host app registers a background callback via `TrustedTime.registerBackgroundCallback` (plus, on iOS, the `AppDelegate` plugin-registrant hook — see [Enable background sync](#enable-background-sync)). Without registration, background fires are no-ops — no network activity of any kind — and the anchor is refreshed on the next foreground launch. All network traffic is strictly limited to the configured time sources.
-
-> **Web/WASM note:** Browsers don't support UDP/TCP sockets, so the built-in NTP and NTS sources are unavailable on Web. A Web deployment must supply its own `additionalSources`.
 
 ---
 
@@ -83,7 +80,7 @@ Add the network entitlement to `macos/Runner/DebugProfile.entitlements` and `mac
 <true/>
 ```
 
-### Windows, Linux, Web
+### Windows, Linux
 
 No additional setup required.
 
@@ -198,7 +195,7 @@ await TrustedTime.enableBackgroundSync(
 );
 ```
 
-On Android this schedules a WorkManager `PeriodicWorkRequest`. On iOS it registers a `BGAppRefreshTask`. On desktop it uses a `Timer.periodic` within the Dart isolate. Web is not supported.
+On Android this schedules a WorkManager `PeriodicWorkRequest`. On iOS it registers a `BGAppRefreshTask`. On desktop it uses a `Timer.periodic` within the Dart isolate.
 
 **Headless anchor refresh (Android/iOS):** for a background fire to perform a real anchor refresh (without registration, fires are no-ops), register a top-level `@pragma('vm:entry-point')` callback before `runApp`:
 

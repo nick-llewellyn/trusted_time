@@ -939,9 +939,9 @@ final class SyncEngine {
     }
 
     // Stamp the boot-session identity so warm restore can compare it
-    // against the device's current boot ID. Null on platforms without a
-    // boot concept (web), where the anchor cannot outlive the session
-    // anyway. Read *before* the clock readings below: bootId is a
+    // against the device's current boot ID. Null when the platform
+    // cannot supply one, in which case warm restore fails closed.
+    // Read *before* the clock readings below: bootId is a
     // platform-channel round trip whose latency must not fall between
     // the uptime reading and the age measurement, or it would be
     // subtracted from an uptime it never aged (over-backdating).

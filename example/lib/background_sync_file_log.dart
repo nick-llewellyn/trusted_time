@@ -34,11 +34,9 @@ import 'package:path_provider/path_provider.dart';
 /// isolate returns control to the OS scheduler.
 ///
 /// **Platform scope: native (mobile / desktop) only.** Imports `dart:io`
-/// and `path_provider`, neither available on Flutter web. The bundled
-/// example is android + ios only, so this is consistent with its
-/// deployment surface — same constraint as [BenchmarkLogger]. The core
-/// `trusted_time` package itself stays web-compatible; this is an
-/// example-only diagnostic instrument.
+/// and `path_provider`. The bundled example is android + ios only, so
+/// this is consistent with its deployment surface — same constraint as
+/// [BenchmarkLogger]. This is an example-only diagnostic instrument.
 class BackgroundSyncFileLog {
   BackgroundSyncFileLog._();
 

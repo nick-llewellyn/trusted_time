@@ -396,13 +396,11 @@ final class TrustedTimeImpl {
   ///
   /// **Desktop** (Linux/macOS/Windows): a [Timer.periodic] inside the
   /// running isolate re-syncs at [interval] (honoured exactly — no floor).
-  /// **Web**: no-op (browsers suspend background tabs).
   ///
   /// On Android/iOS [interval] is applied at minute resolution and clamped
   /// to `[15 min, 1 week]` to respect [WorkManager]'s hard periodic floor;
   /// the desktop timer path honours [interval] as given.
   Future<void> enableBackgroundSync(Duration interval) async {
-    if (kIsWeb) return;
     if (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS) {
       if (interval.inMinutes < 15) {
@@ -431,7 +429,7 @@ final class TrustedTimeImpl {
       throw const TrustedTimeSecurityException(
         'requireSleepAwareProjection is set but no sleep-aware '
         'monotonic clock is available: the nts bridge is not '
-        'initialized (NTP-only config, web, or the bridge '
+        'initialized (NTP-only config, or the bridge '
         'bootstrap failed and NTS was disabled). Projection would '
         'silently freeze during device sleep. Configure reachable '
         'ntsServers (whose FFI bootstrap must succeed) or relax the '
@@ -756,7 +754,6 @@ final class TrustedTimeImpl {
   void _startTieredSchedulingIfNeeded() {
     if (_config.cadenceMode != CadenceMode.tieredMobile) return;
     _scheduleValidate();
-    if (kIsWeb) return;
     final observer = _AppLifecycleObserver(
       (state) => _handleAppLifecycleState(state, _monotonicElapsed),
     );

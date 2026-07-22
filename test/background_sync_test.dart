@@ -654,7 +654,7 @@ void main() {
     test('swallows MissingPluginException when channel is unmocked', () async {
       // The default mock from setUp() is overridden with `null` here so
       // method-channel calls raise MissingPluginException (the realistic
-      // desktop/web behaviour). The public API must still return the
+      // desktop behaviour). The public API must still return the
       // sync result instead of propagating the channel error.
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
