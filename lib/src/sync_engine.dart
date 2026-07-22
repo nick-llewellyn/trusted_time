@@ -80,10 +80,8 @@ final class SyncEngine {
   /// Shared DNS concurrency budget (ADR 0008).
   ///
   /// One budget governs all uncached host resolutions the engine can see
-  /// in-process: it is handed to every [NtpSource] and [HttpsSource]
-  /// (the latter pre-resolves its host through it to warm the platform
-  /// cache, ADR 0008) and its value is forwarded as each [NtsSource]'s
-  /// `dnsConcurrencyCap`. Built lazily
+  /// in-process: it is handed to every [NtpSource] and its value is
+  /// forwarded as each [NtsSource]'s `dnsConcurrencyCap`. Built lazily
   /// from [TrustedTimeConfig.effectiveMaxConcurrentDnsLookups] so the
   /// migration ladder (and its one-time deprecation warning) runs exactly
   /// once, the first time the source list is materialised.
@@ -155,8 +153,6 @@ final class SyncEngine {
           onStratumObserved: (s) =>
               _qualityTracker.setStratum('${TimeSource.prefixNtp}$host', s),
         ),
-      for (final url in _config.httpsSources)
-        HttpsSource(url, dnsBudget: _dnsBudget),
       for (final host in _config.ntsServers)
         NtsSource(
           host,
@@ -455,7 +451,7 @@ final class SyncEngine {
           // than loop the same failure forever. Cooldown, by contrast,
           // expires with time, so a retry can plausibly recover.
           ? const TrustedTimeSyncException(
-              'No time sources are configured: ntpServers, httpsSources, '
+              'No time sources are configured: ntpServers, '
               'ntsServers, and additionalSources are all empty.',
               transient: false,
             )
@@ -1216,11 +1212,11 @@ final class SyncEngine {
   }
 
   /// Releases network and platform resources.
-  void dispose() {
-    for (final source in _sources) {
-      if (source is HttpsSource) source.dispose();
-    }
-  }
+  ///
+  /// Currently a no-op: none of the built-in sources (NTP, NTS) hold
+  /// engine-owned resources that outlive a query. Retained so the
+  /// owning [TrustedTime] implementation has a stable teardown hook.
+  void dispose() {}
 }
 
 /// Per-cycle synchronous re-entry guard for [SyncEngine._completeSync].

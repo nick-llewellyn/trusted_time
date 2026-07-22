@@ -164,7 +164,6 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
           persistState: false,
           requireSleepAwareProjection: true,

@@ -150,7 +150,6 @@ void main() {
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
             persistState: false,
           ),
@@ -192,7 +191,6 @@ void main() {
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
             persistState: false,
           ),
@@ -256,7 +254,6 @@ void main() {
         // what gets stashed on TrustedTimeImpl._config.
         const config = TrustedTimeConfig(
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
           refreshInterval: Duration(minutes: 7),
           minimumQuorum: 3,
@@ -299,7 +296,6 @@ void main() {
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
             persistState: false,
           ),
@@ -316,7 +312,6 @@ void main() {
         TrustedTime.initialize(
           config: const TrustedTimeConfig(
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
             persistState: false,
             requireSleepAwareProjection: true,
@@ -331,7 +326,6 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
           persistState: false,
         ),
@@ -354,7 +348,6 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
           persistState: false,
         ),
@@ -369,7 +362,6 @@ void main() {
         TrustedTime.initialize(
           config: const TrustedTimeConfig(
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
             persistState: false,
             requireSleepAwareProjection: true,
@@ -405,7 +397,6 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
           persistState: false,
         ),
@@ -419,7 +410,6 @@ void main() {
         TrustedTime.initialize(
           config: const TrustedTimeConfig(
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
             persistState: false,
             requireSleepAwareProjection: true,
@@ -458,7 +448,6 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
           persistState: false,
           refreshInterval: Duration(minutes: 5),
@@ -597,7 +586,6 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
-          httpsSources: const [],
           ntsServers: const [],
           persistState: false,
           additionalSources: [
@@ -622,7 +610,6 @@ void main() {
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
             persistState: false,
           ),
@@ -660,7 +647,6 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
-          httpsSources: const [],
           ntsServers: const [],
           additionalSources: [
             _BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
@@ -683,14 +669,12 @@ void main() {
       // operator==/hashCode, not from `identical`.
       final a = TrustedTimeConfig(
         ntpServers: const ['pool.ntp.org'],
-        httpsSources: const ['https://example.com'],
         ntsServers: const ['time.cloudflare.com'],
         refreshInterval: const Duration(minutes: 5),
         minimumQuorum: 3,
       );
       final b = TrustedTimeConfig(
         ntpServers: const ['pool.ntp.org'],
-        httpsSources: const ['https://example.com'],
         ntsServers: const ['time.cloudflare.com'],
         refreshInterval: const Duration(minutes: 5),
         minimumQuorum: 3,
@@ -724,7 +708,6 @@ void main() {
     test('toString surfaces the source pools and quorum knobs', () {
       final config = TrustedTimeConfig(
         ntpServers: const ['pool.ntp.org'],
-        httpsSources: const ['https://example.com'],
         ntsServers: const ['time.cloudflare.com', 'mmo1.nts.netnod.se'],
         minimumQuorum: 4,
         refreshInterval: const Duration(minutes: 2),
@@ -733,7 +716,6 @@ void main() {
 
       expect(text, startsWith('TrustedTimeConfig('));
       expect(text, contains('ntpServers: [pool.ntp.org]'));
-      expect(text, contains('httpsSources: [https://example.com]'));
       expect(
         text,
         contains('ntsServers: [time.cloudflare.com, mmo1.nts.netnod.se]'),
@@ -763,7 +745,6 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
           persistState: false,
         ),
@@ -786,7 +767,6 @@ void main() {
         await TrustedTime.initialize(
           config: TrustedTimeConfig(
             ntpServers: const [],
-            httpsSources: const [],
             ntsServers: const [],
             persistState: false,
             earlyExit: false,
@@ -815,7 +795,6 @@ void main() {
         await TrustedTime.initialize(
           config: TrustedTimeConfig(
             ntpServers: const [],
-            httpsSources: const [],
             ntsServers: const [],
             persistState: false,
             earlyExit: false,
@@ -865,7 +844,6 @@ void main() {
         await TrustedTime.initialize(
           config: TrustedTimeConfig(
             ntpServers: const [],
-            httpsSources: const [],
             ntsServers: const [],
             persistState: false,
             earlyExit: false,
@@ -895,7 +873,6 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
-          httpsSources: const [],
           ntsServers: const [],
           persistState: false,
           earlyExit: false,
@@ -930,7 +907,6 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
-          httpsSources: const [],
           ntsServers: const [],
           persistState: false,
           earlyExit: false,
@@ -949,7 +925,6 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
           persistState: false,
         ),
@@ -1108,7 +1083,6 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
-          httpsSources: const [],
           ntsServers: const [],
           persistState: false,
           earlyExit: false,
@@ -1229,7 +1203,6 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
-          httpsSources: const [],
           ntsServers: const [],
           earlyExit: false,
           additionalSources: [

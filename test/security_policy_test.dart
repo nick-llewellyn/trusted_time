@@ -1,12 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show HttpDate;
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
-import 'package:trusted_time/src/sources/time_sources.dart' show HttpsSource;
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
 
@@ -123,7 +119,6 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
-          httpsSources: const [],
           ntsServers: const [],
           persistState: false,
           minimumQuorum: 2,
@@ -231,7 +226,6 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
-          httpsSources: const [],
           ntsServers: const [],
           persistState: persistState,
           minimumQuorum: 2,
@@ -315,40 +309,31 @@ void main() {
       });
     });
 
-    group('edge 2: only HTTPS-Date sources available', () {
-      test('authenticated transport is not authenticated time: '
-          'requireSecure: true rejects an HTTPS-only anchor', () async {
-        // Real HttpsSource instances backed by an offline MockClient:
-        // transport-level TLS would succeed in production, but HTTPS
-        // provides no application-layer signature over the timestamp,
-        // so samples are unconditionally NtsAuthLevel.none and the
-        // anchor degrades.
-        //
-        // Capture one Date header up front and serve it from both
-        // sources: formatting per-request could straddle a second
-        // boundary, and with near-zero mocked RTT the resulting
-        // 1s-skewed intervals would not overlap, flaking quorum.
-        final dateHeader = HttpDate.format(DateTime.now().toUtc());
-        http.Client dateClient() => MockClient(
-          (request) async =>
-              http.Response('', 200, headers: {'date': dateHeader}),
-        );
-        await initWith([
-          HttpsSource('https://a.example.com/time', client: dateClient()),
-          HttpsSource('https://b.example.org/time', client: dateClient()),
-        ]);
+    group('edge 2: only unauthenticated sources available', () {
+      test(
+        'unauthenticated consensus is not authenticated time: '
+        'requireSecure: true rejects an unauthenticated-only anchor',
+        () async {
+          // Sources that reach quorum but carry no application-layer
+          // signature over the timestamp: samples are unconditionally
+          // NtsAuthLevel.none and the anchor degrades.
+          await initWith([
+            _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+            _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+          ]);
 
-        // Quorum was reached — best-effort time is available...
-        expect(TrustedTime.isTrusted, isTrue);
-        expect(TrustedTime.getTime(), isA<DateTime>());
-        // ...but the anchor is degraded, so the secure path fails closed.
-        expect(TrustedTime.authLevel, NtsAuthLevel.none);
-        expect(TrustedTime.isSecure, isFalse);
-        expect(
-          () => TrustedTime.getTime(requireSecure: true),
-          throwsA(isA<TrustedTimeSecurityException>()),
-        );
-      });
+          // Quorum was reached — best-effort time is available...
+          expect(TrustedTime.isTrusted, isTrue);
+          expect(TrustedTime.getTime(), isA<DateTime>());
+          // ...but the anchor is degraded, so the secure path fails closed.
+          expect(TrustedTime.authLevel, NtsAuthLevel.none);
+          expect(TrustedTime.isSecure, isFalse);
+          expect(
+            () => TrustedTime.getTime(requireSecure: true),
+            throwsA(isA<TrustedTimeSecurityException>()),
+          );
+        },
+      );
     });
 
     group('edge 3: mid-call NTS server flap', () {

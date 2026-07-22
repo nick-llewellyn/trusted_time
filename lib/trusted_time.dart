@@ -169,12 +169,7 @@ abstract final class TrustedTime {
     }
     if (_override != null) return;
 
-    // Use Web-compatible configuration on Web/WASM platforms
-    if (config == null && kIsWeb) {
-      config = TrustedTimeConfig.web();
-    } else {
-      config ??= const TrustedTimeConfig();
-    }
+    config ??= const TrustedTimeConfig();
 
     // Initialize the flutter_rust_bridge runtime backing package:nts
     // before any NtsSource is constructed, degrading to an NTS-disabled

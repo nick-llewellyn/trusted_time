@@ -32,7 +32,6 @@ TrustedTimeConfig buildStressConfig() {
   )..shuffle(Random())).toList(growable: false);
   return TrustedTimeConfig(
     ntpServers: const [],
-    httpsSources: const [],
     ntsServers: ntsSubset,
     minimumQuorum: 2,
     minQuorumRatio: 0.4,
@@ -644,7 +643,6 @@ class _HomePageState extends State<HomePage> {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
-          httpsSources: const [],
           ntsServers: shuffled,
           maxConcurrentDnsLookups: _maxConcurrentDnsLookupsOverride,
           minimumQuorum: 2,

@@ -158,7 +158,6 @@ SyncEngine _engineFor(
       // does not depend on which sample wins the early-exit race.
       earlyExit: false,
       ntpServers: [],
-      httpsSources: [],
       ntsServers: [],
     ).copyWith(additionalSources: sources),
     clock: clock ?? _MockClock(),

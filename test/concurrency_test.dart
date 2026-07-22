@@ -485,7 +485,6 @@ void main() {
         minimumQuorum: 2,
         minGroupCount: 1, // Relax for tests
         ntpServers: [],
-        httpsSources: [],
       );
     });
 
@@ -614,7 +613,6 @@ void main() {
         minimumQuorum: 2,
         minGroupCount: 1,
         ntpServers: [],
-        httpsSources: [],
       );
     });
 
@@ -870,7 +868,6 @@ void main() {
         minimumQuorum: 2,
         minGroupCount: 1,
         ntpServers: [],
-        httpsSources: [],
       );
     });
 
@@ -1023,7 +1020,6 @@ void main() {
         final engine = SyncEngine(
           config: const TrustedTimeConfig(
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
             usePlatformTrust: true,
             customRootCerts: [1, 2, 3],
@@ -1045,11 +1041,7 @@ void main() {
         // valid config. bundledOnly (the effective default) is valid, so
         // source construction succeeds even with no NTS servers present.
         final engine = SyncEngine(
-          config: const TrustedTimeConfig(
-            ntpServers: [],
-            httpsSources: [],
-            ntsServers: [],
-          ),
+          config: const TrustedTimeConfig(ntpServers: [], ntsServers: []),
           clock: clock,
         );
 
@@ -1075,7 +1067,6 @@ void main() {
         minimumQuorum: 2,
         minGroupCount: 1,
         ntpServers: [],
-        httpsSources: [],
         ntsServers: [],
       );
     });
@@ -1362,7 +1353,6 @@ void main() {
         minimumQuorum: 2,
         minGroupCount: 1,
         ntpServers: [],
-        httpsSources: [],
         ntsServers: [],
       );
     });
@@ -1578,7 +1568,6 @@ void main() {
             minimumQuorum: 2,
             minGroupCount: 2,
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
           ).copyWith(additionalSources: [s1, s2, s3]),
           clock: gatedClock,
@@ -1633,7 +1622,6 @@ void main() {
             minimumQuorum: 2,
             minGroupCount: 2,
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
           ).copyWith(additionalSources: [s1, s2, s3]),
           clock: clock,
@@ -1769,7 +1757,6 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 2,
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
         ).copyWith(additionalSources: sources),
         clock: MockMonotonicClock(),
@@ -1862,7 +1849,6 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 2,
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
         ).copyWith(additionalSources: sources),
         clock: MockMonotonicClock(),
@@ -1924,7 +1910,6 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 1,
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
         clock: MockMonotonicClock(),
@@ -1964,7 +1949,6 @@ void main() {
             minimumQuorum: 2,
             minGroupCount: 1,
             ntpServers: [],
-            httpsSources: [],
             ntsServers: [],
           ).copyWith(additionalSources: [s1, s2]),
           clock: MockMonotonicClock(),
@@ -2013,7 +1997,6 @@ void main() {
           minimumQuorum: 3,
           minGroupCount: 1,
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2, s3]),
         clock: MockMonotonicClock(),
@@ -2060,7 +2043,6 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 1,
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
         clock: MockMonotonicClock(),
@@ -2098,7 +2080,6 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 1,
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
         clock: MockMonotonicClock(),
@@ -2143,7 +2124,6 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 1,
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
         clock: JustBootedMonotonicClock(),
