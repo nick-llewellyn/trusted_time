@@ -127,7 +127,7 @@ final class TransientSourceError implements Exception {
 ///  * no anchor has been established yet (await [TrustedTime.initialize]
 ///    or [TrustedTime.forceResync] first);
 ///  * no NTS source is configured — the validate tier requires NTS for
-///    cryptographic authenticity, so NTP/HTTPS sources are not eligible;
+///    cryptographic authenticity, so NTP sources are not eligible;
 ///  * every configured NTS source is currently in exponential cooldown;
 ///    or
 ///  * every query in the probe burst failed or timed out.

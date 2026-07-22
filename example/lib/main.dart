@@ -13,7 +13,7 @@ import 'sync_telemetry.dart';
 
 /// Builds the NTS-exclusive stress-test configuration.
 ///
-/// NTP and HTTPS sources are disabled so the engine relies solely on
+/// NTP sources are disabled so the engine relies solely on
 /// cryptographically authenticated samples. minQuorumRatio is 0.4, which
 /// (combined with MarzulloEngine's hard floor of requiredQuorum >= 2) means
 /// at least three samples must arrive in a cycle before consensus is
@@ -32,7 +32,6 @@ TrustedTimeConfig buildStressConfig() {
   )..shuffle(Random())).toList(growable: false);
   return TrustedTimeConfig(
     ntpServers: const [],
-    httpsSources: const [],
     ntsServers: ntsSubset,
     minimumQuorum: 2,
     minQuorumRatio: 0.4,
@@ -184,7 +183,7 @@ Future<void> main() async {
 
   // Pre-register the background callback so subsequent calls to
   // `enableBackgroundSync` perform a real headless anchor refresh rather
-  // than the back-compat HTTPS-HEAD connectivity fallback.
+  // than no-oping when the OS scheduler fires.
   await TrustedTime.registerBackgroundCallback(trustedTimeBackgroundCallback);
 
   // Verification hook: --dart-define=BG_SYNC_MINUTES=15 auto-schedules the
@@ -644,7 +643,6 @@ class _HomePageState extends State<HomePage> {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
-          httpsSources: const [],
           ntsServers: shuffled,
           maxConcurrentDnsLookups: _maxConcurrentDnsLookupsOverride,
           minimumQuorum: 2,

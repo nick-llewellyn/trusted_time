@@ -11,7 +11,7 @@ A tamper-proof UTC clock for Flutter. `trusted_time` anchors network-verified ti
 ## Features
 
 - **Tamper-proof** — anchored to the hardware monotonic oscillator, not the system wall clock
-- **Multi-source consensus** — queries NTP servers and HTTPS endpoints in parallel; uses Marzullo's algorithm to find the most probable true time and discard outliers
+- **Multi-source consensus** — queries NTP and NTS servers in parallel; uses Marzullo's algorithm to find the most probable true time and discard outliers
 - **NTS support** — optional Network Time Security (RFC 8915) for cryptographically authenticated time
 - **Integrity monitoring** — automatically detects system clock jumps and device reboots and re-syncs
 - **Background sync** — keeps the anchor fresh while the app is backgrounded (Android WorkManager, iOS BGAppRefreshTask, desktop Timer)
@@ -24,16 +24,16 @@ A tamper-proof UTC clock for Flutter. `trusted_time` anchors network-verified ti
 
 | Platform | Monotonic clock | Background sync | Time sources | Integrity events |
 |----------|----------------|----------------|-------------|-----------------|
-| Android  | `elapsedRealtime()` | WorkManager | NTP, HTTPS, NTS | BroadcastReceiver |
-| iOS      | `systemUptime` | BGAppRefreshTask | NTP, HTTPS, NTS | NotificationCenter |
-| macOS    | `systemUptime` | Timer.periodic | NTP, HTTPS, NTS | NotificationCenter |
-| Windows  | `GetTickCount64()` | Timer.periodic | NTP, HTTPS, NTS | WM_TIMECHANGE |
-| Linux    | `CLOCK_BOOTTIME` | Timer.periodic | NTP, HTTPS, NTS | timerfd |
-| Web/WASM | `performance.now()` | — | HTTPS only | visibilitychange |
+| Android  | `elapsedRealtime()` | WorkManager | NTP, NTS | BroadcastReceiver |
+| iOS      | `systemUptime` | BGAppRefreshTask | NTP, NTS | NotificationCenter |
+| macOS    | `systemUptime` | Timer.periodic | NTP, NTS | NotificationCenter |
+| Windows  | `GetTickCount64()` | Timer.periodic | NTP, NTS | WM_TIMECHANGE |
+| Linux    | `CLOCK_BOOTTIME` | Timer.periodic | NTP, NTS | timerfd |
+| Web/WASM | `performance.now()` | — | custom `additionalSources` only | visibilitychange |
 
 > **Mobile background sync note:** On Android and iOS, background fires perform a real headless anchor refresh **if** the host app registers a background callback via `TrustedTime.registerBackgroundCallback` (plus, on iOS, the `AppDelegate` plugin-registrant hook — see [Enable background sync](#enable-background-sync)). Without registration, background fires are no-ops — no network activity of any kind — and the anchor is refreshed on the next foreground launch. All network traffic is strictly limited to the configured time sources.
 
-> **Web/WASM note:** Browsers don't support UDP/TCP sockets, so Web platforms use HTTPS `Date` headers from multiple endpoints. The library automatically configures Web-compatible sources when running in browsers or WASM.
+> **Web/WASM note:** Browsers don't support UDP/TCP sockets, so the built-in NTP and NTS sources are unavailable on Web. A Web deployment must supply its own `additionalSources`.
 
 ---
 
@@ -307,7 +307,6 @@ void main() {
 |-----------|------|---------|-------------|
 | `ntpServers` | `List<String>` | `pool.ntp.org`, `time.google.com` | NTP server hostnames |
 | `ntpBurstCount` | `int` | `8` | Sequential SNTP exchanges per NTP source per sync; the lowest-delay sample is kept |
-| `httpsSources` | `List<String>` | Google, Cloudflare, Apple, Microsoft | HTTPS `Date` header sources |
 | `ntsServers` | `List<String>` | `['time.cloudflare.com']` | NTS server hostnames (opt-in) |
 | `ntsPort` | `int` | `4460` | NTS-KE port |
 | `refreshInterval` | `Duration` | `30m` | How often to re-sync in the foreground |
@@ -346,7 +345,7 @@ When `initialize()` is called:
 
 1. The last persisted `TrustAnchor` is loaded from encrypted platform storage (Android Keystore / iOS Keychain / Windows DPAPI / Linux libsecret).
 2. If the anchor is valid (device has not rebooted since it was written), time is available immediately — no network round-trip needed.
-3. A background sync begins: NTP, HTTPS, and NTS sources are queried in parallel. As samples arrive they are fed into Marzullo's algorithm. Once a stable, group-diverse quorum is reached, a new anchor is written.
+3. A background sync begins: NTP and NTS sources are queried in parallel. As samples arrive they are fed into Marzullo's algorithm. Once a stable, group-diverse quorum is reached, a new anchor is written.
 
 After initialization, `TrustedTime.now()` is a pure arithmetic operation it adds the elapsed monotonic time since the anchor was captured to the anchor's UTC value. There is no I/O and no platform channel call per invocation.
 

@@ -211,7 +211,6 @@ void main() {
         await TrustedTime.initialize(
           config: TrustedTimeConfig(
             ntpServers: const [],
-            httpsSources: const [],
             ntsServers: requested,
             // Two distinct group ids so MarzulloEngine treats them as
             // independent samples and consensus is reachable on the

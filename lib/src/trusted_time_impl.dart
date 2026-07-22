@@ -176,7 +176,7 @@ final class TrustedTimeImpl {
   int? _offlineLastUtcMs;
   int? _offlineLastWallMs;
   // Idempotency guard for [dispose]. Composed inner resources have
-  // mixed semantics — SyncClock and HttpsClient.close are
+  // mixed semantics — SyncClock.close is
   // idempotent, but IntegrityMonitor's StreamController.close is
   // documented as idempotent in Dart's API but can throw under
   // older SDKs / unusual subclass overrides. Calling dispose twice
@@ -431,7 +431,7 @@ final class TrustedTimeImpl {
       throw const TrustedTimeSecurityException(
         'requireSleepAwareProjection is set but no sleep-aware '
         'monotonic clock is available: the nts bridge is not '
-        'initialized (HTTPS/NTP-only config, web, or the bridge '
+        'initialized (NTP-only config, web, or the bridge '
         'bootstrap failed and NTS was disabled). Projection would '
         'silently freeze during device sleep. Configure reachable '
         'ntsServers (whose FFI bootstrap must succeed) or relax the '

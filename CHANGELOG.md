@@ -4,6 +4,17 @@
 
 ### Breaking Changes
 
+- **Removed HTTPS `Date`-header time sources.** `HttpsSource`, the
+  `TrustedTimeConfig.httpsSources` field, the `TrustedTimeConfig.web()`
+  factory, and the `package:http` dependency are gone. HTTPS `Date`
+  headers have whole-second granularity, no application-layer
+  authentication, and consistently produced the widest intervals in
+  consensus; NTP and NTS are strictly better on every axis on the
+  supported IO platforms. Web deployments, which relied on HTTPS as the
+  only browser-compatible transport, must now supply custom
+  `additionalSources`. Migration: delete `httpsSources:` arguments and
+  rely on `ntpServers` / `ntsServers`.
+
 - **Removed the `google.com` connectivity-probe fallback from mobile
   background sync.** Previously, a background fire without a registered
   callback (Android), or without a callback / plugin registrant (iOS),

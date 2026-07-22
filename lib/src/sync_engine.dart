@@ -80,10 +80,8 @@ final class SyncEngine {
   /// Shared DNS concurrency budget (ADR 0008).
   ///
   /// One budget governs all uncached host resolutions the engine can see
-  /// in-process: it is handed to every [NtpSource] and [HttpsSource]
-  /// (the latter pre-resolves its host through it to warm the platform
-  /// cache, ADR 0008) and its value is forwarded as each [NtsSource]'s
-  /// `dnsConcurrencyCap`. Built lazily
+  /// in-process: it is handed to every [NtpSource] and its value is
+  /// forwarded as each [NtsSource]'s `dnsConcurrencyCap`. Built lazily
   /// from [TrustedTimeConfig.effectiveMaxConcurrentDnsLookups] so the
   /// migration ladder (and its one-time deprecation warning) runs exactly
   /// once, the first time the source list is materialised.
@@ -96,8 +94,7 @@ final class SyncEngine {
   /// Lazily-initialized list of authoritative time sources.
   ///
   /// DNS concurrency is governed by the shared [_dnsBudget] (ADR 0008):
-  /// NTP and HTTPS sources resolve through it cache-first (HTTPS via a
-  /// pre-resolve step that warms the platform cache), and its value is
+  /// NTP sources resolve through it cache-first, and its value is
   /// forwarded as each NTS source's `dnsConcurrencyCap` so all source
   /// kinds draw on one unified cold-start budget rather than the former
   /// NTS-only `ntsServers.length + 2` auto-size.
@@ -134,7 +131,7 @@ final class SyncEngine {
   /// `customRootCerts`) fails closed with [ArgumentError] regardless of
   /// whether any NTS servers are configured. Resolving it inside the
   /// `ntsServers` comprehension would skip the check whenever that list
-  /// is empty, letting an invalid config build NTP/HTTPS/additional
+  /// is empty, letting an invalid config build NTP/additional
   /// sources and silently bypass the "fail closed" guarantee. The
   /// resolved mode is then reused for every [NtsSource].
   List<TimeSource> _buildSources() {
@@ -155,8 +152,6 @@ final class SyncEngine {
           onStratumObserved: (s) =>
               _qualityTracker.setStratum('${TimeSource.prefixNtp}$host', s),
         ),
-      for (final url in _config.httpsSources)
-        HttpsSource(url, dnsBudget: _dnsBudget),
       for (final host in _config.ntsServers)
         NtsSource(
           host,
@@ -455,7 +450,7 @@ final class SyncEngine {
           // than loop the same failure forever. Cooldown, by contrast,
           // expires with time, so a retry can plausibly recover.
           ? const TrustedTimeSyncException(
-              'No time sources are configured: ntpServers, httpsSources, '
+              'No time sources are configured: ntpServers, '
               'ntsServers, and additionalSources are all empty.',
               transient: false,
             )
@@ -1082,7 +1077,7 @@ final class SyncEngine {
   }
 
   /// One structured `sample <id> ok|fail` line per source per query,
-  /// symmetric across source kinds (NTP, HTTPS, NTS, additional) so
+  /// symmetric across source kinds (NTP, NTS, additional) so
   /// "is NTP working?" is answerable from the log stream directly
   /// rather than by subtracting NTS burst counts from consensus totals.
   void _logSample(TimeSample sample) {
@@ -1216,11 +1211,11 @@ final class SyncEngine {
   }
 
   /// Releases network and platform resources.
-  void dispose() {
-    for (final source in _sources) {
-      if (source is HttpsSource) source.dispose();
-    }
-  }
+  ///
+  /// Currently a no-op: none of the built-in sources (NTP, NTS) hold
+  /// engine-owned resources that outlive a query. Retained so the
+  /// owning [TrustedTime] implementation has a stable teardown hook.
+  void dispose() {}
 }
 
 /// Per-cycle synchronous re-entry guard for [SyncEngine._completeSync].

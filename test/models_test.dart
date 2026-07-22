@@ -488,8 +488,8 @@ void main() {
 
     test('defaults to null when constructor parameter is omitted', () {
       // Backward compatibility: every call site that constructs a
-      // TimeSample without naming trustBackend (NTP source, HTTPS
-      // source, every test fake) keeps producing samples whose
+      // TimeSample without naming trustBackend (NTP source, every
+      // test fake) keeps producing samples whose
       // trustBackend field is null. Future readers must not change
       // this default to a non-null sentinel — it would falsely
       // imply NTS-style trust-backend semantics for sources that

@@ -955,7 +955,6 @@ void main() {
       await public_api.TrustedTime.initialize(
         config: const public_api.TrustedTimeConfig(
           ntpServers: [],
-          httpsSources: [],
           ntsServers: [],
           persistState: false,
         ),
@@ -1133,7 +1132,6 @@ TrustedTimeConfig _offlineConfig({
   List<String> ntsServers = const [],
 }) => TrustedTimeConfig(
   ntpServers: const [],
-  httpsSources: const [],
   ntsServers: ntsServers,
   minimumQuorum: 2,
   persistState: persistState,

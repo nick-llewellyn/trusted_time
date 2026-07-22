@@ -22,7 +22,7 @@ enum ConfidenceLevel {
   medium,
 
   /// A high-integrity quorum has been reached with broad diversity across
-  /// protocols (NTP, HTTPS, NTS) and extremely low population variance.
+  /// protocols (NTP, NTS) and extremely low population variance.
   high,
 }
 
@@ -64,7 +64,7 @@ enum CadenceMode {
 ///
 /// [TrustedTimeConfig] is annotated `@immutable` and its scalar
 /// fields are `final`. The list-typed fields ([ntpServers],
-/// [httpsSources], [ntsServers], [additionalSources]) are stored by
+/// [ntsServers], [additionalSources]) are stored by
 /// reference for `const`-constructibility — the canonical
 /// production usage is to pass `const`-list literals, which are
 /// already deeply immutable.
@@ -79,13 +79,6 @@ final class TrustedTimeConfig {
   /// Creates a new configuration instance with sensible production defaults.
   const TrustedTimeConfig({
     this.ntpServers = const ['pool.ntp.org', 'time.google.com'],
-    this.httpsSources = const [
-      'https://www.google.com',
-      'https://www.cloudflare.com',
-      'https://time.cloudflare.com',
-      'https://www.apple.com',
-      'https://www.microsoft.com',
-    ],
     this.ntsServers = const ['time.cloudflare.com'],
     this.ntsPort = 4460,
     this.maxConcurrentDnsLookups,
@@ -124,36 +117,10 @@ final class TrustedTimeConfig {
          'both source kinds share one worst-case wall-time model.',
        );
 
-  /// Creates a Web-compatible configuration that only uses HTTPS sources.
-  ///
-  /// Web platforms don't support UDP sockets (required for NTP/NTS), so this
-  /// configuration excludes NTP and NTS servers, relying solely on HTTP/HTTPS
-  /// endpoints that work in browsers and WASM environments.
-  factory TrustedTimeConfig.web() {
-    return const TrustedTimeConfig(
-      ntpServers: [], // No UDP support on Web
-      ntsServers: [], // No TCP support on Web
-      httpsSources: [
-        'https://www.google.com',
-        'https://www.cloudflare.com',
-        'https://time.cloudflare.com',
-        'https://www.apple.com',
-        'https://www.microsoft.com',
-        'https://api.github.com',
-        'https://httpbin.org',
-        'https://www.wikipedia.org',
-      ],
-      minimumQuorum: 2,
-      minGroupCount: 2,
-      maxLatency: Duration(seconds: 5),
-      refreshInterval: Duration(hours: 1),
-    );
-  }
-
   /// Creates a mobile-tuned configuration implementing the tiered
   /// establish/validate sync cadence (ADR 0006).
   ///
-  /// Peer of [TrustedTimeConfig.web]; selects platform-tuned defaults
+  /// Selects platform-tuned defaults
   /// explicitly rather than changing any global default:
   ///
   /// * [cadenceMode] is [CadenceMode.tieredMobile], so the engine runs
@@ -189,9 +156,6 @@ final class TrustedTimeConfig {
   /// The list of authoritative NTP server hostnames used for synchronization.
   final List<String> ntpServers;
 
-  /// The list of HTTP/HTTPS endpoints used to extract UTC time from the `Date` header.
-  final List<String> httpsSources;
-
   /// The list of Network Time Security (NTS) servers used for cryptographically
   /// authenticated synchronization.
   final List<String> ntsServers;
@@ -211,7 +175,7 @@ final class TrustedTimeConfig {
   /// [ntsDnsConcurrencyCap] during migration.
   ///
   /// Six sits between the carrier-conservative (4) and WiFi-optimistic
-  /// (8) envelopes: it covers a typical NTS pool plus HTTPS headroom
+  /// (8) envelopes: it covers a typical NTS pool plus NTP headroom
   /// while staying inside the CGNAT serialisation threshold a cold-start
   /// burst tends to hit. See ADR 0008.
   final int? maxConcurrentDnsLookups;
@@ -228,7 +192,7 @@ final class TrustedTimeConfig {
   @Deprecated(
     'Use maxConcurrentDnsLookups instead; it governs DNS concurrency '
     'across the engine-resolved NTP and NTS lookups rather than NTS alone '
-    '(HTTPS DNS stays OS-resolver-governed for now; see ADR 0008). '
+    '(see ADR 0008). '
     'Honoured as the unified budget while maxConcurrentDnsLookups is '
     'unset; removal is deferred to the fork 2.x release.',
   )
@@ -370,7 +334,7 @@ final class TrustedTimeConfig {
   /// is the sleep-aware `nts.MonotonicClock` — `CLOCK_BOOTTIME` /
   /// `mach_continuous_time` / `QueryInterruptTimePrecise` — which
   /// keeps counting through device suspend. Without the bridge
-  /// (HTTPS/NTP-only configs, web, or after a genuine bridge init
+  /// (NTP-only configs, web, or after a genuine bridge init
   /// failure) the engine falls back to a Dart `Stopwatch`, which
   /// freezes during suspend: a device that sleeps between syncs then
   /// reports a projected time behind by the sleep duration until the
@@ -572,7 +536,6 @@ final class TrustedTimeConfig {
   /// this method; construct a new instance directly if that is needed.
   TrustedTimeConfig copyWith({
     List<String>? ntpServers,
-    List<String>? httpsSources,
     List<String>? ntsServers,
     int? ntsPort,
     int? maxConcurrentDnsLookups,
@@ -600,7 +563,6 @@ final class TrustedTimeConfig {
   }) {
     return TrustedTimeConfig(
       ntpServers: ntpServers ?? this.ntpServers,
-      httpsSources: httpsSources ?? this.httpsSources,
       ntsServers: ntsServers ?? this.ntsServers,
       ntsPort: ntsPort ?? this.ntsPort,
       maxConcurrentDnsLookups:
@@ -641,7 +603,6 @@ final class TrustedTimeConfig {
     if (identical(this, other)) return true;
     return other is TrustedTimeConfig &&
         listEquals(other.ntpServers, ntpServers) &&
-        listEquals(other.httpsSources, httpsSources) &&
         listEquals(other.ntsServers, ntsServers) &&
         other.ntsPort == ntsPort &&
         other.maxConcurrentDnsLookups == maxConcurrentDnsLookups &&
@@ -672,7 +633,6 @@ final class TrustedTimeConfig {
   @override
   int get hashCode => Object.hashAll([
     Object.hashAll(ntpServers),
-    Object.hashAll(httpsSources),
     Object.hashAll(ntsServers),
     ntsPort,
     maxConcurrentDnsLookups,
@@ -710,7 +670,6 @@ final class TrustedTimeConfig {
     // diff between an expected and actual config reads top-to-bottom.
     return 'TrustedTimeConfig(\n'
         '  ntpServers: $ntpServers,\n'
-        '  httpsSources: $httpsSources,\n'
         '  ntsServers: $ntsServers,\n'
         '  ntsPort: $ntsPort,\n'
         '  maxConcurrentDnsLookups: $maxConcurrentDnsLookups,\n'
