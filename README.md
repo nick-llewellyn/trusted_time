@@ -13,7 +13,7 @@ A tamper-proof UTC clock for Flutter. `trusted_time` anchors network-verified ti
 - **Tamper-proof** — anchored to the hardware monotonic oscillator, not the system wall clock
 - **Multi-source consensus** — queries NTP and NTS servers in parallel; uses Marzullo's algorithm to find the most probable true time and discard outliers
 - **NTS support** — optional Network Time Security (RFC 8915) for cryptographically authenticated time
-- **Integrity monitoring** — automatically detects system clock jumps and device reboots and re-syncs
+- **Integrity monitoring** — detects device reboots across restarts and reports degraded sync cycles
 - **Background sync** — keeps the anchor fresh while the app is backgrounded (Android WorkManager, iOS BGAppRefreshTask, desktop Timer)
 - **Offline safe** — projects time from the last known anchor using the monotonic clock when the network is unavailable
 - **Cross-platform** — Android, iOS, macOS, Windows, Linux
@@ -22,13 +22,13 @@ A tamper-proof UTC clock for Flutter. `trusted_time` anchors network-verified ti
 
 ## Platform support
 
-| Platform | Monotonic clock | Background sync | Time sources | Integrity events |
-|----------|----------------|----------------|-------------|-----------------|
-| Android  | `elapsedRealtime()` | WorkManager | NTP, NTS | BroadcastReceiver |
-| iOS      | `systemUptime` | BGAppRefreshTask | NTP, NTS | NotificationCenter |
-| macOS    | `systemUptime` | Timer.periodic | NTP, NTS | NotificationCenter |
-| Windows  | `GetTickCount64()` | Timer.periodic | NTP, NTS | WM_TIMECHANGE |
-| Linux    | `CLOCK_BOOTTIME` | Timer.periodic | NTP, NTS | timerfd |
+| Platform | Monotonic clock | Background sync | Time sources |
+|----------|----------------|----------------|-------------|
+| Android  | `elapsedRealtime()` | WorkManager | NTP, NTS |
+| iOS      | `systemUptime` | BGAppRefreshTask | NTP, NTS |
+| macOS    | `systemUptime` | Timer.periodic | NTP, NTS |
+| Windows  | `GetTickCount64()` | Timer.periodic | NTP, NTS |
+| Linux    | `CLOCK_BOOTTIME` | Timer.periodic | NTP, NTS |
 
 > **Mobile background sync note:** On Android and iOS, background fires perform a real headless anchor refresh **if** the host app registers a background callback via `TrustedTime.registerBackgroundCallback` (plus, on iOS, the `AppDelegate` plugin-registrant hook — see [Enable background sync](#enable-background-sync)). Without registration, background fires are no-ops — no network activity of any kind — and the anchor is refreshed on the next foreground launch. All network traffic is strictly limited to the configured time sources.
 
@@ -172,17 +172,17 @@ try {
 
 ### Listen for integrity events
 
-The engine monitors for system clock jumps and device reboots. When an anomaly is detected, it emits an event, invalidates the current anchor, and begins an immediate resync.
+Because time projection is anchored to the monotonic clock, changing the system wall clock has no effect on `TrustedTime.now()` — no monitoring is needed for that. The stream reports the events that do matter:
 
 ```dart
 TrustedTime.onIntegrityLost.listen((event) {
   switch (event.reason) {
-    case TamperReason.systemClockJumped:
-      // System clock was changed while the app was running
     case TamperReason.deviceRebooted:
-      // Device rebooted — monotonic counter reset
-    case TamperReason.timezoneChanged:
-      // Timezone changed — UTC time unaffected but local time may differ
+      // Device rebooted — monotonic counter reset, anchor invalidated
+    case TamperReason.degradedTier:
+      // Sync cycle could not form an authenticated (Tier 1) quorum
+    default:
+      // Other diagnostic events
   }
 });
 ```
@@ -346,7 +346,7 @@ When `initialize()` is called:
 
 After initialization, `TrustedTime.now()` is a pure arithmetic operation it adds the elapsed monotonic time since the anchor was captured to the anchor's UTC value. There is no I/O and no platform channel call per invocation.
 
-The integrity monitor runs continuously. On Android and iOS it listens for system broadcast events (`TIME_SET`, `TIMEZONE_CHANGED`, `NSSystemClockDidChange`). On Windows it subclasses a message window for `WM_TIMECHANGE`. On Linux it uses a `timerfd` with `TFD_TIMER_CANCEL_ON_SET` to detect kernel clock changes with zero idle CPU cost. When a jump is detected the anchor is invalidated and an immediate resync begins.
+Because projection depends only on the anchor and the monotonic clock, wall-clock changes made while the app is running (or stopped) cannot move trusted time — no runtime clock surveillance is required. The one event that invalidates an anchor is a reboot, which resets the monotonic counter; it is detected at initialization by comparing the anchor's recorded boot-session identifier against the current one (step 2 above).
 
 ---
 

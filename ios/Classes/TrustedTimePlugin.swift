@@ -46,9 +46,6 @@ public typealias TrustedTimePluginRegistrantCallback = (FlutterEngine) -> Void
 ///    persist the anchor.
 public class TrustedTimePlugin: NSObject, FlutterPlugin {
 
-    private var integrityEventSink: FlutterEventSink?
-    private var clockObservers: [NSObjectProtocol] = []
-
     #if os(iOS)
     private let bgTaskId = "com.trustedtime.backgroundsync"
     private var bgRegistered = false
@@ -87,9 +84,6 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
             
         let backgroundChannel = FlutterMethodChannel(name: "trusted_time/background", binaryMessenger: messenger)
         backgroundChannel.setMethodCallHandler(instance.handle)
-
-        let integrityChannel = FlutterEventChannel(name: "trusted_time/integrity", binaryMessenger: messenger)
-        integrityChannel.setStreamHandler(instance)
     }
 
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -448,41 +442,4 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     }
 
     #endif
-}
-
-extension TrustedTimePlugin: FlutterStreamHandler {
-
-    public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-        integrityEventSink = events
-        let nc = NotificationCenter.default
-        
-        #if os(iOS)
-        let clockChange = Notification.Name.NSSystemClockDidChange
-        let tzChange = Notification.Name.NSSystemTimeZoneDidChange
-        #elseif os(macOS)
-        let clockChange = Notification.Name.NSSystemClockDidChange
-        let tzChange = Notification.Name.NSSystemTimeZoneDidChange
-        #endif
-
-        clockObservers = [
-            nc.addObserver(forName: clockChange, object: nil, queue: .main) { [weak self] _ in
-                self?.emit(["type": "clockJumped"])
-            },
-            nc.addObserver(forName: tzChange, object: nil, queue: .main) { [weak self] _ in
-                self?.emit(["type": "timezoneChanged"])
-            },
-        ]
-        return nil
-    }
-
-    public func onCancel(withArguments arguments: Any?) -> FlutterError? {
-        clockObservers.forEach { NotificationCenter.default.removeObserver($0) }
-        clockObservers.removeAll()
-        integrityEventSink = nil
-        return nil
-    }
-
-    private func emit(_ data: [String: Any]) {
-        DispatchQueue.main.async { [weak self] in self?.integrityEventSink?(data) }
-    }
 }

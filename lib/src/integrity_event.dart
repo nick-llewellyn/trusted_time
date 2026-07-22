@@ -5,18 +5,6 @@ import 'package:flutter/foundation.dart';
 /// [TamperReason] enumerates the exhaustive set of violations that can
 /// compromise the temporal baseline of the engine.
 enum TamperReason {
-  /// A significant discrepancy was detected in the system wall clock.
-  ///
-  /// This usually indicates manual user manipulation or a network-initiated
-  /// clock jump.
-  systemClockJumped,
-
-  /// The device timezone was changed via OS settings.
-  ///
-  /// While not a direct integrity violation of UTC, this may affect
-  /// local-time representation and localized application logic.
-  timezoneChanged,
-
   /// A hardware reboot was detected via monotonic uptime reset.
   ///
   /// Reboots invalidate the current hardware anchor and require a fresh
@@ -68,9 +56,6 @@ final class IntegrityEvent {
   final DateTime detectedAt;
 
   /// The measured magnitude of the clock discrepancy, if available.
-  ///
-  /// For [TamperReason.systemClockJumped], this represents the jump distance.
-  /// For [TamperReason.timezoneChanged], it represents the offset change.
   final Duration? drift;
 
   @override

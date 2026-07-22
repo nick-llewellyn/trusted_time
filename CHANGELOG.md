@@ -4,6 +4,21 @@
 
 ### Breaking Changes
 
+- **Removed the wall-clock drift monitor and native clock-change
+  hooks.** Time projection is monotonic-only, so wall-clock
+  manipulation cannot affect `TrustedTime.now()`; monitoring it added
+  battery/complexity cost without a security benefit. Removed:
+  `TamperReason.systemClockJumped`, `TamperReason.timezoneChanged`,
+  the Dart-side adaptive drift-check loop, and the
+  `trusted_time/integrity` platform event channel with all five native
+  implementations (Android `IntegrityWatcher` broadcast receiver,
+  iOS/macOS `NSSystemClockDidChange` observers, Windows
+  `WM_TIMECHANGE` subclassing, Linux `timerfd` cancel-on-set watcher).
+  `onIntegrityLost` still emits `deviceRebooted` (warm-start boot-ID
+  check) and `degradedTier`. Migration: delete `switch` cases on the
+  two removed enum members; reboot and degraded-tier handling is
+  unchanged.
+
 - **Dropped Web platform support.** The Web plugin
   (`trusted_time_web.dart`), its `pubspec.yaml` registration, the
   `web` / `flutter_web_plugins` dependencies, all `kIsWeb` runtime

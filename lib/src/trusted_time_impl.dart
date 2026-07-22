@@ -112,7 +112,6 @@ final class TrustedTimeImpl {
   Timer? _refreshTimer;
   Timer? _retryTimer;
   Timer? _desktopBgTimer;
-  StreamSubscription<IntegrityEvent>? _integritySub;
   Completer<void>? _syncInProgress;
 
   // Tiered-cadence auxiliaries (ADR 0006), live only under
@@ -437,7 +436,6 @@ final class TrustedTimeImpl {
       );
     }
 
-    _listenForIntegrityEvents();
     _startTieredSchedulingIfNeeded();
 
     if (_config.persistState) {
@@ -483,29 +481,6 @@ final class TrustedTimeImpl {
 
   /// Whether the host platform supports cryptographically secure time (NTS).
   bool get supportsSecureTime => _config.ntsServers.isNotEmpty;
-
-  /// Initializes the integrity monitoring loop.
-  ///
-  /// We proactively listen for system-level anomalies (clock jumps, reboots).
-  /// If an anomaly is detected, we immediately invalidate the cache and
-  /// enter a high-priority recovery cycle to re-establish a trust anchor.
-  void _listenForIntegrityEvents() {
-    _integritySub?.cancel();
-    _integritySub = _monitor.events.listen((event) {
-      if (event.reason == TamperReason.systemClockJumped ||
-          event.reason == TamperReason.deviceRebooted) {
-        _trusted = false;
-
-        // Critical: Purge cache and drift calibration on anomaly. Stale drift
-        // observations spanning a clock jump or reboot are invalid.
-        _cache.clear();
-        _driftCalibrator.reset();
-
-        // Trigger an immediate background sync to recover trust.
-        unawaited(_performSync());
-      }
-    });
-  }
 
   Future<void> _performSync() async {
     // Two-tier in-flight guard. The synchronous bool [_syncEntryGuard]
@@ -622,7 +597,6 @@ final class TrustedTimeImpl {
       anchor.wallMs,
       initialElapsedMs: initialElapsedMs,
     );
-    _monitor.attach(anchor);
     _driftCalibrator.recordAnchor(anchor.wallMs, anchor.networkUtcMs);
   }
 
@@ -991,8 +965,6 @@ final class TrustedTimeImpl {
       }
       _lifecycleObserver = null;
     }
-    _integritySub?.cancel();
-    _integritySub = null;
     _syncEngine.dispose();
     _monitor.dispose();
     _syncClock.dispose();

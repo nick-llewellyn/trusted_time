@@ -26,10 +26,6 @@ void main() {
   TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
       .setMockMethodCallHandler(backgroundChannel, (call) async => null);
 
-  const integrityChannel = MethodChannel('trusted_time/integrity');
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(integrityChannel, (call) async => null);
-
   group('TrustedTimeImpl via mock', () {
     late TrustedTimeMock mock;
 
@@ -43,10 +39,10 @@ void main() {
       mock.dispose();
     });
 
-    test('isTrusted becomes false after clock jump event', () async {
+    test('isTrusted becomes false after simulated tampering', () async {
       expect(TrustedTime.isTrusted, isTrue);
 
-      mock.simulateTampering(TamperReason.systemClockJumped);
+      mock.simulateTampering(TamperReason.unknown);
       await Future.delayed(Duration.zero);
 
       expect(TrustedTime.isTrusted, isFalse);
@@ -66,13 +62,13 @@ void main() {
       final sub = TrustedTime.onIntegrityLost.listen(events.add);
 
       mock.simulateTampering(
-        TamperReason.systemClockJumped,
+        TamperReason.unknown,
         drift: const Duration(minutes: 3),
       );
       await Future.delayed(Duration.zero);
 
       expect(events, hasLength(1));
-      expect(events.first.reason, TamperReason.systemClockJumped);
+      expect(events.first.reason, TamperReason.unknown);
       expect(events.first.drift, const Duration(minutes: 3));
 
       await sub.cancel();
@@ -114,7 +110,7 @@ void main() {
     });
 
     test('nowEstimated returns null when untrusted without reboot data', () {
-      mock.simulateTampering(TamperReason.systemClockJumped);
+      mock.simulateTampering(TamperReason.unknown);
       final estimate = TrustedTime.nowEstimated();
       expect(estimate, isNull);
     });
@@ -735,7 +731,7 @@ void main() {
 
       expect(await TrustedTime.validateFreshness(), isTrue);
 
-      mock.simulateTampering(TamperReason.systemClockJumped);
+      mock.simulateTampering(TamperReason.unknown);
       expect(TrustedTime.isTrusted, isFalse);
       expect(await TrustedTime.validateFreshness(), isFalse);
     });

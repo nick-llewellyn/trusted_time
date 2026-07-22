@@ -440,12 +440,13 @@ abstract final class TrustedTime {
     return TrustedTimeImpl.instance.isProjectionSleepAware;
   }
 
-  /// Emits events when the engine detects potential temporal tampering.
+  /// Emits events when the engine detects an integrity violation.
   ///
-  /// The engine proactively monitors for Monotonic-to-Wall drift. If a
-  /// system clock jump or device reboot is detected, this stream will
-  /// emit an event, and the engine will automatically enter a recovery
-  /// cycle (cache invalidation + immediate resync).
+  /// Emitted for reboots detected on warm start ([TamperReason
+  /// .deviceRebooted]) and for sync cycles that cannot establish a Tier 1
+  /// truth box ([TamperReason.degradedTier]). Wall-clock changes are not
+  /// monitored: projection is monotonic-only, so a wall-clock jump cannot
+  /// affect [now].
   static Stream<IntegrityEvent> get onIntegrityLost {
     if (_override != null) return _override!.onIntegrityLost;
     return TrustedTimeImpl.instance.onIntegrityLost;
@@ -952,8 +953,6 @@ abstract final class TrustedTime {
   ///  * the retry timer scheduled by a failed sync (recovery from a
   ///    failed bootstrap or a failed refresh still proceeds);
   ///  * sync cycles triggered by [forceResync];
-  ///  * sync cycles triggered by integrity events (clock jumps,
-  ///    detected reboots);
   ///  * platform background sync if it was enabled.
   /// Consumers that want to fully suppress all engine-driven syncs
   /// should pause this timer *and* either avoid configuring

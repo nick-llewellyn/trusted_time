@@ -930,7 +930,6 @@ void main() {
   group('TrustedTime.enableBackgroundSync', () {
     const bgChannel = MethodChannel('trusted_time/background');
     const monotonicChannel = MethodChannel('trusted_time/monotonic');
-    const integrityChannel = MethodChannel('trusted_time/integrity');
     final calls = <MethodCall>[];
 
     setUp(() async {
@@ -945,8 +944,6 @@ void main() {
             if (call.method == 'getUptimeMs') return 1000;
             return null;
           });
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(integrityChannel, (call) async => null);
       // A live engine is required so the public wrapper can reach
       // TrustedTimeImpl.instance. Empty source pools keep the bootstrap
       // sync network-free (it fails quorum, which initialize tolerates),
@@ -969,8 +966,6 @@ void main() {
           .setMockMethodCallHandler(bgChannel, null);
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(monotonicChannel, null);
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(integrityChannel, null);
     });
 
     test(

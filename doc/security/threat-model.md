@@ -165,12 +165,13 @@ The persisted payload is small and fully enumerable — the anchor JSON
   a fresh network sync is required (fail closed). The legacy uptime
   inequality (`current < anchor.uptimeMs`) is retained as a secondary
   tripwire.
-- **Adaptive drift monitor.** While running, the `IntegrityMonitor`
-  compares Δuptime against Δwall-clock (baseline every 5 min,
-  tightening to 30 s after an anomaly). Divergence beyond 5 s emits
-  `TamperReason.systemClockJumped`, purges the anchor, and forces a
-  resync. Native signals (`TIME_SET`, timezone change, boot) feed the
-  same event stream.
+- **No wall-clock surveillance — by design.** Because projection is
+  monotonic-only, wall-clock manipulation has no effect on `now()`;
+  there is nothing to detect at runtime. The library therefore runs no
+  drift monitor and hooks no OS clock-change signals. The single
+  temporal event that does invalidate an anchor — a reboot resetting
+  the monotonic counter — is caught by the warm-start boot-ID check
+  above.
 
 ## Residual risks
 
@@ -197,8 +198,7 @@ valid tag. It is deliberately scoped as *at-rest tamper evidence only*;
 see R2 and R4 for why it does not extend the trust boundary further.
 Partial incidental cover exists today: a substituted anchor whose
 `uptimeMs` exceeds the device's current uptime is rejected by the
-reboot check, and one that produces a large uptime/wall divergence
-trips the drift monitor.
+reboot check.
 
 ### R2 — Same-boot anchor replay (T3)
 
@@ -210,9 +210,8 @@ not freshness. Blocking replay requires binding anchors to session
 state: a boot-count or monotonic write counter in the signed payload,
 or key rotation on reboot. Boot-ID binding (R5) gives the cross-boot
 half of this for free (an anchor from a previous boot session is
-discarded on identity mismatch), and a replay that regresses time far
-enough may trip the drift monitor indirectly, but a targeted same-boot
-replay is not detected.
+discarded on identity mismatch), but a targeted same-boot replay is
+not detected.
 
 ### R5 — Reboot wait-out (T3) — **mitigated by boot-ID binding**
 
@@ -223,10 +222,8 @@ offline so no fresh sync replaces the anchor, (2) reboot, (3) leave the
 device powered on until the new uptime exceeds the anchor's recorded
 `uptimeMs`, (4) launch the app. The gate passed, `elapsedSinceAnchor`
 computed near zero, and `now()` served trusted time backdated by the
-entire off-duration. The drift monitor did not catch it because the
-attacker also controls the wall clock (set it back by the off-duration
-so Δuptime and Δwall agree), and the runtime `deviceRebooted` event
-never fired because the process was dead across the reboot.
+entire off-duration. No runtime signal could have fired because the
+process was dead across the reboot.
 
 **Mitigation (adopted):** `TrustAnchor` records the boot-session
 identifier at capture, and `checkRebootOnWarmStart` compares identity
@@ -275,8 +272,7 @@ through at least four independent routes:
 2. **Monotonic clock lies.** The uptime input to the projection comes
    from the kernel via a platform channel. An attacker who controls the
    kernel or interposes the channel shifts `now()` arbitrarily without
-   touching the anchor at all. The drift monitor compares two values
-   the same attacker controls.
+   touching the anchor at all.
 3. **Process-memory patching.** Once the anchor is loaded and the engine
    is trusted, live `SyncClock` state can be patched in memory. No
    at-rest protection is relevant.
@@ -302,7 +298,7 @@ library and belongs to the consuming application's backend design.
 | Majority NTP poisoning | T1 | ✅ NTP cannot move the truth box | ✅ |
 | NTS denial → degraded tier | T1 | ⚠️ fails closed, labelled (R3) | ⚠️ |
 | Co-resident app reads/writes anchor | T2 | ✅ sandbox + Keystore/Keychain | ✅ |
-| System wall-clock manipulation | T2 | ✅ monotonic anchoring + drift monitor | ✅ |
+| System wall-clock manipulation | T2 | ✅ monotonic anchoring (projection unaffected) | ✅ |
 | Offline storage edit / backup forgery | T3 | ⚠️ encryption only (R1) | ✅ |
 | Same-boot anchor replay | T3 | ❌ (R2) | ❌ needs freshness counter |
 | Cross-boot anchor replay | T3 | ✅ boot-ID binding | ✅ |
@@ -323,9 +319,9 @@ library and belongs to the consuming application's backend design.
 - **Use `requireSecure: true`** for any decision where accepting
   unauthenticated time is worse than receiving an error, and handle
   `TrustedTimeSecurityException` explicitly.
-- **Subscribe to `onIntegrityLost`** and treat `degradedTier`,
-  `systemClockJumped`, and `deviceRebooted` as signals to pause
-  time-sensitive operations until a fresh `verified` anchor lands.
+- **Subscribe to `onIntegrityLost`** and treat `degradedTier` and
+  `deviceRebooted` as signals to pause time-sensitive operations until
+  a fresh `verified` anchor lands.
 - **Do not exempt the anchor from backup exclusion decisions.** Until
   R1/R2 mitigations land, excluding the app's secure-storage data from
   cloud/device backups removes the backup-forgery surface entirely.
