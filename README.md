@@ -306,6 +306,7 @@ void main() {
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `ntpServers` | `List<String>` | `pool.ntp.org`, `time.google.com` | NTP server hostnames |
+| `ntpBurstCount` | `int` | `8` | Sequential SNTP exchanges per NTP source per sync; the lowest-delay sample is kept |
 | `httpsSources` | `List<String>` | Google, Cloudflare, Apple, Microsoft | HTTPS `Date` header sources |
 | `ntsServers` | `List<String>` | `['time.cloudflare.com']` | NTS server hostnames (opt-in) |
 | `ntsPort` | `int` | `4460` | NTS-KE port |

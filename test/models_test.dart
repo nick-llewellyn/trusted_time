@@ -327,6 +327,50 @@ void main() {
     });
   });
 
+  group('TrustedTimeConfig ntpBurstCount', () {
+    test('defaults to 8', () {
+      expect(const TrustedTimeConfig().ntpBurstCount, 8);
+    });
+
+    test('asserts the burst is in 1..8', () {
+      expect(
+        () => TrustedTimeConfig(ntpBurstCount: 0),
+        throwsA(isA<AssertionError>()),
+      );
+      expect(
+        () => TrustedTimeConfig(ntpBurstCount: 9),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('round-trips through copyWith', () {
+      const original = TrustedTimeConfig();
+      final updated = original.copyWith(ntpBurstCount: 5);
+      expect(updated.ntpBurstCount, 5);
+      // Purely additive: an omitted value preserves the existing one.
+      final untouched = updated.copyWith(
+        maxLatency: const Duration(seconds: 7),
+      );
+      expect(untouched.ntpBurstCount, 5);
+    });
+
+    test('participates in equality and hashCode', () {
+      const base = TrustedTimeConfig();
+      const bursty = TrustedTimeConfig(ntpBurstCount: 3);
+      expect(base == bursty, isFalse);
+
+      const a = TrustedTimeConfig(ntpBurstCount: 3);
+      const b = TrustedTimeConfig(ntpBurstCount: 3);
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
+    });
+
+    test('appears in toString output', () {
+      const config = TrustedTimeConfig(ntpBurstCount: 6);
+      expect(config.toString(), contains('ntpBurstCount: 6'));
+    });
+  });
+
   group('TrustedTimeConfig maxConcurrentDnsLookups (ADR 0008)', () {
     test('defaults to null with an effective budget of 6', () {
       const config = TrustedTimeConfig();

@@ -1,47 +1,89 @@
 import 'dart:io' show InternetAddress, InternetAddressType;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
-import 'package:ntp/ntp.dart';
 import '../data/asn_resolver.dart';
 import '../domain/time_sample.dart';
 import '../domain/time_source.dart';
 import '../domain/time_interval.dart';
 import '../infra/dns_budget.dart';
+import '../infra/trusted_time_log.dart';
+import 'ntp_client.dart';
 
 /// Resolves [host] to its addresses. Injectable so tests can supply a
 /// deterministic mapping without real DNS.
 typedef HostResolver = Future<List<InternetAddress>> Function(String host);
 
-/// Fetches the NTP offset (ms) for the already-chosen [lookUpAddress].
-/// Injectable so tests can assert the resolved literal IP is handed
-/// through to the exchange without real UDP traffic.
-typedef OffsetFetcher = Future<int> Function(String lookUpAddress);
-
 /// NTP time source — IO-only (uses UDP sockets via `dart:io`).
+///
+/// Each [getTime] call issues a sequential burst of SNTP exchanges
+/// against the resolved server and keeps the sample with the smallest
+/// network delay δ — the same burst-and-pick-min strategy [NtsSource]
+/// uses, applied to plain NTP. Each exchange computes the RFC 5905
+/// pair θ/δ from the four exchange timestamps, so the interval
+/// midpoint excludes server processing time and the half-width is the
+/// root distance `Λ = δ/2 + rootDelay/2 + rootDispersion`, mirroring
+/// the NTS clock-filter shape.
 final class NtpSource implements TimeSource {
   /// Creates an NTP source for [host].
   ///
-  /// [asnResolver], [hostResolver] and [offsetFetcher] are injection
-  /// seams for tests; in production they default to the shared offline
-  /// ASN snapshot, real DNS resolution, and `NTP.getNtpOffset`
+  /// [asnResolver], [hostResolver] and [exchange] are injection seams
+  /// for tests; in production they default to the shared offline ASN
+  /// snapshot, real DNS resolution, and [defaultNtpExchange]
   /// respectively. All default to `null` and the shared defaults are
-  /// resolved lazily via getters so the constructor stays `const` for
-  /// the common (no-override) call site.
+  /// resolved lazily via getters.
   ///
   /// [dnsBudget] is the shared SyncEngine-level DNS concurrency budget
   /// (ADR 0008). When supplied, host resolution is admitted through it
   /// cache-first; when `null` (direct callers, tests) resolution runs
   /// ungoverned.
-  const NtpSource(
+  ///
+  /// [maxLatency] is the total wall-clock budget for the whole query
+  /// burst, shared across the sequential attempts as one shrinking
+  /// deadline: each attempt's exchange receives the remaining balance
+  /// as its timeout, so the burst as a whole completes within
+  /// [maxLatency]. [SyncEngine] passes [TrustedTimeConfig.maxLatency]
+  /// so this inner budget matches the outer
+  /// `.timeout(_config.maxLatency)` wrapper.
+  ///
+  /// [burstCount] is the maximum number of sequential exchanges
+  /// [getTime] issues per call within the [maxLatency] budget; the
+  /// successes are collapsed to the single lowest-δ sample. Must be in
+  /// `1..8`, matching [NtsSource]'s burst cap so the two source kinds
+  /// share one worst-case wall-time model. Enforced with a
+  /// [RangeError] in all build modes for the same reason as
+  /// [NtsSource]: the value typically arrives from the public
+  /// [TrustedTimeConfig.ntpBurstCount] knob, whose const constructor
+  /// can only `assert`. The default of `1` preserves single-query
+  /// behaviour for direct callers; [SyncEngine] passes
+  /// [TrustedTimeConfig.ntpBurstCount].
+  ///
+  /// [onStratumObserved] is called with the stratum reported by the
+  /// server on the winning exchange of each successful burst. Used by
+  /// [SyncEngine] to feed stratum hints into `SourceQualityTracker`
+  /// without widening [TimeSample]; optional so callers that don't run
+  /// quality scoring need not supply it.
+  NtpSource(
     this._host, {
     AsnResolver? asnResolver,
     HostResolver? hostResolver,
-    OffsetFetcher? offsetFetcher,
+    NtpExchange? exchange,
     DnsBudget? dnsBudget,
+    Duration maxLatency = const Duration(seconds: 5),
+    int burstCount = 1,
+    void Function(int)? onStratumObserved,
   }) : _asnOverride = asnResolver,
        _hostOverride = hostResolver,
-       _offsetOverride = offsetFetcher,
-       _dnsBudget = dnsBudget;
+       _exchangeOverride = exchange,
+       _dnsBudget = dnsBudget,
+       _timeout = maxLatency,
+       _burstCount = RangeError.checkValueInInterval(
+         burstCount,
+         1,
+         8,
+         'burstCount',
+         'must be in 1..8 (matches the NTS burst cap)',
+       ),
+       _onStratumObserved = onStratumObserved;
 
   /// Shared across all NTP sources so the bundled ASN table is
   /// decompressed and held in memory exactly once per isolate.
@@ -50,18 +92,15 @@ final class NtpSource implements TimeSource {
   final String _host;
   final AsnResolver? _asnOverride;
   final HostResolver? _hostOverride;
-  final OffsetFetcher? _offsetOverride;
+  final NtpExchange? _exchangeOverride;
   final DnsBudget? _dnsBudget;
+  final Duration _timeout;
+  final int _burstCount;
+  final void Function(int)? _onStratumObserved;
 
   AsnResolver get _asn => _asnOverride ?? _sharedAsn;
   HostResolver get _resolveHost => _hostOverride ?? InternetAddress.lookup;
-  OffsetFetcher get _fetchOffset => _offsetOverride ?? _defaultFetchOffset;
-
-  static Future<int> _defaultFetchOffset(String lookUpAddress) =>
-      NTP.getNtpOffset(
-        lookUpAddress: lookUpAddress,
-        timeout: const Duration(seconds: 10),
-      );
+  NtpExchange get _exchange => _exchangeOverride ?? defaultNtpExchange;
 
   /// Shared sentinel group id used whenever the host's ASN cannot be
   /// determined — a DNS or ASN-table miss, or a resolution failure.
@@ -162,51 +201,156 @@ final class NtpSource implements TimeSource {
 
   @override
   Future<TimeSample> getTime() async {
-    // Resolve the host once so the ASN-derived groupId and the NTP
-    // exchange describe the *same* server. Round-robin pools (e.g.
-    // pool.ntp.org) can hand back a different IP across two separate
-    // lookups, so we resolve once and pass the chosen literal IP to
-    // both. InternetAddress.lookup on a literal address is a no-op
-    // resolve, so handing the IP to the ntp package costs no second
-    // DNS query and pins the exact server we grouped. On a resolve
-    // miss we fall back to the bare host so time success never depends
-    // on ASN resolution succeeding. See ADR 0007.
+    // Resolve the host once so the ASN-derived groupId and every
+    // exchange in the burst describe the *same* server. Round-robin
+    // pools (e.g. pool.ntp.org) can hand back a different IP across
+    // two separate lookups, so we resolve once and pass the chosen
+    // literal IP to every attempt — mixing servers inside a burst
+    // would defeat the lowest-δ selection (each server has its own
+    // clock and path). On a resolve miss we fall back to the bare
+    // host so time success never depends on ASN resolution
+    // succeeding. See ADR 0007.
     final addr = await _resolveFirst();
+    final address = addr?.address ?? _host;
 
-    final sw = Stopwatch()..start();
-    final offset = await _fetchOffset(addr?.address ?? _host);
-    sw.stop();
+    // Run the burst sequentially — serial by design, mirroring
+    // [NtsSource.getTime]. Concurrent samples fired at one server
+    // travel the same path as a dense cluster and share any transient
+    // queue spike, defeating the lowest-delay selection; sequential
+    // queries let the local interface queue drain between samples so
+    // each observes an independent snapshot of the path.
+    //
+    // The whole burst shares one [_timeout] wall-clock budget as a
+    // shrinking deadline: the first attempt receives the configured
+    // budget verbatim (always dispatching), each later attempt
+    // receives the remaining balance, and once the balance dips below
+    // the floor the remaining attempts are skipped — the burst
+    // degrades to fewer samples rather than overrunning the window a
+    // single query would have had. An all-fail burst thus always
+    // carries a concrete underlying error. Every attempt guards its
+    // own failure; the burst as a whole succeeds when at least one
+    // attempt lands. Sequential execution appends successes in
+    // attempt-index order, so the lowest-δ pick's "first wins"
+    // tie-break stays deterministic.
+    var attempts = 0;
+    Object? lastError;
+    StackTrace? lastStackTrace;
 
-    // Derive the group only *after* the timed exchange. The first ASN
-    // lookup synchronously gunzips and parses the bundled table on this
-    // isolate; running it during the UDP round-trip could block the event
-    // loop and skew the measured delay/offset. groupId feeds only
-    // confidence grading, so keeping it off the timing path is free.
+    const floor = Duration(milliseconds: 1);
+    final deadline = Stopwatch()..start();
+    final successes = <_BurstSuccess>[];
+    for (var attempt = 0; attempt < _burstCount; attempt++) {
+      final remaining = attempt == 0 ? _timeout : _timeout - deadline.elapsed;
+      if (attempt > 0 && remaining < floor) break;
+      attempts++;
+      try {
+        final result = await _exchange(address, timeout: remaining);
+        // Capture the receipt instant here — at each attempt's own
+        // completion — so per-attempt receivedAtMs stays accurate for
+        // the engine's receipt normalization. Stamped on the
+        // monotonic receipt timeline so a wall-clock step mid-burst
+        // cannot corrupt the deltas normalization consumes.
+        successes.add(
+          _BurstSuccess(
+            raw: result,
+            receivedAtMs: TimeSample.monotonicReceiptNowMs(),
+          ),
+        );
+      } catch (e, st) {
+        lastError = e;
+        lastStackTrace = st;
+      }
+    }
+
+    if (TrustedTimeLog.enabled) {
+      final delays = successes
+          .map((s) => (s.raw.delayMicros / 1000).toStringAsFixed(1))
+          .join(', ');
+      TrustedTimeLog.log(
+        TrustedTimeLogLevel.debug,
+        '[TrustedTime] ntp:$_host burst '
+        '${successes.length}/$attempts succeeded delays=[$delays]ms',
+      );
+    }
+
+    if (successes.isEmpty) {
+      // Every dispatched attempt failed (budget-skipped attempts do
+      // not count); surface the last concrete failure so SyncEngine's
+      // standard per-source cooldown path arms.
+      Error.throwWithStackTrace(lastError!, lastStackTrace!);
+    }
+
+    // Reduce the burst to the single lowest-network-delay sample —
+    // the tightest, least path-asymmetric estimate (the
+    // burst-and-pick-min strategy the NTS path uses). Ties keep the
+    // earliest attempt.
+    var winner = successes.first;
+    for (final s in successes.skip(1)) {
+      if (s.raw.delayMicros < winner.raw.delayMicros) winner = s;
+    }
+    _onStratumObserved?.call(winner.raw.stratum);
+
+    // Derive the group only *after* the timed exchanges. The first
+    // ASN lookup synchronously gunzips and parses the bundled table
+    // on this isolate; running it during a UDP round-trip could block
+    // the event loop and skew the measured delay/offset. groupId
+    // feeds only confidence grading, so keeping it off the timing
+    // path is free.
     final group = await _groupIdFor(addr);
 
-    // Take both readings back-to-back: the wall reading anchors the
-    // UTC estimate below, while the monotonic reading stamps the
-    // receipt for normalization — immune to wall-clock steps between
-    // this sample's receipt and the rest of the cycle's.
-    final receiptMs = TimeSample.monotonicReceiptNowMs();
-    final localNow = DateTime.now();
-    final utc = localNow.toUtc().add(Duration(milliseconds: offset));
-    final u = sw.elapsedMilliseconds ~/ 2;
+    return _toTimeSample(winner.raw, winner.receivedAtMs, group);
+  }
+
+  /// Converts one successful exchange into the [TimeSample] shape the
+  /// engine consumes, stamped with that attempt's own receipt instant.
+  ///
+  /// Mirrors the NTS clock-filter shape: the midpoint is the local
+  /// receipt wall reading corrected by θ (the server's clock at the
+  /// instant the reply arrived), and the half-width is the root
+  /// distance `Λ = δ/2 + rootDelay/2 + rootDispersion` — a provably
+  /// correct bound that excludes server processing time, so it is
+  /// materially tighter than the RTT/2 worst case against distant
+  /// servers with fast processing. rootDelay/2 and the ms conversion
+  /// both round *up* so no division ever shrinks the budget — Λ is a
+  /// bound, so conversion error must widen it, not shrink it.
+  TimeSample _toTimeSample(
+    NtpExchangeResult result,
+    int receivedAtMs,
+    String group,
+  ) {
+    final timestampMs =
+        (result.destinationUtcMicros + result.offsetMicros) ~/ 1000;
+    final delayMs = result.delayMicros ~/ 1000;
+    final errorBudgetMicros =
+        (result.rootDelayMicros + 1) ~/ 2 + result.rootDispersionMicros;
+    final dispersionMs = (errorBudgetMicros + 999) ~/ 1000;
+    final uncertaintyMs = result.delayMicros ~/ 2000 + dispersionMs;
 
     return TimeSample(
       interval: TimeInterval(
-        startMs: utc.millisecondsSinceEpoch - u,
-        endMs: utc.millisecondsSinceEpoch + u,
+        startMs: timestampMs - uncertaintyMs,
+        endMs: timestampMs + uncertaintyMs,
       ),
       sourceId: id,
       groupId: group,
-      // Whole round-trip delay δ; the interval still uses u = δ/2.
-      delayMs: sw.elapsedMilliseconds,
-      // Monotonic receipt instant (taken alongside the wall reading
-      // the estimate above is anchored to), so the engine can
-      // normalize samples received at different points in the cycle
-      // before Marzullo intersection.
-      receivedAtMs: receiptMs,
+      // Network delay δ (RTT minus server processing), kept separate
+      // from the interval half-width so root distance (Λ = E + δ/2)
+      // is computable and burst reduction keys on network delay.
+      delayMs: delayMs,
+      dispersionMs: dispersionMs,
+      // Monotonic receipt instant so the engine can normalize samples
+      // received at different points in the cycle before Marzullo
+      // intersection.
+      receivedAtMs: receivedAtMs,
     );
   }
+}
+
+/// One successful burst attempt: the raw exchange result paired with
+/// the monotonic receipt stamp captured at that attempt's completion.
+final class _BurstSuccess {
+  const _BurstSuccess({required this.raw, required this.receivedAtMs});
+
+  final NtpExchangeResult raw;
+  final int receivedAtMs;
 }

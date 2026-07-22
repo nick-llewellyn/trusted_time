@@ -4,10 +4,17 @@ import '../infra/dns_budget.dart';
 
 /// NTP time source stub — actual implementation in `ntp_source_io.dart`.
 final class NtpSource implements TimeSource {
-  /// Stub constructor. [dnsBudget] is accepted for signature parity with
-  /// the IO implementation and ignored — Web configurations carry no NTP
-  /// sources, so this constructor is never reached at runtime.
-  const NtpSource(this._host, {DnsBudget? dnsBudget});
+  /// Stub constructor. All named parameters are accepted for signature
+  /// parity with the IO implementation and ignored — Web configurations
+  /// carry no NTP sources, so this constructor is never reached at
+  /// runtime.
+  const NtpSource(
+    this._host, {
+    DnsBudget? dnsBudget,
+    Duration maxLatency = const Duration(seconds: 5),
+    int burstCount = 1,
+    void Function(int)? onStratumObserved,
+  });
 
   final String _host;
 
