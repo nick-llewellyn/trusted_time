@@ -5,6 +5,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 
+import '../monotonic_clock.dart';
+
 /// Seconds between the NTP epoch (1900-01-01) and the Unix epoch.
 const int _ntpToUnixSeconds = 2208988800;
 
@@ -91,20 +93,24 @@ final class NtpProtocolException implements Exception {
 /// field, so it doubles as an unpredictable nonce that an off-path
 /// attacker cannot forge — and it avoids leaking the local clock on
 /// the wire. T1/T4 for θ are read from the local wall clock around the
-/// exchange; the round trip for δ is measured on a monotonic
-/// [Stopwatch] so a wall-clock step mid-exchange (exactly the
-/// manipulation this library defends against) cannot corrupt the
-/// delay measurement.
+/// exchange; the budget and the round trip for δ are both measured on
+/// the process's monotonic reader ([resolveMonotonicReader] — the
+/// sleep-aware nts bridge clock when initialized), so a wall-clock
+/// step mid-exchange (exactly the manipulation this library defends
+/// against) cannot corrupt the delay measurement, and device suspend
+/// cannot silently freeze the budget.
 Future<NtpExchangeResult> defaultNtpExchange(
   String address, {
   Duration timeout = const Duration(seconds: 5),
   int port = 123,
 }) async {
-  final budget = Stopwatch()..start();
+  final clock = resolveMonotonicReader();
+  final budgetStartMicros = clock.read();
   final addr =
       InternetAddress.tryParse(address) ??
       (await InternetAddress.lookup(address).timeout(timeout)).first;
-  final remaining = timeout - budget.elapsed;
+  final remaining =
+      timeout - Duration(microseconds: clock.read() - budgetStartMicros);
   if (remaining <= Duration.zero) {
     throw TimeoutException('NTP exchange budget exhausted by DNS', timeout);
   }
@@ -135,7 +141,7 @@ Future<NtpExchangeResult> defaultNtpExchange(
       reply.complete(d);
     });
 
-    final rtt = Stopwatch()..start();
+    final rttStartMicros = clock.read();
     final t1Micros = DateTime.now().toUtc().microsecondsSinceEpoch;
     if (socket.send(packet, addr, port) != packet.length) {
       throw const SocketException('NTP request was not sent in full');
@@ -147,13 +153,13 @@ Future<NtpExchangeResult> defaultNtpExchange(
       await sub.cancel();
     }
     final t4Micros = DateTime.now().toUtc().microsecondsSinceEpoch;
-    rtt.stop();
+    final rttMicros = clock.read() - rttStartMicros;
     return parseNtpReply(
       datagram.data,
       nonce: nonce,
       t1Micros: t1Micros,
       t4Micros: t4Micros,
-      rttMicros: rtt.elapsedMicroseconds,
+      rttMicros: rttMicros,
     );
   } finally {
     socket.close();
