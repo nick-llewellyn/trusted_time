@@ -541,9 +541,9 @@ abstract final class TrustedTime {
   /// Throws [TrustedTimeFreshnessProbeException] when the probe cannot
   /// run at all — no anchor established yet, no NTS source configured
   /// (the validate tier requires NTS), all NTS sources in cooldown, or
-  /// the probe query failed. This "freshness unknown" outcome
-  /// is deliberately distinct from the `false` "anchor drifted"
-  /// observation.
+  /// the probe's `getTime()` call failed (threw or timed out). This
+  /// "freshness unknown" outcome is deliberately distinct from the
+  /// `false` "anchor drifted" observation.
   ///
   /// Under a test override this returns the mock's [TrustedTimeMock.isTrusted]
   /// state without touching the engine, so a mock placed in an untrusted
