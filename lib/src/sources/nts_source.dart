@@ -7,6 +7,7 @@ import '../domain/time_source.dart';
 import '../domain/time_interval.dart';
 import '../exceptions.dart';
 import '../models.dart';
+import '../monotonic_clock.dart';
 import 'nts_auth_level.dart';
 
 /// Collapses the successful samples of one [NtsSource] query burst
@@ -121,9 +122,11 @@ final class NtsSource implements TimeSource, Warmable {
   ///
   /// [maxLatency] is the total wall-clock budget for the whole query
   /// burst, shared across the sequential attempts as one shrinking
-  /// deadline: each attempt's `ntsQuery` receives the remaining
-  /// balance as its `timeout`, so the burst as a whole completes
-  /// within [maxLatency]. [SyncEngine] passes
+  /// deadline measured on the resolved monotonic reader (sleep-aware
+  /// when the nts bridge is initialized, matching [NtpSource]): each
+  /// attempt's `ntsQuery` receives the remaining balance as its
+  /// `timeout`, so the burst as a whole completes within
+  /// [maxLatency]. [SyncEngine] passes
   /// [TrustedTimeConfig.maxLatency] so this inner budget matches the
   /// outer `.timeout(_config.maxLatency)` wrapper. Without this, an
   /// inner timeout longer than the outer would always be pre-empted by
@@ -305,16 +308,20 @@ final class NtsSource implements TimeSource, Warmable {
     // query spends a cookie.
     //
     // The whole burst shares one [_timeout] wall-clock budget as a
-    // shrinking deadline: the first attempt receives the configured
-    // budget verbatim (always dispatching, and preserving the
-    // wrapper's own validation of sub-1ms budgets), each later
-    // attempt receives the remaining balance, and once the balance
-    // dips below the floor the remaining attempts are skipped — the
-    // burst degrades to fewer samples rather than overrunning the
-    // window a single query would have had. An all-fail burst thus
-    // always carries a concrete underlying error. Every attempt
-    // guards its own failure; the burst as a whole succeeds when at
-    // least one attempt lands.
+    // shrinking deadline, measured on the resolved monotonic reader
+    // (sleep-aware when the nts bridge is initialized — the same
+    // clock model as [NtpSource.getTime], so a device suspend
+    // mid-burst depletes the budget instead of freezing it): the
+    // first attempt receives the configured budget verbatim (always
+    // dispatching, and preserving the wrapper's own validation of
+    // sub-1ms budgets), each later attempt receives the remaining
+    // balance, and once the balance dips below the floor the
+    // remaining attempts are skipped — the burst degrades to fewer
+    // samples rather than overrunning the window a single query
+    // would have had. An all-fail burst thus always carries a
+    // concrete underlying error. Every attempt guards its own
+    // failure; the burst as a whole succeeds when at least one
+    // attempt lands.
     // Sequential execution appends successes in attempt-index order,
     // so the reducer's "first wins" tie-break (and thus the winning
     // sample and its stratum attribution) stays deterministic when
@@ -327,10 +334,13 @@ final class NtsSource implements TimeSource, Warmable {
     StackTrace? lastNonTransientStackTrace;
 
     const floor = Duration(milliseconds: 1);
-    final deadline = Stopwatch()..start();
+    final clock = resolveMonotonicReader();
+    final startMicros = clock.read();
     final successes = <_BurstSuccess>[];
     for (var attempt = 0; attempt < _burstCount; attempt++) {
-      final remaining = attempt == 0 ? _timeout : _timeout - deadline.elapsed;
+      final remaining = attempt == 0
+          ? _timeout
+          : _timeout - Duration(microseconds: clock.read() - startMicros);
       if (attempt > 0 && remaining < floor) break;
       attempts++;
       try {
