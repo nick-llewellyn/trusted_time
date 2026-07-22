@@ -227,7 +227,7 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
   @override
   void onSampleReceived(TimeSample sample) {
     // Per-NTS-handshake trust-anchor identifier. Always null for
-    // non-NTS samples (NTP, HTTPS), so the row stays unchanged for
+    // non-NTS samples (NTP), so the row stays unchanged for
     // them; rendered for NTS samples so an operator can spot a
     // silent webpki-roots fallback in deployments that expect
     // platform-store enforcement (MDM-pinned CA, user-installed
