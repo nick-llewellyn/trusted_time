@@ -202,13 +202,7 @@ final class IntegrityMonitor {
   /// powered on until the new uptime exceeds the anchor's recorded value.
   ///
   /// Fails closed on missing identity: an anchor without a boot ID, or a
-  /// platform that cannot supply one, is treated as rebooted. Web fails
-  /// closed unconditionally — it has no boot concept and its monotonic
-  /// source (`performance.now()`) is session-relative, so no persisted
-  /// anchor can ever be validated against it. The uptime inequality is
-  /// not sufficient there: an anchor captured early in a previous page
-  /// session is overtaken by the new session's counter after a short
-  /// wait-out, the same shape as the reboot attack on native.
+  /// platform that cannot supply one, is treated as rebooted.
   ///
   /// Returns the reboot verdict alongside the freshly-sampled uptime so
   /// that callers can reuse it (e.g., to compute the elapsed-time gap on
@@ -218,13 +212,6 @@ final class IntegrityMonitor {
   ) async {
     final currentUptime = await _clock.uptimeMs();
     final uptimeRegressed = currentUptime < previousAnchor.uptimeMs;
-    if (kIsWeb) {
-      // No boot-session concept on web, and performance.now() resets
-      // per page load, so a persisted anchor can never be validated
-      // against the current session's counter. Fail closed: any warm
-      // restore on web forces a fresh network sync.
-      return (rebooted: true, currentUptimeMs: currentUptime);
-    }
     if (uptimeRegressed) {
       // Uptime regression is conclusive on its own — the monotonic
       // counter only resets at boot — so skip the identity IPC call.

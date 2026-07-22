@@ -36,8 +36,8 @@ class DnsBudgetSaturation implements Exception {
 /// the acquisition window and then throws [DnsBudgetSaturation].
 ///
 /// This type is deliberately free of `dart:io` so it can be constructed
-/// unconditionally by [SyncEngine] on every platform, including web,
-/// where it is simply never exercised.
+/// unconditionally by [SyncEngine] and unit-tested without a socket
+/// environment.
 class DnsBudget {
   /// Creates a budget admitting at most [maxConcurrent] concurrent
   /// uncached lookups.

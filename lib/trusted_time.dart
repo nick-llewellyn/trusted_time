@@ -425,7 +425,7 @@ abstract final class TrustedTime {
   /// the `package:nts` monotonic clock (`CLOCK_BOOTTIME` /
   /// `mach_continuous_time` / `QueryInterruptTimePrecise`), which keeps
   /// counting through device suspend. `false` when the engine is on the
-  /// suspend-frozen `Stopwatch` fallback — NTP-only configs, web,
+  /// suspend-frozen `Stopwatch` fallback — NTP-only configs
   /// or a failed nts bridge bootstrap — where a device sleep between
   /// syncs leaves [now] behind by the sleep duration until the next
   /// sync or integrity reconciliation.
@@ -554,8 +554,7 @@ abstract final class TrustedTime {
   /// Leverages platform-native schedulers (WorkManager on Android,
   /// BGTaskScheduler on iOS) to perform periodic maintenance while the
   /// app is backgrounded. On desktop (Linux/macOS/Windows), falls back
-  /// to a Dart [Timer.periodic] inside the running isolate. On web,
-  /// this is a no-op (browsers suspend background tabs).
+  /// to a Dart [Timer.periodic] inside the running isolate.
   ///
   /// **Prerequisites for real headless refresh** (Android/iOS): call
   /// [registerBackgroundCallback] first with a host-app
@@ -631,7 +630,7 @@ abstract final class TrustedTime {
   /// VM was able to produce a handle.
   ///
   /// Registration is a no-op on platforms that do not run an OS background
-  /// scheduler — web and desktop (Linux/macOS/Windows). The platform check
+  /// scheduler — desktop (Linux/macOS/Windows). The platform check
   /// happens before [PluginUtilities.getCallbackHandle], so a host that
   /// passes a closure on those platforms will not see [ArgumentError]
   /// either; the dev-time validation only runs where the registered
@@ -645,12 +644,11 @@ abstract final class TrustedTime {
     if (_override != null) return;
     // Skip on platforms that do not run an OS background scheduler. The
     // OS-side WorkManager/BGTaskScheduler hooks only exist on Android and
-    // iOS; on web and desktop the persisted handle would never be read,
-    // so spending dev-time validation on the callback shape (closure vs
+    // iOS; on desktop the persisted handle would never be read, so
+    // spending dev-time validation on the callback shape (closure vs
     // top-level) only adds friction to shared startup code.
-    if (kIsWeb ||
-        (defaultTargetPlatform != TargetPlatform.android &&
-            defaultTargetPlatform != TargetPlatform.iOS)) {
+    if (defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS) {
       return;
     }
     // Defensive: host apps are expected to call this from `main()` after
@@ -675,7 +673,7 @@ abstract final class TrustedTime {
       });
     } on MissingPluginException {
       // Channel is absent on platforms without a native trusted_time
-      // implementation (web, desktop) and in unit tests that have not
+      // implementation (desktop) and in unit tests that have not
       // mocked it. Treat registration as a no-op there so hosts can call
       // it unconditionally from shared startup code; on platforms that do
       // not run the OS scheduler, the handle would be unused anyway.
@@ -803,7 +801,7 @@ abstract final class TrustedTime {
         },
       });
     } on MissingPluginException {
-      // Channel is absent on desktop/web and in unit tests that have not
+      // Channel is absent on desktop and in unit tests that have not
       // mocked it. The sync itself has already run to completion — with the
       // anchor persisted only on success and when config.persistState is
       // set — so native cleanup is a best-effort signal only.
@@ -842,7 +840,7 @@ abstract final class TrustedTime {
   /// a normally completed attempt clears it, so it is reported after the
   /// expired fire only, never re-attributed to a later healthy one.
   ///
-  /// Returns `null` when no answer is available: on desktop and web (no
+  /// Returns `null` when no answer is available: on desktop (no
   /// handler for this method, or the channel itself is absent), on iOS
   /// when the previous attempt did not expire, when no background work
   /// has been scheduled yet, and under a [TrustedTimeMock] override.
@@ -862,7 +860,7 @@ abstract final class TrustedTime {
       if (state is! String || stopReason is! int) return null;
       return BackgroundSyncStopInfo(state: state, stopReason: stopReason);
     } on MissingPluginException {
-      // Channel absent (desktop/web, unmocked unit tests) or the platform
+      // Channel absent (desktop, unmocked unit tests) or the platform
       // answered notImplemented (iOS has no WorkManager analogue). Either
       // way: no scheduler-side stop reason to report.
       return null;

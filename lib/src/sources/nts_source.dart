@@ -105,7 +105,6 @@ int _rttKey(TimeSample sample) => sample.delayMs ?? (2 * sample.uncertaintyMs);
 /// real source running in the same isolate.
 ///
 /// **Platform support:** Android, iOS, macOS, Windows, Linux.
-/// Not available on Web (NTS requires TLS 1.3 with exporters).
 ///
 /// **Zero overhead when unused:** When [TrustedTimeConfig.ntsServers] is
 /// empty (the default), no NTS connections are made.

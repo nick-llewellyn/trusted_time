@@ -334,7 +334,7 @@ final class TrustedTimeConfig {
   /// is the sleep-aware `nts.MonotonicClock` — `CLOCK_BOOTTIME` /
   /// `mach_continuous_time` / `QueryInterruptTimePrecise` — which
   /// keeps counting through device suspend. Without the bridge
-  /// (NTP-only configs, web, or after a genuine bridge init
+  /// (NTP-only configs, or after a genuine bridge init
   /// failure) the engine falls back to a Dart `Stopwatch`, which
   /// freezes during suspend: a device that sleeps between syncs then
   /// reports a projected time behind by the sleep duration until the
@@ -473,9 +473,9 @@ final class TrustedTimeConfig {
   /// one hour. A non-positive value disables the periodic validate timer;
   /// the foreground-resume trigger is independent of this value, but it
   /// is itself only active where a [WidgetsBindingObserver] can be
-  /// installed (a non-web platform with a live binding), so disabling the
-  /// timer does not guarantee a foreground trigger in every environment —
-  /// e.g. on web or in a headless background isolate neither fires.
+  /// installed (a live binding), so disabling the timer does not
+  /// guarantee a foreground trigger in every environment — e.g. in a
+  /// headless background isolate neither fires.
   final Duration validateInterval;
 
   /// Minimum time the app must have spent backgrounded before a return

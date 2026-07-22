@@ -4,16 +4,25 @@
 
 ### Breaking Changes
 
+- **Dropped Web platform support.** The Web plugin
+  (`trusted_time_web.dart`), its `pubspec.yaml` registration, the
+  `web` / `flutter_web_plugins` dependencies, all `kIsWeb` runtime
+  branches, and the conditional-import stubs for the NTP/NTS sources
+  are removed; `dart:io` implementations are now imported directly.
+  Web had no built-in time transport left after the HTTPS-source
+  removal, no persistent monotonic clock (`performance.now()` is
+  session-relative, so anchors could never survive a page load), and
+  no background scheduler. Supported platforms are Android, iOS,
+  macOS, Windows, and Linux.
+
 - **Removed HTTPS `Date`-header time sources.** `HttpsSource`, the
   `TrustedTimeConfig.httpsSources` field, the `TrustedTimeConfig.web()`
   factory, and the `package:http` dependency are gone. HTTPS `Date`
   headers have whole-second granularity, no application-layer
   authentication, and consistently produced the widest intervals in
   consensus; NTP and NTS are strictly better on every axis on the
-  supported IO platforms. Web deployments, which relied on HTTPS as the
-  only browser-compatible transport, must now supply custom
-  `additionalSources`. Migration: delete `httpsSources:` arguments and
-  rely on `ntpServers` / `ntsServers`.
+  supported IO platforms. Migration: delete `httpsSources:` arguments
+  and rely on `ntpServers` / `ntsServers`.
 
 - **Removed the `google.com` connectivity-probe fallback from mobile
   background sync.** Previously, a background fire without a registered
@@ -96,7 +105,7 @@
   `nts.MonotonicClock` (`CLOCK_BOOTTIME` / `mach_continuous_time` /
   `QueryInterruptTimePrecise`), resolved per anchor update so a
   bridge initialized after startup is picked up at the next sync.
-  Configs that never initialize the nts bridge (HTTPS/NTP-only, web)
+  Configs that never initialize the nts bridge (NTP-only)
   keep the previous `Stopwatch` behaviour. `SyncClock` gains an
   injectable `readerFactory` seam for tests.
 
