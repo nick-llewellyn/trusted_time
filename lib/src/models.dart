@@ -118,10 +118,10 @@ final class TrustedTimeConfig {
        ),
        assert(
          ntsBurstCount >= 1 && ntsBurstCount <= 8,
-         'ntsBurstCount must be in 1..8: the 8-cookie NTS jar bounds the '
-         'concurrent burst — each query spends one cookie up-front, so a '
-         'burst larger than 8 could not be issued from a freshly warmed '
-         'jar at all.',
+         'ntsBurstCount must be in 1..8: 8 matches the fixed burst size '
+         'of package:nts\'s own one-call getTime and bounds the '
+         'worst-case cookie drain of a total-loss burst to one full '
+         '8-cookie jar (RFC 8915).',
        );
 
   /// Creates a Web-compatible configuration that only uses HTTPS sources.
@@ -469,26 +469,32 @@ final class TrustedTimeConfig {
   /// validate tier.
   final int validateBurstCount;
 
-  /// The number of concurrent authenticated queries each [NtsSource]
-  /// issues per establish-tier sync cycle.
+  /// The maximum number of sequential authenticated queries each
+  /// [NtsSource] issues per establish-tier sync cycle.
   ///
   /// Every query in the burst produces an independent measurement; the
   /// source reduces them to the single lowest-RTT sample — the same
   /// burst-and-pick-min strategy the validate tier uses via
   /// [validateBurstCount] — so a transient path delay on one query
-  /// cannot widen the interval the consensus sees. The burst runs
-  /// concurrently against a warmed cookie jar, so it adds no wall time
-  /// beyond the slowest in-flight query, which is itself bounded by
-  /// [maxLatency].
+  /// cannot widen the interval the consensus sees. The burst is
+  /// sequential by design, mirroring `package:nts`'s own one-call
+  /// `getTime`: concurrent samples fired at one server share any
+  /// transient queue spike, defeating the lowest-delay selection,
+  /// whereas sequential queries let the path drain between samples.
+  /// The whole burst shares one [maxLatency] wall-clock budget as a
+  /// shrinking deadline — when the budget depletes mid-burst the
+  /// remaining attempts are skipped and the best sample gathered so
+  /// far wins, so slow paths degrade to fewer samples rather than no
+  /// result.
   ///
-  /// Defaults to `8`; must be in `1..8`. The cap of 8 is the size of
-  /// the NTS cookie jar (RFC 8915): each concurrent query spends one
-  /// cookie up-front, so a freshly warmed jar can fund at most 8
-  /// in-flight queries. Note that at 8 a total-loss burst (e.g. a
-  /// transient network drop) empties the jar, forcing a full NTS-KE
-  /// re-handshake before the next attempt; values of 4 or lower keep
-  /// enough cookies in reserve for a full retry burst without a
-  /// re-handshake. `1` reproduces the pre-burst single-query behaviour
+  /// Defaults to `8`; must be in `1..8` — the fixed burst size of
+  /// `package:nts`'s one-call `getTime`, which also bounds the
+  /// worst-case cookie drain: successful queries are cookie-neutral
+  /// (each reply's in-band refill lands before the next query
+  /// spends), but a failed attempt spends its cookie without a
+  /// refill, so a total-loss burst of 8 empties the 8-cookie jar
+  /// (RFC 8915) and forces a full NTS-KE re-handshake before the next
+  /// attempt. `1` reproduces the pre-burst single-query behaviour
   /// exactly.
   final int ntsBurstCount;
 
