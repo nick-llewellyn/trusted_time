@@ -586,13 +586,13 @@ void main() {
     test('bursts the source and returns the lowest-RTT sample', () async {
       final observer = _RecordingObserver();
       final events = <IntegrityEvent>[];
-      // Default burst is 4; the second attempt has the smallest delay.
-      final source = _BurstNtsSource([80, 20, 50, 60]);
+      // Default burst is 8; the second attempt has the smallest delay.
+      final source = _BurstNtsSource([80, 20, 50, 60, 90, 70, 40, 30]);
       final engine = _engineFor([source], observer: observer, events: events);
 
       final sample = await engine.validate();
 
-      expect(source.calls, 4);
+      expect(source.calls, 8);
       expect(sample.delayMs, 20);
       expect(sample.uncertaintyMs, 10);
     });
@@ -600,18 +600,18 @@ void main() {
     test('tolerates partial failures and returns the best success', () async {
       final observer = _RecordingObserver();
       final events = <IntegrityEvent>[];
-      // Two of four attempts fail; the best successful delay is 10.
-      final source = _BurstNtsSource([null, 30, null, 10]);
+      // Three of eight attempts fail; the best successful delay is 10.
+      final source = _BurstNtsSource([null, 30, null, 10, 40, null, 60, 20]);
       final engine = _engineFor([source], observer: observer, events: events);
 
       final sample = await engine.validate();
 
-      expect(source.calls, 4);
+      expect(source.calls, 8);
       expect(sample.delayMs, 10);
       // Each failed attempt is reported to the observer.
       expect(
         observer.failures.where((f) => f.sourceId == 'nts:burst').length,
-        2,
+        3,
       );
     });
 

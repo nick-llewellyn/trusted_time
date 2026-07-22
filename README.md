@@ -323,7 +323,7 @@ void main() {
 | `cadenceMode` | `CadenceMode` | `singleTier30m` | Sync schedule: the legacy single uniform loop, or the tiered establish/validate model (mobile) — see [Tiered sync cadence](#tiered-sync-cadence-mobile) |
 | `validateInterval` | `Duration` | `1h` | Tiered mode only: how often the lightweight validate probe runs in the foreground |
 | `foregroundValidateThreshold` | `Duration` | `15m` | Tiered mode only: minimum time backgrounded before a foreground resume triggers a validate probe |
-| `validateBurstCount` | `int` | `4` | Tiered mode only: NTS queries issued per validate probe; the lowest-RTT sample is kept |
+| `validateBurstCount` | `int` | `8` | Tiered mode only: NTS queries issued per validate probe; the lowest-RTT sample is kept |
 
 ---
 

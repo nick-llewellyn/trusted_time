@@ -106,10 +106,10 @@ final class TrustedTimeConfig {
     this.backgroundSyncInterval,
     this.transientStreakThreshold = 5,
     this.cadenceMode = CadenceMode.singleTier30m,
-    this.validateBurstCount = 4,
+    this.validateBurstCount = 8,
     this.validateInterval = const Duration(hours: 1),
     this.foregroundValidateThreshold = const Duration(minutes: 15),
-    this.ntsBurstCount = 4,
+    this.ntsBurstCount = 8,
     this.requireSleepAwareProjection = false,
   }) : assert(
          validateBurstCount >= 1,
@@ -117,10 +117,11 @@ final class TrustedTimeConfig {
          'issue at least one NTS query per probe.',
        ),
        assert(
-         ntsBurstCount >= 1 && ntsBurstCount <= 4,
-         'ntsBurstCount must be in 1..4: a burst larger than 4 risks '
-         'draining the 8-cookie NTS jar past the point where a full '
-         'retry burst can run without a mid-window re-handshake.',
+         ntsBurstCount >= 1 && ntsBurstCount <= 8,
+         'ntsBurstCount must be in 1..8: the 8-cookie NTS jar bounds the '
+         'concurrent burst — each query spends one cookie up-front, so a '
+         'burst larger than 8 could not be issued from a freshly warmed '
+         'jar at all.',
        );
 
   /// Creates a Web-compatible configuration that only uses HTTPS sources.
@@ -170,9 +171,9 @@ final class TrustedTimeConfig {
   ///   on battery-conscious devices.
   /// * [backgroundSyncInterval] is 24h, aligning the background
   ///   maintenance cadence with the establish tier.
-  /// * [validateBurstCount] is `4`: each validate probe bursts the
-  ///   selected NTS source four times and keeps the lowest-RTT sample,
-  ///   trading three extra post-warm UDP round-trips for a tighter
+  /// * [validateBurstCount] is `8`: each validate probe bursts the
+  ///   selected NTS source eight times and keeps the lowest-RTT sample,
+  ///   trading seven extra post-warm UDP round-trips for a tighter
   ///   freshness measurement.
   ///
   /// The cheap ~1h validate cadence is owned by the tiered scheduler
@@ -184,7 +185,7 @@ final class TrustedTimeConfig {
       oscillatorDriftFactor: 0.000015,
       refreshInterval: Duration(hours: 24),
       backgroundSyncInterval: Duration(hours: 24),
-      validateBurstCount: 4,
+      validateBurstCount: 8,
       validateInterval: Duration(hours: 1),
       foregroundValidateThreshold: Duration(minutes: 15),
     );
@@ -461,8 +462,11 @@ final class TrustedTimeConfig {
   /// path-asymmetric measurement, following the burst-and-pick-min
   /// strategy `package:nts` documents. Each query past the first spends
   /// one in-band-refilled cookie (a single UDP round-trip, no new
-  /// NTS-KE handshake), so the marginal cost is small. Defaults to `4`;
-  /// must be at least `1`. Has no effect outside the validate tier.
+  /// NTS-KE handshake), so the marginal cost is small. The burst is
+  /// sequential, so each success refills the jar before the next query
+  /// spends a cookie — the probe is cookie-neutral at any size.
+  /// Defaults to `8`; must be at least `1`. Has no effect outside the
+  /// validate tier.
   final int validateBurstCount;
 
   /// The number of concurrent authenticated queries each [NtsSource]
@@ -477,12 +481,15 @@ final class TrustedTimeConfig {
   /// beyond the slowest in-flight query, which is itself bounded by
   /// [maxLatency].
   ///
-  /// Defaults to `4`; must be in `1..4`. The cap of 4 is derived from
-  /// NTS cookie economics (RFC 8915): the jar holds 8 cookies, each
-  /// concurrent query spends one up-front, and a total-loss burst of 4
-  /// leaves 4 in the jar — enough for a full retry burst without a
-  /// mid-window re-handshake. `1` reproduces the pre-burst single-query
-  /// behaviour exactly.
+  /// Defaults to `8`; must be in `1..8`. The cap of 8 is the size of
+  /// the NTS cookie jar (RFC 8915): each concurrent query spends one
+  /// cookie up-front, so a freshly warmed jar can fund at most 8
+  /// in-flight queries. Note that at 8 a total-loss burst (e.g. a
+  /// transient network drop) empties the jar, forcing a full NTS-KE
+  /// re-handshake before the next attempt; values of 4 or lower keep
+  /// enough cookies in reserve for a full retry burst without a
+  /// re-handshake. `1` reproduces the pre-burst single-query behaviour
+  /// exactly.
   final int ntsBurstCount;
 
   /// How often the validate tier runs its cheap freshness probe while

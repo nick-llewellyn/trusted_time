@@ -78,9 +78,10 @@ int _rttKey(TimeSample sample) => sample.delayMs ?? (2 * sample.uncertaintyMs);
 /// against the warmed jar and reduces the successes to one sample via
 /// the configured [NtsBurstReducer] (lowest RTT by default). Each
 /// attempt spends one cookie up-front and each success returns two
-/// in-band (net +1), so with the cap of 4 even a total-loss burst
-/// leaves half the jar for a retry burst without a mid-window
-/// re-handshake.
+/// in-band (net +1), so the 8-cookie jar bounds the burst at 8. At
+/// the full-jar size a total-loss burst leaves the jar empty and the
+/// next attempt must re-run the NTS-KE handshake; bursts of 4 or
+/// fewer keep enough cookies for a full retry burst without one.
 ///
 /// **Per-source [nts.NtsClient]:** Each [NtsSource] owns its own
 /// [nts.NtsClient] instance, lazily constructed on first [warm] (or
@@ -142,10 +143,11 @@ final class NtsSource implements TimeSource, Warmable {
   ///
   /// [burstCount] is the number of concurrent queries [getTime] issues
   /// per call; the successes are collapsed to one sample by [reducer]
-  /// (default [lowestRttReducer]). Must be in `1..4` — the cap keeps a
-  /// total-loss burst from draining the 8-cookie jar past the point
-  /// where a full retry burst can run without a mid-window
-  /// re-handshake. Enforced with a [RangeError] in all build modes:
+  /// (default [lowestRttReducer]). Must be in `1..8` — the 8-cookie
+  /// jar (RFC 8915) funds at most 8 concurrent queries, since each
+  /// spends one cookie up-front. At the full-jar size a total-loss
+  /// burst forces an NTS-KE re-handshake before the next attempt.
+  /// Enforced with a [RangeError] in all build modes:
   /// the value typically arrives from the public
   /// [TrustedTimeConfig.ntsBurstCount] knob, whose const constructor
   /// can only `assert`, so this is where an out-of-range value fails
@@ -177,9 +179,9 @@ final class NtsSource implements TimeSource, Warmable {
        _burstCount = RangeError.checkValueInInterval(
          burstCount,
          1,
-         4,
+         8,
          'burstCount',
-         'must be in 1..4 (NTS cookie-jar economics)',
+         'must be in 1..8 (NTS cookie-jar economics)',
        ),
        _reducer = reducer,
        _debugQueryOverride = debugQueryOverride;
