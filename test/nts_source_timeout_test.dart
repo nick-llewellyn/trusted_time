@@ -276,9 +276,11 @@ void main() {
       expect(api.queryCalls.single.timeoutMs, 2);
     });
 
-    test('every burst attempt carries the same full timeout budget', () async {
-      // Attempts run concurrently, each with its own budget — the
-      // burst must not split maxLatency across attempts.
+    test('the burst shares one maxLatency budget as a shrinking '
+        'deadline', () async {
+      // Attempts run sequentially against a single shared budget: the
+      // first attempt carries the full maxLatency verbatim, and each
+      // later attempt carries only the remaining balance.
       api.onQuery = (_) async => _ffiSample();
       final source = NtsSource(
         'time.example',
@@ -288,7 +290,11 @@ void main() {
 
       await source.getTime();
       expect(api.queryCalls, hasLength(3));
-      expect(api.queryCalls.map((c) => c.timeoutMs), everyElement(750));
+      expect(api.queryCalls.first.timeoutMs, 750);
+      for (final call in api.queryCalls.skip(1)) {
+        expect(call.timeoutMs, lessThanOrEqualTo(750));
+        expect(call.timeoutMs, greaterThanOrEqualTo(1));
+      }
     });
 
     test('sub-1ms zero Duration is rejected by the wrapper validator '

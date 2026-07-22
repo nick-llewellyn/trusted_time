@@ -162,13 +162,59 @@ void main() {
       expect(sample.receivedAtMs, isNotNull);
     });
 
-    test('RTT tie-break is deterministic by attempt index, not '
-        'completion order', () async {
-      // All attempts tie on RTT, but attempt 0 completes last. The
-      // successes list must still be materialized in attempt-index
-      // order, so lowestRttReducer's "first wins" tie-break selects
-      // attempt 0 — pinning that completion order cannot leak into
-      // the winning sample or its stratum attribution.
+    test('burst attempts run sequentially, never overlapping', () async {
+      var inFlight = 0;
+      var maxInFlight = 0;
+      var call = 0;
+      final source = NtsSource(
+        'test.example',
+        burstCount: 4,
+        debugQueryOverride: () async {
+          inFlight++;
+          if (inFlight > maxInFlight) maxInFlight = inFlight;
+          await Future<void>.delayed(const Duration(milliseconds: 2));
+          inFlight--;
+          call++;
+          return rawSample(roundTripMicros: 30000);
+        },
+      );
+
+      await source.getTime();
+      expect(call, 4);
+      expect(
+        maxInFlight,
+        1,
+        reason: 'sequential burst must never have two attempts in flight',
+      );
+    });
+
+    test('a depleted maxLatency budget skips remaining attempts and '
+        'returns the best sample gathered so far', () async {
+      var call = 0;
+      final source = NtsSource(
+        'test.example',
+        burstCount: 4,
+        maxLatency: const Duration(milliseconds: 20),
+        debugQueryOverride: () async {
+          call++;
+          // Each attempt outlives the whole budget, so only the
+          // first attempt (which always dispatches) runs.
+          await Future<void>.delayed(const Duration(milliseconds: 40));
+          return rawSample(roundTripMicros: 30000);
+        },
+      );
+
+      final sample = await source.getTime();
+      expect(call, 1, reason: 'budget depletion must skip later attempts');
+      expect(sample.delayMs, 30);
+    });
+
+    test('RTT tie-break is deterministic by attempt index', () async {
+      // All attempts tie on RTT. The sequential burst appends
+      // successes in attempt-index order, so lowestRttReducer's
+      // "first wins" tie-break selects attempt 0 — pinning that the
+      // winning sample and its stratum attribution stay deterministic
+      // when RTT keys tie.
       const tiedRttMicros = 30000;
       var call = 0;
       int? observedStratum;
@@ -178,10 +224,7 @@ void main() {
         onStratumObserved: (s) => observedStratum = s,
         debugQueryOverride: () async {
           final attempt = call++;
-          // Attempt 0 finishes after its siblings.
-          await Future<void>.delayed(
-            Duration(milliseconds: attempt == 0 ? 30 : 1),
-          );
+          await Future<void>.delayed(const Duration(milliseconds: 1));
           // Offset each attempt's timestamp by a full second so the
           // winner stays identifiable after the µs -> ms conversion.
           return rawSample(
@@ -379,13 +422,15 @@ void main() {
       expect(sample.delayMs, 70);
     });
 
-    test('burstCount outside 1..4 is rejected', () {
+    test('burstCount outside 1..8 is rejected', () {
       // RangeError (not assert), so the check survives release builds:
       // TrustedTimeConfig's const constructor can only assert, making
       // this the deterministic production failure point for an invalid
       // ntsBurstCount.
       expect(() => NtsSource('h', burstCount: 0), throwsRangeError);
-      expect(() => NtsSource('h', burstCount: 5), throwsRangeError);
+      expect(() => NtsSource('h', burstCount: 9), throwsRangeError);
+      // The inclusive upper bound is accepted.
+      expect(() => NtsSource('h', burstCount: 8), returnsNormally);
     });
 
     test('warm() is a no-op under debugQueryOverride', () async {

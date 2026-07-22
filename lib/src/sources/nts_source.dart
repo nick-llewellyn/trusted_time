@@ -74,13 +74,24 @@ int _rttKey(TimeSample sample) => sample.delayMs ?? (2 * sample.uncertaintyMs);
 /// too, [nts.NtsClient.query] performs its own cold-start handshake
 /// transparently.
 ///
-/// **Query burst:** [getTime] issues `burstCount` concurrent queries
-/// against the warmed jar and reduces the successes to one sample via
-/// the configured [NtsBurstReducer] (lowest RTT by default). Each
-/// attempt spends one cookie up-front and each success returns two
-/// in-band (net +1), so with the cap of 4 even a total-loss burst
-/// leaves half the jar for a retry burst without a mid-window
-/// re-handshake.
+/// **Query burst:** [getTime] issues up to `burstCount` *sequential*
+/// queries against the warmed jar and reduces the successes to one
+/// sample via the configured [NtsBurstReducer] (lowest RTT by
+/// default). The burst is serial by design, mirroring `package:nts`'s
+/// own one-call `getTime`: concurrent samples fired at one server
+/// travel the same path as a dense cluster and share any transient
+/// queue spike, defeating the lowest-delay selection, whereas
+/// sequential queries let the local interface queue drain between
+/// samples so each observes an independent snapshot of the path.
+/// Sequencing also keeps the burst cookie-neutral on success — each
+/// reply's in-band refill lands before the next query spends a
+/// cookie. The whole burst shares one `maxLatency` wall-clock budget
+/// as a shrinking deadline; if the budget depletes mid-burst the
+/// remaining attempts are skipped and the best sample gathered so far
+/// wins, so slow paths degrade to fewer samples rather than no
+/// result. Only a total-loss burst drains the jar (a failed attempt
+/// spends its cookie without a refill); at the full-jar burst size of
+/// 8 that forces an NTS-KE re-handshake before the next attempt.
 ///
 /// **Per-source [nts.NtsClient]:** Each [NtsSource] owns its own
 /// [nts.NtsClient] instance, lazily constructed on first [warm] (or
@@ -108,13 +119,17 @@ final class NtsSource implements TimeSource, Warmable {
   /// `ntsServers.length + 2` so multi-host pools do not lose admission
   /// races against the global resolver pool.
   ///
-  /// [maxLatency] is forwarded as `ntsQuery`'s `timeout`. [SyncEngine]
-  /// passes [TrustedTimeConfig.maxLatency] so the inner per-query budget
-  /// matches the outer `.timeout(_config.maxLatency)` wrapper. Without
-  /// this, an inner timeout longer than the outer would always be
-  /// pre-empted by Dart's `TimeoutException`, swallowing the
-  /// phase-tagged `NtsError.timeout(TimeoutPhase)` payload that drives
-  /// the [TransientSourceError] cooldown-bypass path. The default of 5 s
+  /// [maxLatency] is the total wall-clock budget for the whole query
+  /// burst, shared across the sequential attempts as one shrinking
+  /// deadline: each attempt's `ntsQuery` receives the remaining
+  /// balance as its `timeout`, so the burst as a whole completes
+  /// within [maxLatency]. [SyncEngine] passes
+  /// [TrustedTimeConfig.maxLatency] so this inner budget matches the
+  /// outer `.timeout(_config.maxLatency)` wrapper. Without this, an
+  /// inner timeout longer than the outer would always be pre-empted by
+  /// Dart's `TimeoutException`, swallowing the phase-tagged
+  /// `NtsError.timeout(TimeoutPhase)` payload that drives the
+  /// [TransientSourceError] cooldown-bypass path. The default of 5 s
   /// preserves the package's pre-coordination behaviour for direct
   /// callers.
   ///
@@ -140,12 +155,16 @@ final class NtsSource implements TimeSource, Warmable {
   /// [TimeSample]. Added in upstream 2.1.0; optional so callers that
   /// don't run quality scoring (e.g. unit tests) need not supply it.
   ///
-  /// [burstCount] is the number of concurrent queries [getTime] issues
-  /// per call; the successes are collapsed to one sample by [reducer]
-  /// (default [lowestRttReducer]). Must be in `1..4` — the cap keeps a
-  /// total-loss burst from draining the 8-cookie jar past the point
-  /// where a full retry burst can run without a mid-window
-  /// re-handshake. Enforced with a [RangeError] in all build modes:
+  /// [burstCount] is the maximum number of sequential queries
+  /// [getTime] issues per call within the [maxLatency] budget; the
+  /// successes are collapsed to one sample by [reducer] (default
+  /// [lowestRttReducer]). Must be in `1..8`, matching the fixed
+  /// 8-sample burst `package:nts`'s own one-call `getTime` uses and
+  /// bounding the worst-case jar drain of a total-loss burst (a
+  /// failed attempt spends its cookie without an in-band refill) to
+  /// one full 8-cookie jar (RFC 8915) — which forces an NTS-KE
+  /// re-handshake before the next attempt.
+  /// Enforced with a [RangeError] in all build modes:
   /// the value typically arrives from the public
   /// [TrustedTimeConfig.ntsBurstCount] knob, whose const constructor
   /// can only `assert`, so this is where an out-of-range value fails
@@ -177,9 +196,9 @@ final class NtsSource implements TimeSource, Warmable {
        _burstCount = RangeError.checkValueInInterval(
          burstCount,
          1,
-         4,
+         8,
          'burstCount',
-         'must be in 1..4 (NTS cookie-jar economics)',
+         'must be in 1..8 (NTS cookie-jar economics)',
        ),
        _reducer = reducer,
        _debugQueryOverride = debugQueryOverride;
@@ -257,86 +276,104 @@ final class NtsSource implements TimeSource, Warmable {
     //     for the dnsSaturation phase) thrown when every attempt in
     //     the burst fails; see the classification below.
     final override = _debugQueryOverride;
-    final Future<nts.NtsTimeSample> Function() runQuery;
+    final Future<nts.NtsTimeSample> Function(Duration timeout) runQuery;
     if (override != null) {
-      runQuery = override;
+      // The override scripts per-attempt outcomes; the per-attempt
+      // budget does not apply to it (tests own their timing), but the
+      // shared burst deadline below still bounds how many attempts run.
+      runQuery = (_) => override();
     } else {
       final client = _client ??= nts.NtsClient(
         trustMode: _trustMode,
         customRoots: _customRoots,
       );
-      runQuery = () => client.query(
+      runQuery = (timeout) => client.query(
         spec: _spec,
-        timeout: _timeout,
+        timeout: timeout,
         dnsConcurrencyCap: _dnsConcurrencyCap,
       );
     }
 
-    // Launch the burst concurrently. All attempts share this source's
-    // session table (one cookie per attempt, spent up-front) and each
-    // carries its own timeout budget, so a straggler times out
-    // inside the same window a single query would have. Every attempt
+    // Run the burst sequentially — serial by design, mirroring
+    // `package:nts`'s own one-call getTime. Concurrent samples fired
+    // at one server travel the same path as a dense cluster and share
+    // any transient queue spike, defeating the lowest-delay
+    // selection; sequential queries let the local interface queue
+    // drain between samples so each observes an independent snapshot
+    // of the path. Sequencing also keeps the burst cookie-neutral on
+    // success: each reply's in-band refill lands before the next
+    // query spends a cookie.
+    //
+    // The whole burst shares one [_timeout] wall-clock budget as a
+    // shrinking deadline: the first attempt receives the configured
+    // budget verbatim (always dispatching, and preserving the
+    // wrapper's own validation of sub-1ms budgets), each later
+    // attempt receives the remaining balance, and once the balance
+    // dips below the floor the remaining attempts are skipped — the
+    // burst degrades to fewer samples rather than overrunning the
+    // window a single query would have had. An all-fail burst thus
+    // always carries a concrete underlying error. Every attempt
     // guards its own failure; the burst as a whole succeeds when at
-    // least one attempt lands. Each attempt returns its result rather
-    // than appending to a shared list, so Future.wait materializes
-    // successes in fixed attempt-index order — completion order must
-    // not leak into the list, or the reducer's "first wins" tie-break
-    // (and thus the winning sample and its stratum attribution) would
-    // be race-dependent when RTT keys tie.
+    // least one attempt lands.
+    // Sequential execution appends successes in attempt-index order,
+    // so the reducer's "first wins" tie-break (and thus the winning
+    // sample and its stratum attribution) stays deterministic when
+    // RTT keys tie.
     var transientFailures = 0;
+    var attempts = 0;
     Object? lastError;
     StackTrace? lastStackTrace;
     Object? lastNonTransientError;
     StackTrace? lastNonTransientStackTrace;
 
-    final results = await Future.wait(
-      List.generate(_burstCount, (_) async {
-        try {
-          final result = await runQuery();
-          // Capture the receipt instant here — at each attempt's own
-          // completion — so per-attempt receivedAtMs stays accurate
-          // for the engine's receipt normalization. Stamped on the
-          // monotonic receipt timeline so a wall-clock step mid-burst
-          // cannot corrupt the deltas normalization consumes.
-          return _BurstSuccess(
+    const floor = Duration(milliseconds: 1);
+    final deadline = Stopwatch()..start();
+    final successes = <_BurstSuccess>[];
+    for (var attempt = 0; attempt < _burstCount; attempt++) {
+      final remaining = attempt == 0 ? _timeout : _timeout - deadline.elapsed;
+      if (attempt > 0 && remaining < floor) break;
+      attempts++;
+      try {
+        final result = await runQuery(remaining);
+        // Capture the receipt instant here — at each attempt's own
+        // completion — so per-attempt receivedAtMs stays accurate
+        // for the engine's receipt normalization. Stamped on the
+        // monotonic receipt timeline so a wall-clock step mid-burst
+        // cannot corrupt the deltas normalization consumes.
+        successes.add(
+          _BurstSuccess(
             raw: result,
             receivedAtMs: TimeSample.monotonicReceiptNowMs(),
-          );
-        } on nts.NtsErrorTimeout catch (e, st) {
-          // Dns(Saturation) means the bounded DNS resolver pool was at
-          // capacity for this attempt. The host itself is healthy;
-          // SyncEngine should retry on the next cycle without applying
-          // exponential cooldown. Other timeout phases (Connect, Tls,
-          // KeRecordIo, Ntp, DnsTimeout) follow the standard cooldown
-          // path when the whole burst fails.
-          if (e.phase == nts.TimeoutPhase.dnsSaturation) {
-            transientFailures++;
-            lastError = TransientSourceError(e);
-            lastStackTrace = st;
-          } else {
-            lastError = lastNonTransientError = e;
-            lastStackTrace = lastNonTransientStackTrace = st;
-          }
-          return null;
-        } on TransientSourceError catch (e, st) {
-          // An already-wrapped transient error — e.g. thrown directly by
-          // a [debugQueryOverride] script, or by a future refactor that
-          // classifies timeouts earlier — must keep its transient
-          // semantics so an all-transient burst still bypasses cooldown.
+          ),
+        );
+      } on nts.NtsErrorTimeout catch (e, st) {
+        // Dns(Saturation) means the bounded DNS resolver pool was at
+        // capacity for this attempt. The host itself is healthy;
+        // SyncEngine should retry on the next cycle without applying
+        // exponential cooldown. Other timeout phases (Connect, Tls,
+        // KeRecordIo, Ntp, DnsTimeout) follow the standard cooldown
+        // path when the whole burst fails.
+        if (e.phase == nts.TimeoutPhase.dnsSaturation) {
           transientFailures++;
-          lastError = e;
+          lastError = TransientSourceError(e);
           lastStackTrace = st;
-          return null;
-        } catch (e, st) {
+        } else {
           lastError = lastNonTransientError = e;
           lastStackTrace = lastNonTransientStackTrace = st;
-          return null;
         }
-      }),
-    );
-    final successes = results.whereType<_BurstSuccess>().toList(
-      growable: false,
-    );
+      } on TransientSourceError catch (e, st) {
+        // An already-wrapped transient error — e.g. thrown directly by
+        // a [debugQueryOverride] script, or by a future refactor that
+        // classifies timeouts earlier — must keep its transient
+        // semantics so an all-transient burst still bypasses cooldown.
+        transientFailures++;
+        lastError = e;
+        lastStackTrace = st;
+      } catch (e, st) {
+        lastError = lastNonTransientError = e;
+        lastStackTrace = lastNonTransientStackTrace = st;
+      }
+    }
 
     if (TrustedTimeLog.enabled) {
       final rtts = successes
@@ -358,20 +395,21 @@ final class NtsSource implements TimeSource, Warmable {
       TrustedTimeLog.log(
         TrustedTimeLogLevel.debug,
         '[TrustedTime] nts:$_host burst '
-        '${successes.length}/$_burstCount succeeded rtts=[$rtts]ms '
+        '${successes.length}/$attempts succeeded rtts=[$rtts]ms '
         'receipts=[$receipts]ms',
       );
     }
 
     if (successes.isEmpty) {
-      // Every attempt failed. Classify the burst as transient only
-      // when every failure was transient — a single hard failure means
-      // the standard cooldown path must still arm, so a non-transient
+      // Every dispatched attempt failed (budget-skipped attempts do
+      // not count). Classify the burst as transient only when every
+      // failure was transient — a single hard failure means the
+      // standard cooldown path must still arm, so a non-transient
       // error takes precedence over any transient sibling.
-      final error = transientFailures == _burstCount
+      final error = transientFailures == attempts
           ? lastError!
           : lastNonTransientError!;
-      final stack = transientFailures == _burstCount
+      final stack = transientFailures == attempts
           ? lastStackTrace!
           : lastNonTransientStackTrace!;
       Error.throwWithStackTrace(error, stack);

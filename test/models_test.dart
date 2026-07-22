@@ -284,12 +284,12 @@ void main() {
   });
 
   group('TrustedTimeConfig validateBurstCount (ADR 0006)', () {
-    test('defaults to 4', () {
-      expect(const TrustedTimeConfig().validateBurstCount, 4);
+    test('defaults to 8', () {
+      expect(const TrustedTimeConfig().validateBurstCount, 8);
     });
 
-    test('mobileDefaults() pins a 4-sample validate burst', () {
-      expect(TrustedTimeConfig.mobileDefaults().validateBurstCount, 4);
+    test('mobileDefaults() pins an 8-sample validate burst', () {
+      expect(TrustedTimeConfig.mobileDefaults().validateBurstCount, 8);
     });
 
     test('asserts the burst is at least 1', () {
@@ -312,11 +312,11 @@ void main() {
 
     test('participates in equality and hashCode', () {
       const base = TrustedTimeConfig();
-      const bursty = TrustedTimeConfig(validateBurstCount: 8);
+      const bursty = TrustedTimeConfig(validateBurstCount: 3);
       expect(base == bursty, isFalse);
 
-      const a = TrustedTimeConfig(validateBurstCount: 8);
-      const b = TrustedTimeConfig(validateBurstCount: 8);
+      const a = TrustedTimeConfig(validateBurstCount: 3);
+      const b = TrustedTimeConfig(validateBurstCount: 3);
       expect(a, equals(b));
       expect(a.hashCode, equals(b.hashCode));
     });
