@@ -147,7 +147,14 @@ final class SyncEngine {
     final dnsCap = _dnsBudget.maxConcurrent;
     return [
       for (final host in _config.ntpServers)
-        NtpSource(host, dnsBudget: _dnsBudget),
+        NtpSource(
+          host,
+          dnsBudget: _dnsBudget,
+          maxLatency: _config.maxLatency,
+          burstCount: _config.ntpBurstCount,
+          onStratumObserved: (s) =>
+              _qualityTracker.setStratum('${TimeSource.prefixNtp}$host', s),
+        ),
       for (final url in _config.httpsSources)
         HttpsSource(url, dnsBudget: _dnsBudget),
       for (final host in _config.ntsServers)

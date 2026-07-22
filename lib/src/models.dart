@@ -110,6 +110,7 @@ final class TrustedTimeConfig {
     this.validateInterval = const Duration(hours: 1),
     this.foregroundValidateThreshold = const Duration(minutes: 15),
     this.ntsBurstCount = 8,
+    this.ntpBurstCount = 8,
     this.requireSleepAwareProjection = false,
   }) : assert(
          validateBurstCount >= 1,
@@ -122,6 +123,11 @@ final class TrustedTimeConfig {
          'of package:nts\'s own one-call getTime and bounds the '
          'worst-case cookie drain of a total-loss burst to one full '
          '8-cookie jar (RFC 8915).',
+       ),
+       assert(
+         ntpBurstCount >= 1 && ntpBurstCount <= 8,
+         'ntpBurstCount must be in 1..8, matching the NTS burst cap so '
+         'both source kinds share one worst-case wall-time model.',
        );
 
   /// Creates a Web-compatible configuration that only uses HTTPS sources.
@@ -506,6 +512,22 @@ final class TrustedTimeConfig {
   /// exactly.
   final int ntsBurstCount;
 
+  /// The number of sequential SNTP exchanges each NTP source issues
+  /// per `getTime()` call during a sync cycle.
+  ///
+  /// The NTP mirror of [ntsBurstCount]: attempts run one-at-a-time
+  /// against the same resolved server, sharing the [maxLatency]
+  /// wall-clock budget as a shrinking deadline, and the successes are
+  /// collapsed to the single sample with the smallest RFC 5905
+  /// network delay δ — the tightest, least path-asymmetric estimate
+  /// (the burst-and-pick-min strategy the NTS path uses). NTP has no
+  /// cookie economics, so the `1..8` cap simply matches the NTS cap:
+  /// one worst-case wall-time model for both source kinds.
+  ///
+  /// Defaults to `8`. `1` reproduces the pre-burst single-query
+  /// behaviour exactly.
+  final int ntpBurstCount;
+
   /// How often the validate tier runs its cheap freshness probe while
   /// the app is foregrounded (ADR 0006).
   ///
@@ -605,6 +627,7 @@ final class TrustedTimeConfig {
     Duration? validateInterval,
     Duration? foregroundValidateThreshold,
     int? ntsBurstCount,
+    int? ntpBurstCount,
     bool? requireSleepAwareProjection,
   }) {
     return TrustedTimeConfig(
@@ -640,6 +663,7 @@ final class TrustedTimeConfig {
       foregroundValidateThreshold:
           foregroundValidateThreshold ?? this.foregroundValidateThreshold,
       ntsBurstCount: ntsBurstCount ?? this.ntsBurstCount,
+      ntpBurstCount: ntpBurstCount ?? this.ntpBurstCount,
       requireSleepAwareProjection:
           requireSleepAwareProjection ?? this.requireSleepAwareProjection,
     );
@@ -675,6 +699,7 @@ final class TrustedTimeConfig {
         other.validateInterval == validateInterval &&
         other.foregroundValidateThreshold == foregroundValidateThreshold &&
         other.ntsBurstCount == ntsBurstCount &&
+        other.ntpBurstCount == ntpBurstCount &&
         other.requireSleepAwareProjection == requireSleepAwareProjection;
   }
 
@@ -706,6 +731,7 @@ final class TrustedTimeConfig {
     validateInterval,
     foregroundValidateThreshold,
     ntsBurstCount,
+    ntpBurstCount,
     requireSleepAwareProjection,
   ]);
 
@@ -749,6 +775,7 @@ final class TrustedTimeConfig {
         '  validateInterval: $validateInterval,\n'
         '  foregroundValidateThreshold: $foregroundValidateThreshold,\n'
         '  ntsBurstCount: $ntsBurstCount,\n'
+        '  ntpBurstCount: $ntpBurstCount,\n'
         '  requireSleepAwareProjection: $requireSleepAwareProjection,\n'
         ')';
   }
