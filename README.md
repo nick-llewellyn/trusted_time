@@ -31,7 +31,7 @@ A tamper-proof UTC clock for Flutter. `trusted_time` anchors network-verified ti
 | Linux    | `CLOCK_BOOTTIME` | Timer.periodic | NTP, HTTPS, NTS | timerfd |
 | Web/WASM | `performance.now()` | — | HTTPS only | visibilitychange |
 
-> **Mobile background sync note:** On Android and iOS, background fires perform a real headless anchor refresh **if** the host app registers a background callback via `TrustedTime.registerBackgroundCallback` (plus, on iOS, the `AppDelegate` plugin-registrant hook — see [Enable background sync](#enable-background-sync)). Without registration, the job falls back to a connectivity-only probe and the anchor is refreshed on the next foreground launch.
+> **Mobile background sync note:** On Android and iOS, background fires perform a real headless anchor refresh **if** the host app registers a background callback via `TrustedTime.registerBackgroundCallback` (plus, on iOS, the `AppDelegate` plugin-registrant hook — see [Enable background sync](#enable-background-sync)). Without registration, background fires are no-ops — no network activity of any kind — and the anchor is refreshed on the next foreground launch. All network traffic is strictly limited to the configured time sources.
 
 > **Web/WASM note:** Browsers don't support UDP/TCP sockets, so Web platforms use HTTPS `Date` headers from multiple endpoints. The library automatically configures Web-compatible sources when running in browsers or WASM.
 
@@ -200,7 +200,7 @@ await TrustedTime.enableBackgroundSync(
 
 On Android this schedules a WorkManager `PeriodicWorkRequest`. On iOS it registers a `BGAppRefreshTask`. On desktop it uses a `Timer.periodic` within the Dart isolate. Web is not supported.
 
-**Headless anchor refresh (Android/iOS):** for a background fire to perform a real anchor refresh (rather than a connectivity-only probe), register a top-level `@pragma('vm:entry-point')` callback before `runApp`:
+**Headless anchor refresh (Android/iOS):** for a background fire to perform a real anchor refresh (without registration, fires are no-ops), register a top-level `@pragma('vm:entry-point')` callback before `runApp`:
 
 ```dart
 import 'dart:async';

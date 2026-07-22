@@ -40,9 +40,10 @@ public typealias TrustedTimePluginRegistrantCallback = (FlutterEngine) -> Void
 ///      GeneratedPluginRegistrant.register(with: engine)
 ///    }
 ///    ```
-///    Without this, background fires fall back to a connectivity-only
-///    HTTPS HEAD probe because a headless engine without plugin wiring
-///    (notably `flutter_secure_storage`) cannot persist the anchor.
+///    Without this, background fires complete as no-ops (no anchor
+///    refresh and no network activity) because a headless engine
+///    without plugin wiring (notably `flutter_secure_storage`) cannot
+///    persist the anchor.
 public class TrustedTimePlugin: NSObject, FlutterPlugin {
 
     private var integrityEventSink: FlutterEventSink?
@@ -52,8 +53,6 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
     private let bgTaskId = "com.trustedtime.backgroundsync"
     private var bgRegistered = false
     private var bgIntervalMinutes = 24 * 60
-    private let probeUrl = "https://www.google.com"
-    private var backgroundChannel: FlutterMethodChannel?
     private var headlessEngine: FlutterEngine?
     private var headlessChannel: FlutterMethodChannel?
     private var pendingTask: BGTask?
@@ -88,10 +87,7 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
             
         let backgroundChannel = FlutterMethodChannel(name: "trusted_time/background", binaryMessenger: messenger)
         backgroundChannel.setMethodCallHandler(instance.handle)
-        #if os(iOS)
-        instance.backgroundChannel = backgroundChannel
-        #endif
-            
+
         let integrityChannel = FlutterEventChannel(name: "trusted_time/integrity", binaryMessenger: messenger)
         integrityChannel.setStreamHandler(instance)
     }
@@ -281,17 +277,28 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
 
     /// Top-level handler for an OS-fired BGAppRefreshTask: spins up a
     /// headless engine and dispatches the registered Dart callback if a
-    /// handle is present, falls back to a connectivity-only HTTPS HEAD
-    /// probe otherwise.
+    /// handle is present; otherwise the fire completes as a no-op (no
+    /// anchor refresh and no network activity — all traffic is strictly
+    /// limited to the user-configured time sources reached through the
+    /// Dart callback) and the next execution is rescheduled.
     private func performBackgroundSync(task: BGTask) {
+        // Completes a no-op fire: reschedule so the periodic chain stays
+        // alive (a later launch may register the callback), and report
+        // success so BGTaskScheduler does not back off for a state that
+        // only an app launch can change.
+        func completeAsNoOp() {
+            scheduleNextBgSync()
+            task.setTaskCompleted(success: true)
+        }
+
         // UserDefaults stores the int64 handle as an NSNumber; reading it
         // back as `as? Int64` does not bridge through NSNumber and would
-        // silently return nil, forcing every fire down the connectivity
-        // fallback path even when a callback is registered.
+        // silently return nil, forcing every fire down the no-op path
+        // even when a callback is registered.
         let raw = UserDefaults.standard.object(forKey: TrustedTimePlugin.kHandleKey) as? NSNumber
         guard let handle = raw?.int64Value, handle != 0,
               let callbackInfo = FlutterCallbackCache.lookupCallbackInformation(handle) else {
-            performConnectivityFallback(task: task)
+            completeAsNoOp()
             return
         }
 
@@ -300,11 +307,11 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         // calls (notably flutter_secure_storage for anchor persistence,
         // plus this plugin's own monotonic and background channels) would
         // throw MissingPluginException for every fire and exhaust the OS
-        // budget on a no-op. Fall back to the connectivity probe so the
-        // run still reports a sensible outcome to BGTaskScheduler instead
-        // of repeatedly retrying a misconfigured engine.
+        // budget on a no-op. Complete without spinning up an engine so
+        // the run still reports a sensible outcome to BGTaskScheduler
+        // instead of repeatedly retrying a misconfigured engine.
         guard TrustedTimePlugin.pluginRegistrantCallback != nil else {
-            performConnectivityFallback(task: task)
+            completeAsNoOp()
             return
         }
 
@@ -440,59 +447,6 @@ public class TrustedTimePlugin: NSObject, FlutterPlugin {
         resolved.setTaskCompleted(success: success && !expired)
     }
 
-    /// Pre-headless behaviour: validates connectivity without refreshing
-    /// the anchor. Used when no Dart callback (or no plugin registrant) is
-    /// registered. Reports success only when the HEAD request returns a
-    /// 2xx response so iOS can reschedule with backoff on transient
-    /// connectivity failures (parity with the Android worker's
-    /// `Result.retry()` semantics). The `onBackgroundSync` ping nudges a
-    /// live foreground engine (if any) into a normal foreground sync,
-    /// preserving the pre-headless integration behaviour.
-    private func performConnectivityFallback(task: BGTask) {
-        guard let url = URL(string: probeUrl) else {
-            task.setTaskCompleted(success: false)
-            return
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
-        request.timeoutInterval = 10
-
-        // BGTask completion must be signaled exactly once. Cancelling the
-        // URLSession task from the expiration handler still fires its
-        // completion callback (NSURLErrorCancelled), so both paths funnel
-        // through this main-confined guard for scheduling + completion.
-        var completed = false
-        let complete: (Bool) -> Void = { [weak self] ok in
-            if completed { return }
-            completed = true
-            self?.scheduleNextBgSync()
-            task.setTaskCompleted(success: ok)
-        }
-
-        let dataTask = URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
-            DispatchQueue.main.async {
-                self?.backgroundChannel?.invokeMethod("onBackgroundSync", arguments: nil)
-                let ok: Bool
-                if error != nil {
-                    ok = false
-                } else if let http = response as? HTTPURLResponse {
-                    ok = (200...299).contains(http.statusCode)
-                } else {
-                    ok = false
-                }
-                complete(ok)
-            }
-        }
-
-        task.expirationHandler = {
-            dataTask.cancel()
-            DispatchQueue.main.async {
-                complete(false)
-            }
-        }
-
-        dataTask.resume()
-    }
     #endif
 }
 

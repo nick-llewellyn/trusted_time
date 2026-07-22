@@ -568,8 +568,9 @@ abstract final class TrustedTime {
   /// `TrustedTimePlugin.setPluginRegistrantCallback` in the AppDelegate
   /// so plugins can be registered onto the headless engine (Android
   /// auto-registers plugins on engine creation). If either is missing,
-  /// background fires fall back to a connectivity-only HTTPS HEAD probe
-  /// that does not refresh the anchor — see ADR 0002.
+  /// background fires complete as no-ops — no anchor refresh and no
+  /// network activity; the package only ever contacts the configured
+  /// time sources — see ADR 0002.
   ///
   /// **Interval granularity**: [interval] is applied at minute resolution.
   /// On both Android and iOS the Dart layer rounds fractional minutes

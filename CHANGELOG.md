@@ -4,6 +4,18 @@
 
 ### Breaking Changes
 
+- **Removed the `google.com` connectivity-probe fallback from mobile
+  background sync.** Previously, a background fire without a registered
+  callback (Android), or without a callback / plugin registrant (iOS),
+  fell back to an HTTPS HEAD probe against `https://www.google.com` —
+  the only network endpoint in the package not derived from
+  user-configured time sources. Such fires are now no-ops that perform
+  no network activity; the anchor is refreshed on the next foreground
+  launch. All network traffic is strictly limited to the configured
+  time sources. Integrators relying on the probe's keep-alive semantics
+  should register a background callback via
+  `TrustedTime.registerBackgroundCallback` (see ADR 0002 amendment).
+
 - **`TrustedTimeConfig.ntsTrustMode` removed; trust policy is now
   expressed via two fields.** The single `nts.TrustMode` passthrough
   (`ntsTrustMode`, default `platformWithFallback`) is replaced by
