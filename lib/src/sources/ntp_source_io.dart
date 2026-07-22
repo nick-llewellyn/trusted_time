@@ -310,9 +310,10 @@ final class NtpSource implements TimeSource {
   /// distance `Λ = δ/2 + rootDelay/2 + rootDispersion` — a provably
   /// correct bound that excludes server processing time, so it is
   /// materially tighter than the RTT/2 worst case against distant
-  /// servers with fast processing. rootDelay/2 and the ms conversion
-  /// both round *up* so no division ever shrinks the budget — Λ is a
-  /// bound, so conversion error must widen it, not shrink it.
+  /// servers with fast processing. δ/2, rootDelay/2 and the ms
+  /// conversions all round *up* so no division ever shrinks the
+  /// budget — Λ is a bound, so conversion error must widen it, not
+  /// shrink it.
   TimeSample _toTimeSample(
     NtpExchangeResult result,
     int receivedAtMs,
@@ -324,7 +325,8 @@ final class NtpSource implements TimeSource {
     final errorBudgetMicros =
         (result.rootDelayMicros + 1) ~/ 2 + result.rootDispersionMicros;
     final dispersionMs = (errorBudgetMicros + 999) ~/ 1000;
-    final uncertaintyMs = result.delayMicros ~/ 2000 + dispersionMs;
+    final halfDelayMs = (result.delayMicros + 1999) ~/ 2000;
+    final uncertaintyMs = halfDelayMs + dispersionMs;
 
     return TimeSample(
       interval: TimeInterval(

@@ -78,6 +78,14 @@ final class NtpProtocolException implements Exception {
 /// (123 unless overridden, which only tests running a loopback server
 /// on an unprivileged port need to do).
 ///
+/// [timeout] is a single wall-clock budget for the whole exchange:
+/// when [address] is a hostname, DNS resolution and the reply wait
+/// share it rather than each receiving it in full, so a slow lookup
+/// shrinks the reply window and the exchange as a whole never runs
+/// past ~one budget. This keeps the caller's shrinking-deadline
+/// arithmetic honest even on the fallback path where [NtpSource]
+/// hands over the bare host after its own resolve step failed.
+///
 /// The transmit-timestamp field carries 8 random bytes rather than the
 /// local clock: the server echoes it back verbatim in the originate
 /// field, so it doubles as an unpredictable nonce that an off-path
@@ -92,9 +100,14 @@ Future<NtpExchangeResult> defaultNtpExchange(
   Duration timeout = const Duration(seconds: 5),
   int port = 123,
 }) async {
+  final budget = Stopwatch()..start();
   final addr =
       InternetAddress.tryParse(address) ??
       (await InternetAddress.lookup(address).timeout(timeout)).first;
+  final remaining = timeout - budget.elapsed;
+  if (remaining <= Duration.zero) {
+    throw TimeoutException('NTP exchange budget exhausted by DNS', timeout);
+  }
   final socket = await RawDatagramSocket.bind(
     addr.type == InternetAddressType.IPv6
         ? InternetAddress.anyIPv6
@@ -129,7 +142,7 @@ Future<NtpExchangeResult> defaultNtpExchange(
     }
     final Datagram datagram;
     try {
-      datagram = await reply.future.timeout(timeout);
+      datagram = await reply.future.timeout(remaining);
     } finally {
       await sub.cancel();
     }

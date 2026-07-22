@@ -465,20 +465,30 @@ void main() {
     });
 
     test('sub-millisecond error budgets round up, never to zero', () async {
+      final destination = DateTime.utc(2026).microsecondsSinceEpoch;
       final source = NtpSource(
         'time.example',
         hostResolver: (host) async => [InternetAddress('1.2.3.4')],
-        exchange: (address, {timeout = Duration.zero}) async => okResult(
-          delayMicros: 999,
-          rootDelayMicros: 1,
-          rootDispersionMicros: 0,
-        ),
+        exchange: (address, {timeout = Duration.zero}) async =>
+            NtpExchangeResult(
+              offsetMicros: 0,
+              delayMicros: 999,
+              destinationUtcMicros: destination,
+              stratum: 2,
+              rootDelayMicros: 1,
+              rootDispersionMicros: 0,
+            ),
       );
 
       final sample = await source.getTime();
       // ceil((1+1)/2 + 0) µs → 1 ms: conversion error widens the
       // bound instead of shrinking it.
       expect(sample.dispersionMs, 1);
+      // δ/2 rounds up too (ceil(999/2000 ms) → 1 ms), so the
+      // half-width is 1 + 1 = 2 ms — never narrowed by truncation.
+      final midMs = destination ~/ 1000;
+      expect(sample.interval.startMs, midMs - 2);
+      expect(sample.interval.endMs, midMs + 2);
     });
   });
 
