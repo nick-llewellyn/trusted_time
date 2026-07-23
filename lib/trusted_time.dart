@@ -442,11 +442,15 @@ abstract final class TrustedTime {
 
   /// Emits events when the engine detects an integrity violation.
   ///
-  /// Emitted for reboots detected on warm start ([TamperReason
-  /// .deviceRebooted]) and for sync cycles that cannot establish a Tier 1
-  /// truth box ([TamperReason.degradedTier]). Wall-clock changes are not
-  /// monitored: projection is monotonic-only, so a wall-clock jump cannot
-  /// affect [now].
+  /// The library emits [TamperReason.degradedTier] when a sync cycle
+  /// cannot establish a Tier 1 truth box. Reboots are not signalled on
+  /// this stream: a reboot always ends the process, so it is only ever
+  /// detected during [initialize] — before a listener could subscribe.
+  /// Its effect is expressed through state instead: the stale anchor is
+  /// discarded, [isTrusted] stays `false`, and [now] throws until a
+  /// fresh network sync succeeds. Wall-clock changes are not monitored:
+  /// projection is monotonic-only, so a wall-clock jump cannot affect
+  /// [now].
   static Stream<IntegrityEvent> get onIntegrityLost {
     if (_override != null) return _override!.onIntegrityLost;
     return TrustedTimeImpl.instance.onIntegrityLost;

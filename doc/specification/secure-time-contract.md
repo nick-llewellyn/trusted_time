@@ -167,7 +167,7 @@ Consumer can inspect whether the current anchor is cryptographically authenticat
 
 The library emits an `IntegrityEvent` of reason `degradedTier` when a sync cycle's NTS quorum cannot form. This signals to the consumer that, for the current cycle, the truth box could not be defined by authenticated samples and the consensus fell back to best-effort sources. Consumers reading this stream can adapt — for example, a security-sensitive client may pause anchor updates until a verified quorum returns.
 
-`degradedTier` is named in [ADR 0007](../adr/0007-hybrid-trust-model.md) §2 and is a member of `TamperReason` on trunk (PR #48). `onIntegrityLost` emits it alongside the existing reasons (`deviceRebooted`, `forcedNtpSync`, `unknown`).
+`degradedTier` is named in [ADR 0007](../adr/0007-hybrid-trust-model.md) §2 and is a member of `TamperReason` on trunk (PR #48). It is the only reason the production engine emits on `onIntegrityLost`. Reboots are not delivered on the stream: a reboot always ends the process, so it is detected during `initialize()` — before a listener could subscribe — and is expressed through state instead (the stale anchor is discarded, `isTrusted` stays `false`, and `now()` throws until a fresh sync succeeds). The remaining `TamperReason` members (`deviceRebooted`, `forcedNtpSync`, `unknown`) exist for test doubles and diagnostics.
 
 Emission of `degradedTier` is informational. It does not, by itself, invalidate the contract: a consumer using `requireSecure: true` will still see `TrustedTimeSecurityException` rather than receiving a degraded value. The event exists for consumers who want operational visibility into authentication state without polling.
 

@@ -172,20 +172,17 @@ try {
 
 ### Listen for integrity events
 
-Because time projection is anchored to the monotonic clock, changing the system wall clock has no effect on `TrustedTime.now()` — no monitoring is needed for that. The stream reports the events that do matter:
+Because time projection is anchored to the monotonic clock, changing the system wall clock has no effect on `TrustedTime.now()` — no monitoring is needed for that. The stream reports tier degradation:
 
 ```dart
 TrustedTime.onIntegrityLost.listen((event) {
-  switch (event.reason) {
-    case TamperReason.deviceRebooted:
-      // Device rebooted — monotonic counter reset, anchor invalidated
-    case TamperReason.degradedTier:
-      // Sync cycle could not form an authenticated (Tier 1) quorum
-    default:
-      // Other diagnostic events
+  if (event.reason == TamperReason.degradedTier) {
+    // Sync cycle could not form an authenticated (Tier 1) quorum
   }
 });
 ```
+
+Reboots are not delivered on this stream. A reboot always ends the process, so it is detected during `initialize()` and expressed through state: the stale anchor is discarded, `isTrusted` stays `false`, and `now()` throws `TrustedTimeNotReadyException` until a fresh network sync succeeds. Check `TrustedTime.isTrusted` after `initialize()` (and on app resume) rather than waiting for an event.
 
 ### Enable background sync
 

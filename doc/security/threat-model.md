@@ -319,9 +319,11 @@ library and belongs to the consuming application's backend design.
 - **Use `requireSecure: true`** for any decision where accepting
   unauthenticated time is worse than receiving an error, and handle
   `TrustedTimeSecurityException` explicitly.
-- **Subscribe to `onIntegrityLost`** and treat `degradedTier` and
-  `deviceRebooted` as signals to pause time-sensitive operations until
-  a fresh `verified` anchor lands.
+- **Subscribe to `onIntegrityLost`** and treat `degradedTier` as a
+  signal to pause time-sensitive operations until a fresh `verified`
+  anchor lands. Reboots are not delivered on the stream — check
+  `isTrusted` after `initialize()` (a reboot leaves it `false` until
+  resync succeeds).
 - **Do not exempt the anchor from backup exclusion decisions.** Until
   R1/R2 mitigations land, excluding the app's secure-storage data from
   cloud/device backups removes the backup-forgery surface entirely.

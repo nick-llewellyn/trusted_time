@@ -14,10 +14,11 @@
   implementations (Android `IntegrityWatcher` broadcast receiver,
   iOS/macOS `NSSystemClockDidChange` observers, Windows
   `WM_TIMECHANGE` subclassing, Linux `timerfd` cancel-on-set watcher).
-  `onIntegrityLost` still emits `deviceRebooted` (warm-start boot-ID
-  check) and `degradedTier`. Migration: delete `switch` cases on the
-  two removed enum members; reboot and degraded-tier handling is
-  unchanged.
+  `onIntegrityLost` still emits `degradedTier`; reboots (warm-start
+  boot-ID check) are expressed through state — `isTrusted` stays
+  `false` and `now()` throws until a fresh sync — rather than as a
+  stream event. Migration: delete `switch` cases on the two removed
+  enum members; reboot and degraded-tier handling is unchanged.
 
 - **Dropped Web platform support.** The Web plugin
   (`trusted_time_web.dart`), its `pubspec.yaml` registration, the

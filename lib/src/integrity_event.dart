@@ -8,7 +8,11 @@ enum TamperReason {
   /// A hardware reboot was detected via monotonic uptime reset.
   ///
   /// Reboots invalidate the current hardware anchor and require a fresh
-  /// network synchronization to re-establish absolute truth.
+  /// network synchronization to re-establish absolute truth. The
+  /// production engine does not emit this reason on `onIntegrityLost` —
+  /// a reboot always ends the process and is detected during
+  /// `initialize()`, so it is expressed through state (`isTrusted`
+  /// stays `false`) instead. Reserved for test doubles and diagnostics.
   deviceRebooted,
 
   /// A synchronization cycle could not establish a Tier 1 (cryptographically
