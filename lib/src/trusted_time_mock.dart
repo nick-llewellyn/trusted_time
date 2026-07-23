@@ -50,8 +50,13 @@ final class TrustedTimeMock {
 
   /// Sets the mock to a trusted or untrusted state.
   ///
-  /// When [trusted] is `false`, assessments report [reason] (default
-  /// [TrustStatusReason.syncFailed]) with a `null` time.
+  /// When [trusted] is `false`, assessments report an unanchored
+  /// posture with a `null` time. Pass [reason] to script which one;
+  /// when omitted, the previously active unanchored reason is kept
+  /// (initially [TrustStatusReason.syncFailed]). This mirrors
+  /// production precedence: [TrustStatusReason.rebootDetected] set by
+  /// [simulateReboot] persists until a successful re-sync
+  /// ([restoreTrust]), not merely until the next trust-loss event.
   void setTrusted(bool trusted, {TrustStatusReason? reason}) {
     _trusted = trusted;
     if (reason != null) _unanchoredReason = reason;
