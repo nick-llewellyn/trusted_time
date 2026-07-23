@@ -174,6 +174,24 @@ final class NtsSource implements TimeSource, Warmable {
   /// single-query behaviour for direct callers; [SyncEngine] passes
   /// [TrustedTimeConfig.ntsBurstCount].
   ///
+  /// [verificationTimeProvider], when supplied, is consulted at each
+  /// `query` / `warmCookies` dispatch and its non-null result is
+  /// forwarded as `package:nts`'s `verificationTime` — pinning the
+  /// NTS-KE TLS certificate validity-window check (`notBefore` /
+  /// `notAfter`) to that instant instead of the system clock. This is
+  /// the cold-start clock-skew rescue hook: a device whose RTC is
+  /// badly wrong cannot complete the handshake because the certificate
+  /// is judged expired or not-yet-valid, yet NTS is the mechanism that
+  /// would fix the clock. The pinned instant affects *only* the
+  /// temporal check; chain-of-trust, hostname, and signature
+  /// validation are untouched, and the resulting sample's
+  /// [TimeSample.authLevel] still derives solely from the trust
+  /// backend via [authLevelForTrustBackend] — `verified` continues to
+  /// require the bundled/custom store. A provider (rather than a
+  /// settable field) keeps this source immutable; [SyncEngine] owns
+  /// all rescue state and returns null in the normal (non-rescue)
+  /// case, which is byte-identical to today's behaviour.
+  ///
   /// [debugQueryOverride] replaces the `client.query` call for tests
   /// that need to script per-attempt outcomes without touching the FFI
   /// surface; when set, no [nts.NtsClient] is minted and [warm] is a
@@ -188,6 +206,7 @@ final class NtsSource implements TimeSource, Warmable {
     void Function(int)? onStratumObserved,
     int burstCount = 1,
     NtsBurstReducer reducer = lowestRttReducer,
+    DateTime? Function()? verificationTimeProvider,
     @visibleForTesting Future<nts.NtsTimeSample> Function()? debugQueryOverride,
   }) : _spec = nts.NtsServerSpec(host: _host, port: port),
        _dnsConcurrencyCap = dnsConcurrencyCap,
@@ -203,6 +222,7 @@ final class NtsSource implements TimeSource, Warmable {
          'must be in 1..8 (NTS cookie-jar economics)',
        ),
        _reducer = reducer,
+       _verificationTimeProvider = verificationTimeProvider,
        _debugQueryOverride = debugQueryOverride;
 
   final String _host;
@@ -214,6 +234,7 @@ final class NtsSource implements TimeSource, Warmable {
   final void Function(int)? _onStratumObserved;
   final int _burstCount;
   final NtsBurstReducer _reducer;
+  final DateTime? Function()? _verificationTimeProvider;
   final Future<nts.NtsTimeSample> Function()? _debugQueryOverride;
 
   /// Per-source [nts.NtsClient]. Lazily constructed on first [warm]
@@ -293,6 +314,12 @@ final class NtsSource implements TimeSource, Warmable {
         spec: _spec,
         timeout: timeout,
         dnsConcurrencyCap: _dnsConcurrencyCap,
+        // Consulted per dispatch (not captured once) so an engine that
+        // arms or clears the rescue instant mid-lifecycle is honoured
+        // by the very next attempt. Null in the normal case — the
+        // handshake then verifies against the system clock exactly as
+        // in every prior release.
+        verificationTime: _verificationTimeProvider?.call(),
       );
     }
 
@@ -545,6 +572,10 @@ final class NtsSource implements TimeSource, Warmable {
       await client.warmCookies(
         spec: _spec,
         dnsConcurrencyCap: _dnsConcurrencyCap,
+        // Same per-dispatch rescue consultation as the query path, so
+        // a rescue-armed retry cycle's warming handshake also verifies
+        // the certificate against the pinned instant.
+        verificationTime: _verificationTimeProvider?.call(),
       );
     } catch (_) {
       // Swallow: missing Rust binaries (test envs), TLS failures, etc.

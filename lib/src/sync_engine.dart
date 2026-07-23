@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:nts/nts.dart' as nts;
 import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
@@ -157,6 +158,12 @@ final class SyncEngine {
           onStratumObserved: (s) =>
               _qualityTracker.setStratum('${TimeSource.prefixNts}$host', s),
           burstCount: _config.ntsBurstCount,
+          // Pre-sync rescue hook: non-null only while a rescue retry
+          // cycle is active, pinning the NTS-KE certificate
+          // validity-window check to the coarse instant instead of a
+          // badly-skewed system clock. Consulted per dispatch, so the
+          // same source instances serve normal and rescue cycles.
+          verificationTimeProvider: () => _rescueVerificationTime,
         ),
       ..._config.additionalSources,
     ];
@@ -194,6 +201,54 @@ final class SyncEngine {
   final SourceQualityTracker _qualityTracker;
 
   int _syncAttempts = 0;
+
+  /// Plausibility floor for the pre-sync rescue's coarse estimate.
+  ///
+  /// An unauthenticated NTP reply steers only the TLS validity-window
+  /// check, but an attacker feeding absurd backdated time must not be
+  /// able to drag the verification instant arbitrarily backwards into
+  /// the validity window of an old compromised certificate. This
+  /// binary cannot predate its own release, so any coarse estimate
+  /// before this floor is rejected and the rescue is not armed.
+  /// Bumped per release.
+  @visibleForTesting
+  static final rescueFloorUtc = DateTime.utc(2026, 7, 1);
+
+  /// Coarse verification instant for the active pre-sync rescue, or
+  /// null when no rescue is active (the steady state). Non-null only
+  /// for the duration of the single rescue retry cycle; consulted by
+  /// every [NtsSource] via its `verificationTimeProvider`.
+  DateTime? _rescueVerificationTime;
+
+  /// Whether the rescue has already been attempted this cold start.
+  /// One-shot: a rescue that fails must not re-arm on the next cert
+  /// failure, or a persistent middlebox/cert problem would double
+  /// every cycle's network cost indefinitely.
+  bool _rescueAttempted = false;
+
+  /// Set once [_createAnchor] mints the first anchor of this engine's
+  /// lifetime. The clock-skew deadlock is a cold-start condition: once
+  /// any anchor exists the engine has an internal time reference, and
+  /// mid-run re-skew is out of scope for the rescue.
+  bool _hasAnchored = false;
+
+  /// NTS source ids whose failure this cycle carried a certificate
+  /// validity-window signature. Cleared at the top of each [sync]
+  /// cycle; populated by [_querySafe].
+  final _certValidityFailedIds = <String>{};
+
+  /// NTP samples collected during the current [sync] cycle, retained
+  /// so a rescue triggered by that cycle's failure can reuse them as
+  /// its coarse estimate without a second network round trip. Cleared
+  /// at the top of each [sync] cycle.
+  final _cycleNtpSamples = <TimeSample>[];
+
+  /// Test seam replacing the direct-NTP fallback the rescue uses when
+  /// the failed cycle collected no NTP samples. When non-null it is
+  /// invoked instead of the sequential [TrustedTimeConfig.ntpServers]
+  /// probe loop; production leaves it null.
+  @visibleForTesting
+  Future<TimeSample> Function()? rescueProbeOverride;
 
   /// Eagerly invokes [Warmable.warm] on every source that supports it,
   /// in parallel.
@@ -350,7 +405,193 @@ final class SyncEngine {
   /// This method is the primary driver of trust establishment. It races sources,
   /// performs adaptive outlier filtering, and requires stability across
   /// multiple samples before finalizing an anchor.
+  ///
+  /// ### Pre-sync rescue (cold-start clock-skew deadlock)
+  ///
+  /// A device whose RTC is badly wrong (dead CMOS battery, factory
+  /// reset, manual mis-set) cannot complete the NTS-KE TLS handshake:
+  /// the server certificate is judged expired or not-yet-valid against
+  /// the skewed system clock — yet NTS is the very mechanism that
+  /// would fix the clock. When a cold-start cycle fails and at least
+  /// one NTS source's failure carried that certificate
+  /// validity-window signature, this wrapper obtains a coarse
+  /// unauthenticated estimate from NTP, clamps it against
+  /// [rescueFloorUtc], arms it as the NTS verification instant, and
+  /// re-runs exactly one cycle. The coarse instant pins *only* the
+  /// certificate validity-window check — chain-of-trust, hostname, and
+  /// signature validation are untouched, the sample's auth level still
+  /// derives solely from the trust backend, and the NTP estimate never
+  /// becomes an anchor by itself. One-shot per cold start; never armed
+  /// once any anchor exists.
   Future<TrustAnchor> sync() async {
+    _certValidityFailedIds.clear();
+    _cycleNtpSamples.clear();
+    try {
+      return await _runSyncCycle();
+    } catch (e) {
+      if (_hasAnchored || _rescueAttempted || _certValidityFailedIds.isEmpty) {
+        rethrow;
+      }
+      _rescueAttempted = true;
+      final coarse = await _acquireCoarseRescueTime();
+      if (coarse == null) {
+        if (TrustedTimeLog.enabled) {
+          TrustedTimeLog.log(
+            TrustedTimeLogLevel.warning,
+            '[TrustedTime] pre-sync rescue unavailable: NTS cert-validity '
+            'failure detected but no coarse NTP estimate could be obtained '
+            '(ntpServers empty or all queries failed).',
+          );
+        }
+        rethrow;
+      }
+      if (coarse.isBefore(rescueFloorUtc)) {
+        // An unauthenticated reply steering the verification instant
+        // backwards past the release floor is either a badly broken
+        // server or an attacker replaying old time; refuse to arm.
+        if (TrustedTimeLog.enabled) {
+          TrustedTimeLog.log(
+            TrustedTimeLogLevel.warning,
+            '[TrustedTime] pre-sync rescue rejected: coarse estimate '
+            '${coarse.toIso8601String()} predates plausibility floor '
+            '${rescueFloorUtc.toIso8601String()}.',
+          );
+        }
+        rethrow;
+      }
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.info,
+          '[TrustedTime] pre-sync rescue armed: '
+          'coarse=${coarse.toIso8601String()} — retrying sync with the '
+          'NTS-KE certificate validity check pinned to the coarse instant.',
+        );
+      }
+      // The cert failure was structural (skewed clock), not host
+      // unhealthiness — lift the cooldown the failing cycle just armed
+      // so the retry actually re-queries the NTS sources, and drop the
+      // health score those failures accrued.
+      for (final id in _certValidityFailedIds) {
+        _blacklistUntil.remove(id);
+        _sourceHealth.remove(id);
+        _sourceTransientStreak.remove(id);
+      }
+      _rescueVerificationTime = coarse;
+      try {
+        return await _runSyncCycle();
+      } finally {
+        // One retry cycle only: subsequent handshakes verify against
+        // the system clock again. On success the anchor keeps
+        // projection correct regardless of the RTC; on failure the
+        // one-shot _rescueAttempted latch prevents re-arming.
+        _rescueVerificationTime = null;
+      }
+    }
+  }
+
+  /// Whether the one-shot pre-sync rescue has already been consumed
+  /// this cold start. Exposed for tests.
+  @visibleForTesting
+  bool get rescueAttempted => _rescueAttempted;
+
+  /// The rescue verification instant currently armed, or null outside
+  /// the rescue retry cycle. Exposed for tests.
+  @visibleForTesting
+  DateTime? get debugRescueVerificationTime => _rescueVerificationTime;
+
+  /// Acquires the coarse unauthenticated estimate used to pin the
+  /// NTS-KE certificate validity check during the rescue retry.
+  ///
+  /// Prefers NTP samples already collected by the failed cycle (mixed
+  /// NTP+NTS configs get the estimate for free), picking the sample
+  /// with the smallest round-trip delay. Falls back to direct
+  /// sequential NTP queries against [TrustedTimeConfig.ntpServers]
+  /// until one succeeds. Returns null when no estimate is obtainable
+  /// (NTS-only config with empty ntpServers, or every query failed).
+  Future<DateTime?> _acquireCoarseRescueTime() async {
+    TimeSample? best;
+    for (final s in _cycleNtpSamples) {
+      final delay = s.delayMs;
+      final bestDelay = best?.delayMs;
+      if (best == null ||
+          (delay != null && (bestDelay == null || delay < bestDelay))) {
+        best = s;
+      }
+    }
+    if (best != null) {
+      return DateTime.fromMillisecondsSinceEpoch(
+        best.interval.midpoint,
+        isUtc: true,
+      );
+    }
+    final override = rescueProbeOverride;
+    if (override != null) {
+      try {
+        final sample = await override().timeout(_config.maxLatency);
+        return DateTime.fromMillisecondsSinceEpoch(
+          sample.interval.midpoint,
+          isUtc: true,
+        );
+      } catch (_) {
+        return null;
+      }
+    }
+    for (final host in _config.ntpServers) {
+      try {
+        final sample = await _defaultRescueProbe(
+          host,
+        ).timeout(_config.maxLatency);
+        return DateTime.fromMillisecondsSinceEpoch(
+          sample.interval.midpoint,
+          isUtc: true,
+        );
+      } catch (e) {
+        if (TrustedTimeLog.enabled) {
+          TrustedTimeLog.log(
+            TrustedTimeLogLevel.debug,
+            '[TrustedTime] pre-sync rescue probe against ntp:$host '
+            'failed: $e',
+          );
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Production rescue probe: one plain NTP query against [host],
+  /// sharing the engine's DNS budget and latency budget.
+  Future<TimeSample> _defaultRescueProbe(String host) => NtpSource(
+    host,
+    dnsBudget: _dnsBudget,
+    maxLatency: _config.maxLatency,
+  ).getTime();
+
+  /// Classifies whether [error] carries the NTS-KE certificate
+  /// validity-window failure signature that the pre-sync rescue can
+  /// break.
+  ///
+  /// Strong signal: [nts.NtsErrorKeProtocol] whose rustls diagnostic
+  /// names an expired / not-yet-valid peer certificate. Weak signal:
+  /// [nts.NtsErrorTimeout] in the TLS phase — some middleboxes kill
+  /// the handshake instead of surfacing an alert; accepted because the
+  /// rescue retry is cheap, one-shot, and can only fail again, never
+  /// weaken validation.
+  @visibleForTesting
+  static bool isCertValidityFailure(Object error) {
+    if (error is nts.NtsErrorKeProtocol) {
+      final message = error.message.toLowerCase();
+      return message.contains('expired') ||
+          message.contains('notvalidyet') ||
+          message.contains('not valid yet') ||
+          message.contains('invalid peer certificate');
+    }
+    if (error is nts.NtsErrorTimeout) {
+      return error.phase == nts.TimeoutPhase.tls;
+    }
+    return false;
+  }
+
+  Future<TrustAnchor> _runSyncCycle() async {
     // Per-cycle synchronous re-entry guard for [_completeSync].
     // Allocated fresh on every [sync] call and captured by the sample
     // listener closure, so the guard's lifetime is exactly one sync
@@ -700,6 +941,7 @@ final class SyncEngine {
       );
 
       _syncAttempts = 0;
+      _hasAnchored = true;
       _cache?.update(anchor);
       _qualityTracker.advanceCycle();
       return anchor;
@@ -1098,6 +1340,12 @@ final class SyncEngine {
       _sourceHealth[source.id] = 0; // Reset failure count on success
       _sourceTransientStreak.remove(source.id);
       _blacklistUntil.remove(source.id);
+      // Retain NTP samples for the pre-sync rescue: if this cycle ends
+      // up failing on an NTS cert-validity deadlock, the rescue reuses
+      // these as its coarse estimate without a second round trip.
+      if (source.id.startsWith(TimeSource.prefixNtp)) {
+        _cycleNtpSamples.add(sample);
+      }
       _logSample(sample);
       return sample;
     } on TransientSourceError catch (e) {
@@ -1140,6 +1388,14 @@ final class SyncEngine {
     } catch (e) {
       _logSampleFailure(source.id, e);
       _observer?.onSourceFailed(source.id, e);
+      // Cert-validity signature detection for the pre-sync rescue:
+      // only meaningful on NTS sources (the deadlock is an NTS-KE TLS
+      // condition), and only consulted when the whole cycle fails on
+      // a cold start.
+      if (source.id.startsWith(TimeSource.prefixNts) &&
+          isCertValidityFailure(e)) {
+        _certValidityFailedIds.add(source.id);
+      }
       // Record the failure against the quality score *before*
       // arming the cooldown so the tracker sees the failed
       // observation even if subsequent cycles never query this
