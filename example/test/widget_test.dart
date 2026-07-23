@@ -67,10 +67,7 @@ void main() {
     final mock = TrustedTimeMock(initial: DateTime.utc(2024, 1, 1, 12));
     // Register cleanup before the override so a failed expectation
     // in the test body cannot leak the override into sibling tests.
-    addTearDown(() {
-      TrustedTime.resetOverride();
-      mock.dispose();
-    });
+    addTearDown(TrustedTime.resetOverride);
     TrustedTime.overrideForTesting(mock);
 
     await tester.pumpWidget(MyApp(telemetry: TelemetryRecorder()));
@@ -97,10 +94,7 @@ void main() {
     // companion test below exercises the same code path against
     // the real TrustedTimeImpl.
     final mock = TrustedTimeMock(initial: DateTime.utc(2024, 1, 1, 12));
-    addTearDown(() {
-      TrustedTime.resetOverride();
-      mock.dispose();
-    });
+    addTearDown(TrustedTime.resetOverride);
     TrustedTime.overrideForTesting(mock);
 
     // Under an override, TrustedTime.config returns

@@ -9,15 +9,14 @@ void main() {
   testWidgets('TrustedTime initialization test', (WidgetTester tester) async {
     await TrustedTime.initialize();
 
-    expect(TrustedTime.isTrusted, isTrue);
-
-    final now = TrustedTime.now();
-    expect(now, isNotNull);
-
-    final unixMs = TrustedTime.nowUnixMs();
-    expect(unixMs, greaterThan(0));
-
-    final iso = TrustedTime.nowIso();
-    expect(iso, contains('T'));
+    final assessment = TrustedTime.getAssessment();
+    expect(assessment.isTrusted, isTrue);
+    expect(assessment.time, isNotNull);
+    expect(assessment.time!.millisecondsSinceEpoch, greaterThan(0));
+    expect(assessment.time!.toIso8601String(), contains('T'));
+    expect(
+      assessment.reason,
+      anyOf(TrustStatusReason.synchronized, TrustStatusReason.degraded),
+    );
   });
 }

@@ -31,5 +31,5 @@ This project demonstrates how to implement **high-integrity timekeeping** in a r
 ## Best Practices Demonstrated
 
 - **Early Initialization**: Calling `TrustedTime.initialize()` in `main()` to establish the trust anchor during app-boot.
-- **Synchronous Safety**: Accessing `TrustedTime.now()` anywhere in the widget tree without needing a `FutureBuilder`.
-- **Integrity Management**: Handling `onIntegrityLost` events to protect sensitive UI states during a re-sync.
+- **Synchronous Safety**: Calling `TrustedTime.getAssessment()` anywhere in the widget tree without needing a `FutureBuilder`.
+- **Pull-Model Trust Checks**: Reading the assessment's `reason` at meaningful boundaries to protect sensitive UI states during a re-sync.
