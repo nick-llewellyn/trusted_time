@@ -34,51 +34,40 @@ void main() {
       TrustedTime.overrideForTesting(mock);
     });
 
-    tearDown(() {
-      TrustedTime.resetOverride();
-      mock.dispose();
+    tearDown(TrustedTime.resetOverride);
+
+    test('assessment loses trust after setTrusted(false)', () {
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
+
+      mock.setTrusted(false);
+
+      final assessment = TrustedTime.getAssessment();
+      expect(assessment.isTrusted, isFalse);
+      expect(assessment.time, isNull);
+      expect(assessment.reason, TrustStatusReason.syncFailed);
     });
 
-    test('isTrusted becomes false after simulated tampering', () async {
-      expect(TrustedTime.isTrusted, isTrue);
-
-      mock.simulateTampering(TamperReason.unknown);
-      await Future.delayed(Duration.zero);
-
-      expect(TrustedTime.isTrusted, isFalse);
-    });
-
-    test('isTrusted becomes false after reboot event', () async {
-      expect(TrustedTime.isTrusted, isTrue);
+    test('assessment reports rebootDetected after reboot event', () {
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
 
       mock.simulateReboot();
-      await Future.delayed(Duration.zero);
 
-      expect(TrustedTime.isTrusted, isFalse);
+      final assessment = TrustedTime.getAssessment();
+      expect(assessment.isTrusted, isFalse);
+      expect(assessment.reason, TrustStatusReason.rebootDetected);
     });
 
-    test('onIntegrityLost stream emits events with correct reason', () async {
-      final events = <IntegrityEvent>[];
-      final sub = TrustedTime.onIntegrityLost.listen(events.add);
+    test('setTrusted(false) honours an explicit unanchored reason', () {
+      mock.setTrusted(false, reason: TrustStatusReason.neverSynced);
 
-      mock.simulateTampering(
-        TamperReason.unknown,
-        drift: const Duration(minutes: 3),
-      );
-      await Future.delayed(Duration.zero);
-
-      expect(events, hasLength(1));
-      expect(events.first.reason, TamperReason.unknown);
-      expect(events.first.drift, const Duration(minutes: 3));
-
-      await sub.cancel();
+      expect(TrustedTime.getAssessment().reason, TrustStatusReason.neverSynced);
     });
 
-    test('restoreTrust re-enables isTrusted after reboot', () {
+    test('restoreTrust re-enables trust after reboot', () {
       mock.simulateReboot();
-      expect(TrustedTime.isTrusted, isFalse);
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
       mock.restoreTrust();
-      expect(TrustedTime.isTrusted, isTrue);
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
     });
 
     test(
@@ -95,24 +84,24 @@ void main() {
       },
     );
 
-    test('nowEstimated returns estimate with full confidence when trusted', () {
-      final estimate = TrustedTime.nowEstimated();
-      expect(estimate, isNotNull);
-      expect(estimate!.confidence, 1.0);
-      expect(estimate.estimatedError, Duration.zero);
+    test('a trusted assessment carries time, not an estimate', () {
+      final assessment = TrustedTime.getAssessment();
+      expect(assessment.time, isNotNull);
+      expect(assessment.uncertainty, Duration.zero);
+      expect(assessment.estimate, isNull);
     });
 
-    test('nowEstimated returns decaying estimate after reboot', () {
+    test('an unanchored assessment carries a full-confidence estimate '
+        'immediately after reboot', () {
       mock.simulateReboot();
-      final estimate = TrustedTime.nowEstimated();
+      final estimate = TrustedTime.getAssessment().estimate;
       expect(estimate, isNotNull);
       expect(estimate!.confidence, 1.0);
     });
 
-    test('nowEstimated returns null when untrusted without reboot data', () {
-      mock.simulateTampering(TamperReason.unknown);
-      final estimate = TrustedTime.nowEstimated();
-      expect(estimate, isNull);
+    test('an untrusted assessment without reboot data has no estimate', () {
+      mock.setTrusted(false);
+      expect(TrustedTime.getAssessment().estimate, isNull);
     });
   });
 
@@ -268,7 +257,6 @@ void main() {
 
     test('returns default const TrustedTimeConfig under a test override', () {
       final mock = TrustedTimeMock(initial: DateTime.utc(2024, 6, 15, 12));
-      addTearDown(mock.dispose);
       TrustedTime.overrideForTesting(mock);
 
       // Under an override the public surface should not reach the real
@@ -333,7 +321,6 @@ void main() {
 
     test('isProjectionSleepAware is true under a mock override', () {
       final mock = TrustedTimeMock(initial: DateTime.utc(2024, 6, 15, 12));
-      addTearDown(mock.dispose);
       TrustedTime.overrideForTesting(mock);
 
       expect(TrustedTime.isProjectionSleepAware, isTrue);
@@ -548,7 +535,6 @@ void main() {
       'pause/resume/setRefreshInterval are no-ops under a test override',
       () async {
         final mock = TrustedTimeMock(initial: DateTime.utc(2024, 6, 15, 12));
-        addTearDown(mock.dispose);
         TrustedTime.overrideForTesting(mock);
 
         // Pins the override-path contract: the pause / resume /
@@ -592,7 +578,7 @@ void main() {
       );
       addTearDown(TrustedTimeImpl.instance.dispose);
 
-      expect(TrustedTime.isTrusted, isFalse);
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
       expect(TrustedTimeImpl.instance.debugRetryTimerActive, isTrue);
     });
 
@@ -612,7 +598,7 @@ void main() {
         );
         addTearDown(TrustedTimeImpl.instance.dispose);
 
-        expect(TrustedTime.isTrusted, isFalse);
+        expect(TrustedTime.getAssessment().isTrusted, isFalse);
         expect(TrustedTimeImpl.instance.debugRetryTimerActive, isFalse);
       },
     );
@@ -652,7 +638,7 @@ void main() {
       );
       addTearDown(TrustedTimeImpl.instance.dispose);
 
-      expect(TrustedTime.isTrusted, isFalse);
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
       expect(TrustedTimeImpl.instance.debugRetryTimerActive, isFalse);
     });
   });
@@ -726,13 +712,12 @@ void main() {
 
     test('under a test override reflects the mock trust state', () async {
       final mock = TrustedTimeMock(initial: DateTime.utc(2024, 6, 15, 12));
-      addTearDown(mock.dispose);
       TrustedTime.overrideForTesting(mock);
 
       expect(await TrustedTime.validateFreshness(), isTrue);
 
-      mock.simulateTampering(TamperReason.unknown);
-      expect(TrustedTime.isTrusted, isFalse);
+      mock.setTrusted(false);
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
       expect(await TrustedTime.validateFreshness(), isFalse);
     });
 
@@ -747,7 +732,7 @@ void main() {
       );
       addTearDown(TrustedTimeImpl.instance.dispose);
 
-      expect(TrustedTime.isTrusted, isFalse);
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
       await expectLater(
         TrustedTime.validateFreshness(),
         throwsA(isA<TrustedTimeFreshnessProbeException>()),
@@ -774,7 +759,7 @@ void main() {
         );
         addTearDown(TrustedTimeImpl.instance.dispose);
 
-        expect(TrustedTime.isTrusted, isTrue);
+        expect(TrustedTime.getAssessment().isTrusted, isTrue);
         await expectLater(
           TrustedTime.validateFreshness(),
           throwsA(isA<TrustedTimeFreshnessProbeException>()),
@@ -802,7 +787,7 @@ void main() {
         );
         addTearDown(TrustedTimeImpl.instance.dispose);
 
-        expect(TrustedTime.isTrusted, isTrue);
+        expect(TrustedTime.getAssessment().isTrusted, isTrue);
         expect(await TrustedTime.validateFreshness(), isTrue);
       },
     );
@@ -849,15 +834,15 @@ void main() {
         addTearDown(TrustedTimeImpl.instance.dispose);
 
         // The establish cycle built a Tier 1 (verified) anchor.
-        expect(TrustedTime.isTrusted, isTrue);
-        expect(TrustedTime.authLevel, NtsAuthLevel.verified);
+        expect(TrustedTime.getAssessment().isTrusted, isTrue);
+        expect(TrustedTime.getAssessment().authLevel, NtsAuthLevel.verified);
 
         // Downgrade both sources so the probe sample reports `none`,
         // then confirm the probe still re-validates the verified anchor.
         a.authLevel = NtsAuthLevel.none;
         b.authLevel = NtsAuthLevel.none;
         expect(await TrustedTime.validateFreshness(), isTrue);
-        expect(TrustedTime.authLevel, NtsAuthLevel.verified);
+        expect(TrustedTime.getAssessment().authLevel, NtsAuthLevel.verified);
       },
     );
 
@@ -882,7 +867,7 @@ void main() {
         ),
       );
       addTearDown(TrustedTimeImpl.instance.dispose);
-      expect(TrustedTime.isTrusted, isTrue);
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
 
       // Move the probe (10s) far outside the configured 5s uncertainty
       // window; the anchor stays at the establish-time midpoint.
@@ -943,7 +928,7 @@ void main() {
         'lifecycle observer', () async {
       await initTiered(freshBox());
       final impl = TrustedTimeImpl.instance;
-      expect(TrustedTime.isTrusted, isTrue);
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
       expect(impl.debugValidateTimerActive, isTrue);
       expect(impl.debugLifecycleObserverInstalled, isTrue);
     });
@@ -969,7 +954,7 @@ void main() {
 
         expect(impl.debugValidateCycleCount, 1);
         // The probe agreed with the anchor, so trust is intact.
-        expect(TrustedTime.isTrusted, isTrue);
+        expect(TrustedTime.getAssessment().isTrusted, isTrue);
       },
     );
 
@@ -1120,7 +1105,7 @@ void main() {
       // overlapping probes contending on shared per-source state.
       expect(impl.debugValidateCycleCount, 2);
       expect(counter.count, 1);
-      expect(TrustedTime.isTrusted, isTrue);
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
     });
   });
 
@@ -1136,8 +1121,8 @@ void main() {
     // channel because init() constructs the real AnchorStore, and the
     // current boot ID through the mocked monotonic channel. The anchor
     // is dated 2023 while the fake network sources answer 2024, so the
-    // restore-vs-resync outcome is observable through TrustedTime.now()
-    // as well as through whether any source was queried at all.
+    // restore-vs-resync outcome is observable through the assessment's
+    // time as well as through whether any source was queried at all.
     // Match the AnchorStore anchor key by stable prefix rather than the
     // exact versioned literal (currently tt_anchor_v2) so a key version
     // bump does not silently turn this into a cold start. The prefix is
@@ -1217,12 +1202,12 @@ void main() {
 
       final counter = await initWithPersistedAnchor();
 
-      expect(TrustedTime.isTrusted, isTrue);
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
       // The rejected restore fell through to _performSync: the network
       // sources were queried and the resulting anchor reflects their
       // 2024 consensus, not the 2023 anchor persisted under boot-A.
       expect(counter.count, greaterThan(0));
-      expect(TrustedTime.now().year, 2024);
+      expect(TrustedTime.getAssessment().time!.year, 2024);
     });
 
     test('matching boot ID warm-restores the persisted anchor without '
@@ -1234,9 +1219,9 @@ void main() {
 
       final counter = await initWithPersistedAnchor();
 
-      expect(TrustedTime.isTrusted, isTrue);
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
       expect(counter.count, 0);
-      expect(TrustedTime.now().year, 2023);
+      expect(TrustedTime.getAssessment().time!.year, 2023);
     });
   });
 }

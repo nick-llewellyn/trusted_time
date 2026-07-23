@@ -42,45 +42,50 @@ void main() {
       TrustedTime.overrideForTesting(mock);
     });
 
-    tearDown(() {
-      TrustedTime.resetOverride();
-      mock.dispose();
+    tearDown(TrustedTime.resetOverride);
+
+    test('getAssessment() returns exactly the mocked UTC time', () {
+      final assessment = TrustedTime.getAssessment();
+      expect(assessment.time, baseTime);
+      expect(assessment.time!.millisecondsSinceEpoch, 1704110400000);
+      expect(assessment.isTrusted, isTrue);
     });
 
-    test('Synchronous now() returns exactly the mocked UTC time', () {
-      expect(TrustedTime.now(), baseTime);
-      expect(TrustedTime.nowUnixMs(), 1704110400000);
-      expect(TrustedTime.isTrusted, isTrue);
-    });
-
-    test('advanceTime() shifts now() without changing hardware baseline', () {
+    test('advanceTime() shifts the assessed time', () {
       mock.advanceTime(const Duration(seconds: 45));
-      expect(TrustedTime.now(), baseTime.add(const Duration(seconds: 45)));
+      expect(
+        TrustedTime.getAssessment().time,
+        baseTime.add(const Duration(seconds: 45)),
+      );
     });
 
-    test(
-      'Tamper Forensics: onIntegrityLost captures reason and drift',
-      () async {
-        final drift = const Duration(minutes: 5);
-        final events = <IntegrityEvent>[];
-        final sub = TrustedTime.onIntegrityLost.listen(events.add);
+    test('Trust Loss: setTrusted(false) yields an unanchored assessment', () {
+      mock.setTrusted(false);
 
-        mock.simulateTampering(TamperReason.unknown, drift: drift);
+      final assessment = TrustedTime.getAssessment();
+      expect(assessment.isTrusted, isFalse);
+      expect(assessment.time, isNull);
+      expect(assessment.reason, TrustStatusReason.syncFailed);
+      expect(assessment.authLevel, NtsAuthLevel.none);
+      expect(assessment.confidence, ConfidenceLevel.none);
+    });
 
-        await Future.delayed(Duration.zero); // Flush stream microtasks.
-        expect(events.length, 1);
-        expect(events.first.reason, TamperReason.unknown);
-        expect(events.first.drift, drift);
-        expect(TrustedTime.isTrusted, isFalse);
+    test('Auth posture: verified anchors report synchronized, '
+        'unauthenticated anchors report degraded', () {
+      expect(TrustedTime.getAssessment().reason, TrustStatusReason.degraded);
+      expect(TrustedTime.getAssessment().isSecure, isFalse);
 
-        await sub.cancel();
-      },
-    );
+      mock.setAuthLevel(NtsAuthLevel.verified);
 
-    test('Offline Best-Effort: nowEstimated() decays confidence over 72h', () {
+      final assessment = TrustedTime.getAssessment();
+      expect(assessment.reason, TrustStatusReason.synchronized);
+      expect(assessment.isSecure, isTrue);
+    });
+
+    test('Offline Best-Effort: estimate decays confidence over 72h', () {
       mock.simulateReboot(); // Lose trust to enable estimation paths.
 
-      final estimate = TrustedTime.nowEstimated();
+      final estimate = TrustedTime.getAssessment().estimate;
       expect(estimate, isNotNull);
       expect(
         estimate!.confidence,
@@ -90,13 +95,13 @@ void main() {
 
       // Advance virtual clock by 36 hours (half of 72h).
       mock.advanceTime(const Duration(hours: 36));
-      final estimate36h = TrustedTime.nowEstimated()!;
+      final estimate36h = TrustedTime.getAssessment().estimate!;
       expect(estimate36h.confidence, closeTo(0.5, 0.01));
       expect(estimate36h.isReasonable, isTrue);
 
       // Advance past 72h.
       mock.advanceTime(const Duration(hours: 40));
-      final estimate76h = TrustedTime.nowEstimated()!;
+      final estimate76h = TrustedTime.getAssessment().estimate!;
       expect(estimate76h.confidence, 0.0);
       expect(estimate76h.isReasonable, isFalse);
     });
@@ -152,9 +157,13 @@ void main() {
 
     test('Mock Restore: restoreTrust() resumes high-integrity baseline', () {
       mock.simulateReboot();
-      expect(TrustedTime.isTrusted, isFalse);
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
+      expect(
+        TrustedTime.getAssessment().reason,
+        TrustStatusReason.rebootDetected,
+      );
       mock.restoreTrust();
-      expect(TrustedTime.isTrusted, isTrue);
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
     });
   });
 }

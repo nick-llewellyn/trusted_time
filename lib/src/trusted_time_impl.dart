@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'models.dart';
 import 'anchor_store.dart';
 import 'exceptions.dart';
-import 'integrity_event.dart';
 import 'integrity_monitor.dart';
 import 'monotonic_clock.dart';
 import 'sync_cycle.dart';
@@ -17,6 +16,7 @@ import 'infra/trusted_time_log.dart';
 import 'domain/time_sample.dart';
 import 'domain/marzullo_engine.dart';
 import 'drift_calibrator.dart';
+import 'time_assessment.dart';
 import 'trusted_time_estimate.dart';
 import 'trusted_time_mock.dart';
 
@@ -54,10 +54,6 @@ final class TrustedTimeImpl {
       // surfacing as 'Null check operator used on a null value' inside
       // _performSync's catch and silently failing the bootstrap sync.
       observer: _ProxySyncObserver(() => _observers),
-      // Route engine-originated integrity events (degradedTier) onto the
-      // same monitor stream that backs onIntegrityLost, so consumers see a
-      // tier degradation through the one integrity channel.
-      onIntegrityEvent: _monitor.report,
       cache:
           _cache, // Shared cache between impl and engine for state propagation
     );
@@ -88,7 +84,7 @@ final class TrustedTimeImpl {
       await impl._bootstrap();
     } catch (_) {
       // Release the partially-bootstrapped engine's resources (sync
-      // engine, integrity monitor, timers) before propagating.
+      // engine, timers) before propagating.
       impl.dispose();
       rethrow;
     }
@@ -109,6 +105,18 @@ final class TrustedTimeImpl {
 
   TrustAnchor? _anchor;
   bool _trusted = false;
+
+  /// The [TrustStatusReason] to report while no live anchor exists.
+  ///
+  /// Only read by [getAssessment] on the unanchored path (`!_trusted ||
+  /// _anchor == null`); anchored postures derive their reason from the
+  /// anchor itself. Transition sites: [rebootDetected] is set during
+  /// [_bootstrap] when a persisted anchor is discarded (R5) and takes
+  /// precedence over subsequent failed syncs; a successful cycle resets
+  /// the field to [TrustStatusReason.syncFailed], which is never read
+  /// while anchored but primes the correct reason for any later lost
+  /// trust (failed refresh, or the in-flight window of [forceResync]).
+  TrustStatusReason _unanchoredReason = TrustStatusReason.neverSynced;
   Timer? _refreshTimer;
   Timer? _retryTimer;
   Timer? _desktopBgTimer;
@@ -123,6 +131,25 @@ final class TrustedTimeImpl {
   WidgetsBindingObserver? _lifecycleObserver;
   Duration? _backgroundedElapsed;
   int _validateCycleCount = 0;
+
+  // Sleep/wake divergence probe (desktop analogue of the
+  // foreground-resume trigger). Desktop embedders do not reliably
+  // deliver AppLifecycleState transitions around machine suspend, so
+  // the wake-up moment — when the anchor is most likely stale — would
+  // otherwise go unprobed until the next periodic validate tick. The
+  // probe reads two monotonic timelines back-to-back: the sleep-aware
+  // nts clock (counts through suspend) and a Stopwatch (freezes).
+  // Divergence accumulated between ticks equals time spent suspended.
+  Timer? _wakeProbeTimer;
+  MonotonicReader? _wakeProbeReader;
+  Stopwatch? _wakeProbeStopwatch;
+  int _wakeProbeLastSleepAwareMicros = 0;
+  int _wakeProbeLastFrozenMicros = 0;
+
+  /// Cadence of the sleep/wake divergence probe. Cheap (two clock
+  /// reads, no I/O), so it can run far more often than the validate
+  /// tier itself; it also bounds wake-detection latency.
+  static const _wakeProbeInterval = Duration(seconds: 30);
 
   // Validate-cycle in-flight guard (ADR 0006). Held for the duration of
   // a single [_runValidateCycle] so the periodic validate timer and the
@@ -197,10 +224,8 @@ final class TrustedTimeImpl {
   late Duration _activeRefreshInterval = _config.refreshInterval;
   bool _automaticRefreshPaused = false;
 
-  /// Documented.
-  Stream<IntegrityEvent> get onIntegrityLost => _monitor.events;
-
-  /// Documented.
+  /// Whether a live trust anchor exists (assessment postures
+  /// [TrustStatusReason.synchronized] / [TrustStatusReason.degraded]).
   bool get isTrusted => _trusted;
 
   /// The currently active trust anchor.
@@ -260,13 +285,44 @@ final class TrustedTimeImpl {
     );
   }
 
-  /// Documented.
-  int nowUnixMs() => now().millisecondsSinceEpoch;
+  /// Builds the unified [TimeAssessment] snapshot for the current
+  /// instant — time, posture reason, and caveats, all evaluated at one
+  /// moment on the same monotonic timeline as [now].
+  ///
+  /// Never throws for posture reasons: an unanchored engine yields an
+  /// assessment with `time == null` and the active [TrustStatusReason]
+  /// rather than [TrustedTimeNotReadyException]. The only throwing path
+  /// is the [TrustedTimeConfig.requireSleepAwareProjection] defence-in-
+  /// depth gate shared with [now] (unreachable in practice — see [now]).
+  TimeAssessment getAssessment() {
+    final anchor = _anchor;
+    if (_trusted && anchor != null) {
+      final time = now();
+      final elapsedMs = _syncClock.elapsedSinceAnchorMs();
+      final driftFactor =
+          _driftCalibrator.calibratedFactor ?? _config.oscillatorDriftFactor;
+      final driftMs = (elapsedMs.abs() * driftFactor).round();
+      return TimeAssessment(
+        reason: anchor.authLevel == NtsAuthLevel.verified
+            ? TrustStatusReason.synchronized
+            : TrustStatusReason.degraded,
+        authLevel: anchor.authLevel,
+        confidence: anchor.confidence,
+        time: time,
+        uncertainty: Duration(milliseconds: anchor.uncertaintyMs + driftMs),
+        anchorAge: Duration(milliseconds: elapsedMs),
+      );
+    }
+    return TimeAssessment(
+      reason: _unanchoredReason,
+      authLevel: NtsAuthLevel.none,
+      confidence: ConfidenceLevel.none,
+      estimate: nowEstimated(),
+    );
+  }
 
-  /// Documented.
-  String nowIso() => now().toIso8601String();
-
-  /// Documented.
+  /// Best-effort wall-clock extrapolation backing
+  /// [TimeAssessment.estimate]. Susceptible to wall-clock manipulation.
   TrustedTimeEstimate? nowEstimated() {
     int? baseUtcMs;
     int? baseWallMs;
@@ -471,6 +527,12 @@ final class TrustedTimeImpl {
         }
         return;
       }
+      // R5: the persisted anchor was discarded because the device
+      // rebooted since it was captured. Record the reason before the
+      // fresh sync below — it must survive a failed first cycle
+      // (getAssessment keeps reporting rebootDetected, not syncFailed,
+      // until a sync succeeds).
+      _unanchoredReason = TrustStatusReason.rebootDetected;
     }
 
     await _performSync();
@@ -561,6 +623,9 @@ final class TrustedTimeImpl {
       final gapMs = uptimeNow - anchor.uptimeMs;
       _applyAnchor(anchor, initialElapsedMs: gapMs > 0 ? gapMs : 0);
       _trusted = true;
+      // A successful cycle retires any rebootDetected/neverSynced
+      // posture; from here on, losing trust means a failed cycle.
+      _unanchoredReason = TrustStatusReason.syncFailed;
       _offlineLastUtcMs = anchor.networkUtcMs;
       _offlineLastWallMs = anchor.wallMs;
       _scheduleRefresh();
@@ -572,6 +637,11 @@ final class TrustedTimeImpl {
         );
       }
       _trusted = false;
+      // rebootDetected outranks syncFailed: a failed cycle after a
+      // detected reboot keeps reporting the reboot until one succeeds.
+      if (_unanchoredReason != TrustStatusReason.rebootDetected) {
+        _unanchoredReason = TrustStatusReason.syncFailed;
+      }
       // Same transient/non-transient verdict as the background path
       // (see isTransientSyncError): only network-weather failures are
       // worth re-attempting. A non-transient error (e.g. ArgumentError
@@ -728,6 +798,7 @@ final class TrustedTimeImpl {
   void _startTieredSchedulingIfNeeded() {
     if (_config.cadenceMode != CadenceMode.tieredMobile) return;
     _scheduleValidate();
+    _startWakeProbeIfNeeded();
     final observer = _AppLifecycleObserver(
       (state) => _handleAppLifecycleState(state, _monotonicElapsed),
     );
@@ -744,6 +815,65 @@ final class TrustedTimeImpl {
           '[TrustedTime] Foreground-validate observer not installed: $e',
         );
       }
+    }
+  }
+
+  /// Arms the sleep/wake divergence probe (desktop analogue of the
+  /// foreground-resume trigger).
+  ///
+  /// Requires a sleep-aware reader: divergence is measured *between*
+  /// the sleep-aware timeline and a suspend-frozen [Stopwatch], so
+  /// without the nts bridge there is no second timeline to compare
+  /// against and the probe cannot exist. Mobile platforms keep it too —
+  /// it is redundant with the lifecycle trigger there but harmless
+  /// (two clock reads every 30s) and covers embedders whose lifecycle
+  /// events are unreliable.
+  void _startWakeProbeIfNeeded() {
+    final reader = resolveMonotonicReader();
+    if (!reader.isSleepAware) return;
+    _wakeProbeReader = reader;
+    _wakeProbeStopwatch = Stopwatch()..start();
+    _wakeProbeLastSleepAwareMicros = reader.read();
+    _wakeProbeLastFrozenMicros = 0;
+    _wakeProbeTimer = Timer.periodic(
+      _wakeProbeInterval,
+      (_) => _wakeProbeTick(),
+    );
+  }
+
+  /// One divergence measurement. If the sleep-aware timeline advanced
+  /// materially more than the frozen one since the previous tick, the
+  /// machine was suspended in between; if the suspended span crosses
+  /// [TrustedTimeConfig.foregroundValidateThreshold], run a validate
+  /// cycle — same threshold and escalation as the mobile
+  /// foreground-resume trigger.
+  void _wakeProbeTick() {
+    if (_disposed) return;
+    final reader = _wakeProbeReader;
+    final stopwatch = _wakeProbeStopwatch;
+    if (reader == null || stopwatch == null) return;
+    final sleepAwareNow = reader.read();
+    final frozenNow = stopwatch.elapsedMicroseconds;
+    final sleepAwareDelta = sleepAwareNow - _wakeProbeLastSleepAwareMicros;
+    final frozenDelta = frozenNow - _wakeProbeLastFrozenMicros;
+    _wakeProbeLastSleepAwareMicros = sleepAwareNow;
+    _wakeProbeLastFrozenMicros = frozenNow;
+    final divergence = Duration(microseconds: sleepAwareDelta - frozenDelta);
+    // Scheduling jitter produces sub-second divergence between two
+    // healthy timelines; the floor keeps a zero/negative configured
+    // threshold ("probe on every resume") from firing on every tick.
+    const noiseFloor = Duration(seconds: 2);
+    final configured = _config.foregroundValidateThreshold;
+    final threshold = configured < noiseFloor ? noiseFloor : configured;
+    if (divergence >= threshold) {
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.info,
+          '[TrustedTime] Suspend/resume detected '
+          '(~${divergence.inSeconds}s asleep); running validate probe.',
+        );
+      }
+      unawaited(_runValidateCycle());
     }
   }
 
@@ -857,6 +987,10 @@ final class TrustedTimeImpl {
   @visibleForTesting
   bool get debugLifecycleObserverInstalled => _lifecycleObserver != null;
 
+  /// Whether the sleep/wake divergence probe timer is armed.
+  @visibleForTesting
+  bool get debugWakeProbeActive => _wakeProbeTimer != null;
+
   /// Number of validate cycles attempted since construction.
   @visibleForTesting
   int get debugValidateCycleCount => _validateCycleCount;
@@ -956,6 +1090,10 @@ final class TrustedTimeImpl {
     _desktopBgTimer = null;
     _validateTimer?.cancel();
     _validateTimer = null;
+    _wakeProbeTimer?.cancel();
+    _wakeProbeTimer = null;
+    _wakeProbeReader = null;
+    _wakeProbeStopwatch = null;
     final observer = _lifecycleObserver;
     if (observer != null) {
       try {
@@ -966,7 +1104,6 @@ final class TrustedTimeImpl {
       _lifecycleObserver = null;
     }
     _syncEngine.dispose();
-    _monitor.dispose();
     _syncClock.dispose();
   }
 }

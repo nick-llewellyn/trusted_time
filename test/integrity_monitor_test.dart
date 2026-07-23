@@ -28,8 +28,6 @@ void main() {
       monitor = IntegrityMonitor(clock: clock);
     });
 
-    tearDown(() => monitor.dispose());
-
     test(
       'checkRebootOnWarmStart detects reboot when uptime < anchor',
       () async {
@@ -142,15 +140,6 @@ void main() {
       // Caller can compute (currentUptimeMs - anchor.uptimeMs) directly
       // — no need for a second monitor.uptimeMs() round-trip.
       expect(result.currentUptimeMs - anchor.uptimeMs, 60000);
-    });
-
-    test('events stream is a broadcast stream', () {
-      expect(monitor.events.isBroadcast, isTrue);
-    });
-
-    test('dispose can be called multiple times safely', () {
-      monitor.dispose();
-      expect(() => monitor.dispose(), returnsNormally);
     });
   });
 }

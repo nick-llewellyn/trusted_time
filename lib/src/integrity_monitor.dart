@@ -1,32 +1,21 @@
-import 'dart:async';
-import 'integrity_event.dart';
 import 'models.dart';
 import 'monotonic_clock.dart';
 
-/// Detects reboots across process restarts and relays engine-originated
-/// integrity events.
+/// Detects reboots across process restarts.
 ///
 /// Time projection is monotonic-only, so wall-clock manipulation cannot
 /// affect `now()` and is not monitored. The one temporal event that does
 /// invalidate a monotonic anchor is a reboot — the monotonic counter
 /// resets — which [checkRebootOnWarmStart] detects via boot-session
-/// identity plus an uptime-regression tripwire.
+/// identity plus an uptime-regression tripwire. The verdict is expressed
+/// through assessment state (`TrustStatusReason.rebootDetected`), not
+/// events: a reboot always ends the process, so it is only ever detected
+/// during initialization.
 final class IntegrityMonitor {
   /// Creates a monitor that samples uptime and boot identity via [clock].
   IntegrityMonitor({required MonotonicClock clock}) : _clock = clock;
 
   final MonotonicClock _clock;
-  final _controller = StreamController<IntegrityEvent>.broadcast();
-
-  /// Reactive stream of detected integrity violations.
-  Stream<IntegrityEvent> get events => _controller.stream;
-
-  /// Publishes an externally-detected [event] on the [events] stream.
-  ///
-  /// This entry point lets the engine surface integrity events it detects
-  /// itself — currently [TamperReason.degradedTier], raised when a sync
-  /// cycle cannot establish a Tier 1 truth box. No-op once disposed.
-  void report(IntegrityEvent event) => _emit(event);
 
   /// Verification check for reboots during warm-start (cache restoration).
   ///
@@ -65,18 +54,5 @@ final class IntegrityMonitor {
       rebooted: uptimeRegressed || identityMismatch,
       currentUptimeMs: currentUptime,
     );
-  }
-
-  void _emit(IntegrityEvent event) {
-    try {
-      if (!_controller.isClosed) _controller.add(event);
-    } catch (_) {
-      // Stream may have closed between check and add in rare race conditions.
-    }
-  }
-
-  /// Closes the [events] stream. Idempotent.
-  void dispose() {
-    _controller.close();
   }
 }
