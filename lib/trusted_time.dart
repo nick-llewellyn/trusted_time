@@ -206,17 +206,19 @@ abstract final class TrustedTime {
   /// than caching one result:
   ///
   /// ```dart
-  /// final assessment = TrustedTime.getAssessment();
-  /// switch (assessment.reason) {
-  ///   case TrustStatusReason.synchronized:
-  ///     submitOrder(timestamp: assessment.time!);
-  ///   case TrustStatusReason.degraded:
-  ///     // Time is usable, cryptographic guarantees are not.
-  ///     submitOrder(timestamp: assessment.time!, flagged: true);
-  ///   case TrustStatusReason.neverSynced:
-  ///   case TrustStatusReason.rebootDetected:
-  ///   case TrustStatusReason.syncFailed:
-  ///     await TrustedTime.forceResync();
+  /// Future<void> placeOrder(Order order) async {
+  ///   final assessment = TrustedTime.getAssessment();
+  ///   switch (assessment.reason) {
+  ///     case TrustStatusReason.synchronized:
+  ///       submitOrder(order, timestamp: assessment.time!);
+  ///     case TrustStatusReason.degraded:
+  ///       // Time is usable, cryptographic guarantees are not.
+  ///       submitOrder(order, timestamp: assessment.time!, flagged: true);
+  ///     case TrustStatusReason.neverSynced:
+  ///     case TrustStatusReason.rebootDetected:
+  ///     case TrustStatusReason.syncFailed:
+  ///       await TrustedTime.forceResync();
+  ///   }
   /// }
   /// ```
   ///

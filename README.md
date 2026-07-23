@@ -118,21 +118,23 @@ await TrustedTime.initialize(
 All retrieval goes through one synchronous call — `getAssessment()` — which returns the time, the reason it is (or is not) trustworthy, and every caveat in a single immutable snapshot:
 
 ```dart
-final assessment = TrustedTime.getAssessment();
+Future<void> stampEvent(Event event) async {
+  final assessment = TrustedTime.getAssessment();
 
-switch (assessment.reason) {
-  case TrustStatusReason.synchronized:
-    // Fully verified: NTS-authenticated consensus.
-    final now = assessment.time!;
-  case TrustStatusReason.degraded:
-    // Usable time, but no cryptographic guarantee (NTP-only quorum).
-    final now = assessment.time!;
-  case TrustStatusReason.neverSynced:
-  case TrustStatusReason.rebootDetected:
-  case TrustStatusReason.syncFailed:
-    // No trusted time. assessment.time is null; assessment.estimate
-    // carries a best-effort extrapolation when one exists.
-    await TrustedTime.forceResync();
+  switch (assessment.reason) {
+    case TrustStatusReason.synchronized:
+      // Fully verified: NTS-authenticated consensus.
+      event.timestamp = assessment.time!;
+    case TrustStatusReason.degraded:
+      // Usable time, but no cryptographic guarantee (NTP-only quorum).
+      event.timestamp = assessment.time!;
+    case TrustStatusReason.neverSynced:
+    case TrustStatusReason.rebootDetected:
+    case TrustStatusReason.syncFailed:
+      // No trusted time. assessment.time is null; assessment.estimate
+      // carries a best-effort extrapolation when one exists.
+      await TrustedTime.forceResync();
+  }
 }
 
 // Local time in a specific IANA timezone (immune to device timezone manipulation)

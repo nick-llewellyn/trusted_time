@@ -84,23 +84,21 @@ void main() {
       mock.setAuthLevel(NtsAuthLevel.none);
 
       TrustedTime.overrideForTesting(mock);
+      addTearDown(TrustedTime.resetOverride);
 
       final assessment = TrustedTime.getAssessment();
       expect(assessment.isSecure, isFalse);
       expect(assessment.reason, TrustStatusReason.degraded);
       expect(assessment.time, isNotNull);
-
-      TrustedTime.resetOverride();
     });
 
     test('isSecure is false for none authLevel', () {
       final mock = TrustedTimeMock(initial: DateTime.now());
       mock.setAuthLevel(NtsAuthLevel.none);
       TrustedTime.overrideForTesting(mock);
+      addTearDown(TrustedTime.resetOverride);
 
       expect(TrustedTime.getAssessment().isSecure, isFalse);
-
-      TrustedTime.resetOverride();
     });
   });
 
