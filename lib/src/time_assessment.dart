@@ -55,6 +55,14 @@ enum TrustStatusReason {
 final class TimeAssessment {
   /// Creates an assessment snapshot. Library-internal; consumers obtain
   /// instances from `TrustedTime.getAssessment()`.
+  ///
+  /// Asserts enforce the documented invariants so an internally
+  /// inconsistent snapshot cannot be constructed in checked mode:
+  /// anchored postures carry [time], [uncertainty] and [anchorAge] but
+  /// never [estimate]; unanchored postures carry none of those and
+  /// report [NtsAuthLevel.none] / [ConfidenceLevel.none]; and
+  /// [authLevel] is verified exactly when [reason] is
+  /// [TrustStatusReason.synchronized].
   const TimeAssessment({
     required this.reason,
     required this.authLevel,
@@ -69,6 +77,30 @@ final class TimeAssessment {
                  reason == TrustStatusReason.degraded),
          'time must be present exactly when the reason is an anchored '
          'posture (synchronized or degraded)',
+       ),
+       assert(
+         (authLevel == NtsAuthLevel.verified) ==
+             (reason == TrustStatusReason.synchronized),
+         'authLevel must be verified exactly when the reason is '
+         'synchronized: a verified anchor is never reported as degraded, '
+         'and degraded/unanchored postures are never verified',
+       ),
+       assert(
+         (uncertainty != null) == (time != null),
+         'uncertainty must be present exactly when time is',
+       ),
+       assert(
+         (anchorAge != null) == (time != null),
+         'anchorAge must be present exactly when time is',
+       ),
+       assert(
+         estimate == null || time == null,
+         'estimate is a fallback for unanchored postures only; it must '
+         'be null whenever time is available',
+       ),
+       assert(
+         time != null || confidence == ConfidenceLevel.none,
+         'unanchored postures must report ConfidenceLevel.none',
        );
 
   /// The trusted current UTC time, projected from the live anchor on

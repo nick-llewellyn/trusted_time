@@ -265,10 +265,20 @@ final class TrustedTimeImpl {
     if (!_trusted || _anchor == null) {
       throw const TrustedTimeNotReadyException();
     }
-    // The init-time gate makes this unreachable in practice; it stays
-    // as defence in depth so a projection can never silently ride a
-    // suspend-frozen timeline under the hard requirement — even if a
-    // future re-anchor path resolves a different reader than init saw.
+    _enforceSleepAwareProjection();
+    return DateTime.fromMillisecondsSinceEpoch(
+      _anchor!.networkUtcMs + _syncClock.elapsedSinceAnchorMs(),
+      isUtc: true,
+    );
+  }
+
+  /// Defence-in-depth gate shared by [now] and [getAssessment].
+  ///
+  /// The init-time gate makes this unreachable in practice; it stays
+  /// so a projection can never silently ride a suspend-frozen timeline
+  /// under the hard requirement — even if a future re-anchor path
+  /// resolves a different reader than init saw.
+  void _enforceSleepAwareProjection() {
     if (_config.requireSleepAwareProjection && !_syncClock.isSleepAware) {
       throw const TrustedTimeSecurityException(
         'requireSleepAwareProjection is set but the active projection '
@@ -279,10 +289,6 @@ final class TrustedTimeImpl {
         'requirement.',
       );
     }
-    return DateTime.fromMillisecondsSinceEpoch(
-      _anchor!.networkUtcMs + _syncClock.elapsedSinceAnchorMs(),
-      isUtc: true,
-    );
   }
 
   /// Builds the unified [TimeAssessment] snapshot for the current
@@ -297,8 +303,15 @@ final class TrustedTimeImpl {
   TimeAssessment getAssessment() {
     final anchor = _anchor;
     if (_trusted && anchor != null) {
-      final time = now();
+      _enforceSleepAwareProjection();
+      // One monotonic read: time, anchorAge, and uncertainty all derive
+      // from the same elapsed value, so the snapshot truly describes a
+      // single instant.
       final elapsedMs = _syncClock.elapsedSinceAnchorMs();
+      final time = DateTime.fromMillisecondsSinceEpoch(
+        anchor.networkUtcMs + elapsedMs,
+        isUtc: true,
+      );
       final driftFactor =
           _driftCalibrator.calibratedFactor ?? _config.oscillatorDriftFactor;
       final driftMs = (elapsedMs.abs() * driftFactor).round();
