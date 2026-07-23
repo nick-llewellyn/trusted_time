@@ -32,15 +32,6 @@ void main() {
         return null;
       });
 
-  // Mock integrity events channel.
-  const integrityChannel = MethodChannel(
-    'trusted_time/integrity',
-  ); // Note: EventChannel uses same underlying messenger.
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(integrityChannel, (call) async {
-        return null;
-      });
-
   group('TrustedTime V2 Senior Rewrite Test Suite', () {
     late DateTime baseTime;
     late TrustedTimeMock mock;
@@ -74,11 +65,11 @@ void main() {
         final events = <IntegrityEvent>[];
         final sub = TrustedTime.onIntegrityLost.listen(events.add);
 
-        mock.simulateTampering(TamperReason.systemClockJumped, drift: drift);
+        mock.simulateTampering(TamperReason.unknown, drift: drift);
 
         await Future.delayed(Duration.zero); // Flush stream microtasks.
         expect(events.length, 1);
-        expect(events.first.reason, TamperReason.systemClockJumped);
+        expect(events.first.reason, TamperReason.unknown);
         expect(events.first.drift, drift);
         expect(TrustedTime.isTrusted, isFalse);
 

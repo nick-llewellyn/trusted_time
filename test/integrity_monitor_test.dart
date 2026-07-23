@@ -1,6 +1,3 @@
-import 'dart:async';
-
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/integrity_monitor.dart';
 import 'package:trusted_time/src/models.dart';
@@ -19,36 +16,8 @@ class FakeMonotonicClock implements MonotonicClock {
   }
 }
 
-/// A clock whose [uptimeMs] blocks on [gate] (when set) so a test can
-/// suspend an in-flight drift check and tear the monitor down mid-await.
-class GatedMonotonicClock implements MonotonicClock {
-  int value = 1000;
-  int uptimeCalls = 0;
-  Completer<void>? gate;
-
-  @override
-  Future<int> uptimeMs() async {
-    uptimeCalls++;
-    final pending = gate;
-    if (pending != null) await pending.future;
-    return value;
-  }
-
-  @override
-  Future<String?> getBootId() async => 'boot-A';
-}
-
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-
-  // EventChannel uses MethodChannel under the hood for listen/cancel.
-  // In test mode we mock the underlying MethodChannel so that calling
-  // attach() (which calls receiveBroadcastStream()) doesn't throw
-  // MissingPluginException. This does NOT simulate native event delivery
-  // — it only allows the Dart-side logic to be tested in isolation.
-  const integrityChannel = MethodChannel('trusted_time/integrity');
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(integrityChannel, (call) async => null);
 
   group('IntegrityMonitor', () {
     late FakeMonotonicClock clock;
@@ -179,79 +148,9 @@ void main() {
       expect(monitor.events.isBroadcast, isTrue);
     });
 
-    test('attach establishes monitoring without throwing', () {
-      final anchor = TrustAnchor(
-        networkUtcMs: DateTime.now().millisecondsSinceEpoch,
-        uptimeMs: 1000,
-        wallMs: DateTime.now().millisecondsSinceEpoch,
-        uncertaintyMs: 10,
-      );
-      expect(() => monitor.attach(anchor), returnsNormally);
-    });
-
-    test('multiple attaches cancel previous subscription', () {
-      final anchor = TrustAnchor(
-        networkUtcMs: DateTime.now().millisecondsSinceEpoch,
-        uptimeMs: 1000,
-        wallMs: DateTime.now().millisecondsSinceEpoch,
-        uncertaintyMs: 10,
-      );
-      expect(() {
-        monitor.attach(anchor);
-        monitor.attach(anchor);
-      }, returnsNormally);
-    });
-
     test('dispose can be called multiple times safely', () {
       monitor.dispose();
       expect(() => monitor.dispose(), returnsNormally);
-    });
-
-    test('a drift check resolving after dispose does not resurrect the '
-        'timer (dispose-during-await race)', () async {
-      final gate = Completer<void>();
-      final gatedClock = GatedMonotonicClock()..gate = gate;
-      final racing = IntegrityMonitor(clock: gatedClock);
-      // Resilient to an early failure before the explicit dispose() below;
-      // dispose() is idempotent, so the duplicate teardown is harmless and
-      // it prevents leaking a live drift timer into later tests.
-      addTearDown(racing.dispose);
-      final anchor = TrustAnchor(
-        networkUtcMs: DateTime.now().millisecondsSinceEpoch,
-        uptimeMs: 1000,
-        wallMs: DateTime.now().millisecondsSinceEpoch,
-        uncertaintyMs: 10,
-      );
-      racing.attach(anchor);
-      expect(racing.debugDriftTimerActive, isTrue);
-
-      // Start a cycle; it suspends on the gated platform-clock read.
-      final cycle = racing.debugRunAdaptiveDriftCheck();
-      // Tear down while that await is in flight.
-      racing.dispose();
-      expect(racing.debugDriftTimerActive, isFalse);
-
-      // Let the suspended cycle resume now that the monitor is disposed.
-      gate.complete();
-      await cycle;
-
-      // The disposed monitor must not have armed a fresh drift timer.
-      expect(racing.debugDriftTimerActive, isFalse);
-    });
-
-    test('attach after dispose is a no-op (no surveillance resurrection)', () {
-      monitor.dispose();
-      final anchor = TrustAnchor(
-        networkUtcMs: DateTime.now().millisecondsSinceEpoch,
-        uptimeMs: 1000,
-        wallMs: DateTime.now().millisecondsSinceEpoch,
-        uncertaintyMs: 10,
-      );
-      // attach() must short-circuit on a disposed monitor: no native
-      // subscription is opened and no drift timer is armed, so nothing leaks
-      // past the (idempotent) dispose() above.
-      monitor.attach(anchor);
-      expect(monitor.debugDriftTimerActive, isFalse);
     });
   });
 }

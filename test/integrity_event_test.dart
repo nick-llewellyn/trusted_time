@@ -6,12 +6,12 @@ void main() {
   group('IntegrityEvent', () {
     test('toString includes reason and drift', () {
       final event = IntegrityEvent(
-        reason: TamperReason.systemClockJumped,
+        reason: TamperReason.deviceRebooted,
         detectedAt: DateTime.utc(2024, 1, 1),
         drift: const Duration(minutes: 5),
       );
       final str = event.toString();
-      expect(str, contains('systemClockJumped'));
+      expect(str, contains('deviceRebooted'));
       expect(str, contains('0:05:00'));
     });
 
@@ -28,8 +28,6 @@ void main() {
       expect(
         TamperReason.values,
         containsAll([
-          TamperReason.systemClockJumped,
-          TamperReason.timezoneChanged,
           TamperReason.deviceRebooted,
           TamperReason.degradedTier,
           TamperReason.forcedNtpSync,

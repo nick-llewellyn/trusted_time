@@ -73,13 +73,15 @@ final class TrustedTimeMock {
     _rebootTime = null;
   }
 
-  /// Simulates a device reboot, invalidating trust and emitting an event.
+  /// Simulates a device reboot, invalidating trust.
+  ///
+  /// Mirrors production semantics: a reboot is expressed through state
+  /// ([isTrusted] becomes `false`), not as an [onIntegrityLost] event —
+  /// in production a reboot ends the process and is only detected during
+  /// `initialize()`, before any listener could subscribe.
   void simulateReboot() {
     _trusted = false;
     _rebootTime = _now;
-    _emit(
-      IntegrityEvent(reason: TamperReason.deviceRebooted, detectedAt: _now),
-    );
   }
 
   /// Simulates temporal tampering, emitting an integrity event with the given [reason] and optional [drift].

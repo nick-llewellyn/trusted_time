@@ -9,7 +9,6 @@ import io.flutter.FlutterInjector
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.dart.DartExecutor
 import io.flutter.embedding.engine.plugins.FlutterPlugin
-import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.FlutterCallbackInformation
@@ -26,7 +25,6 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
     private lateinit var methodChannel: MethodChannel
     private lateinit var backgroundChannel: MethodChannel
-    private lateinit var integrityChannel: EventChannel
     private lateinit var context: Context
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -37,13 +35,6 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
 
         backgroundChannel = MethodChannel(binding.binaryMessenger, "trusted_time/background")
         backgroundChannel.setMethodCallHandler(this)
-
-        integrityChannel = EventChannel(binding.binaryMessenger, "trusted_time/integrity")
-        integrityChannel.setStreamHandler(object : EventChannel.StreamHandler {
-            override fun onListen(args: Any?, sink: EventChannel.EventSink) =
-                IntegrityWatcher.attach(context, sink)
-            override fun onCancel(args: Any?) = IntegrityWatcher.detach(context)
-        })
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -140,7 +131,6 @@ class TrustedTimePlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         methodChannel.setMethodCallHandler(null)
         backgroundChannel.setMethodCallHandler(null)
-        IntegrityWatcher.detach(context)
     }
 
     companion object {

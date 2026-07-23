@@ -21,7 +21,7 @@ TrustedTime is designed to provide high-integrity time synchronization in advers
 
 ### 1. Local Tampering (System Clock Manipulation)
 *   **Defense**: The engine anchors network-verified time to the device's hardware monotonic clock. Once an anchor is established, the output of `TrustedTime.now()` is immune to changes in the system wall clock.
-*   **Integrity Safety**: An adaptive monitor detects Monotonic-to-Wall drift and triggers an immediate state purge and resync upon anomaly detection.
+*   **Integrity Safety**: Because projection is monotonic-only, wall-clock manipulation has no effect on the output and requires no monitoring. The one temporal event that invalidates an anchor — a reboot — is detected on warm start via boot-session identity (`bootId`) plus an uptime-regression tripwire, failing closed to a full network resync.
 
 ### 2. Network-Level Spoofing (MITM)
 *   **Defense**: 

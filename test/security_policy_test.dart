@@ -58,7 +58,6 @@ void main() {
   );
   const monotonicChannel = MethodChannel('trusted_time/monotonic');
   const backgroundChannel = MethodChannel('trusted_time/background');
-  const integrityChannel = MethodChannel('trusted_time/integrity');
 
   setUpAll(() {
     final messenger =
@@ -69,7 +68,6 @@ void main() {
       return null;
     });
     messenger.setMockMethodCallHandler(backgroundChannel, (call) async => null);
-    messenger.setMockMethodCallHandler(integrityChannel, (call) async => null);
   });
 
   tearDownAll(() {
@@ -78,7 +76,6 @@ void main() {
     messenger.setMockMethodCallHandler(storageChannel, null);
     messenger.setMockMethodCallHandler(monotonicChannel, null);
     messenger.setMockMethodCallHandler(backgroundChannel, null);
-    messenger.setMockMethodCallHandler(integrityChannel, null);
   });
 
   group('Security Policy Enforcement (CRITICAL-4, 5)', () {
