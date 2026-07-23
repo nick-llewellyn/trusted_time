@@ -10,9 +10,9 @@ Related: [`SECURITY.md`](../../SECURITY.md),
 ## Purpose
 
 This document describes the end-to-end trust chain by which a time value
-travels from a network time source to a `TrustedTime.now()` call, the
-defenses at each stage, and — just as importantly — the attacks the
-library does **not** defend against and why. It complements the
+travels from a network time source to a `TrustedTime.getAssessment()`
+call, the defenses at each stage, and — just as importantly — the attacks
+the library does **not** defend against and why. It complements the
 [Secure Time Contract](../specification/secure-time-contract.md), which
 specifies what `NtsAuthLevel.verified` means normatively; this document
 covers the wider system, including anchor persistence, the background-sync
@@ -120,9 +120,9 @@ wrong or malicious:
 - **MAD outlier filtering** and a hard `maxAllowedUncertaintyMs` cap
   reject imprecise or interval-bloating samples before reduction.
 - **Fail closed.** If the Tier 1 quorum cannot form, the cycle is marked
-  degraded (`TamperReason.degradedTier`), the anchor's auth level is
-  pinned to `none`, and `getTime(requireSecure: true)` throws rather
-  than silently downgrading.
+  degraded, the anchor's auth level is pinned to `none`, and every
+  assessment reports `TrustStatusReason.degraded` with
+  `isSecure == false` rather than silently presenting as verified.
 
 ### Stage 3–4 — Anchor at rest and the background hand-off
 
@@ -250,12 +250,12 @@ who can forge the boot ID itself, which requires kernel-level control
 
 NTS-KE deployment is concentrated in EU/NA (ADR 0007). A device in
 APAC/Africa/ME may be structurally unable to form a Tier 1 quorum. The
-library fails closed — degraded cycles are labelled, `requireSecure`
-throws — but "fails closed" means *unavailability*, and an attacker who
-can block TCP/4460 selectively can force any device into the degraded
-tier (a downgrade-by-denial attack). Consumers must decide per use case
-whether degraded-tier time is acceptable; the library will not silently
-substitute it where `verified` was requested.
+library fails closed — degraded cycles are labelled, assessments read
+`isSecure == false` — but "fails closed" means *unavailability of the
+verified tier*, and an attacker who can block TCP/4460 selectively can
+force any device into the degraded tier (a downgrade-by-denial attack).
+Consumers must decide per use case whether degraded-tier time is
+acceptable; the library will never present it as `verified`.
 
 ### R4 — Root / compromised OS (T4)
 
@@ -316,14 +316,14 @@ library and belongs to the consuming application's backend design.
   device-local time cannot be your enforcement point. Pair the library
   with remote attestation and perform security-critical time checks
   server-side; use the library's output for UX and offline behaviour.
-- **Use `requireSecure: true`** for any decision where accepting
-  unauthenticated time is worse than receiving an error, and handle
-  `TrustedTimeSecurityException` explicitly.
-- **Subscribe to `onIntegrityLost`** and treat `degradedTier` as a
-  signal to pause time-sensitive operations until a fresh `verified`
-  anchor lands. Reboots are not delivered on the stream — check
-  `isTrusted` after `initialize()` (a reboot leaves it `false` until
-  resync succeeds).
+- **Gate on `TimeAssessment.isSecure`** for any decision where
+  accepting unauthenticated time is worse than rejecting the
+  operation, and handle the not-secure branch explicitly.
+- **Check `TimeAssessment.reason` at every meaningful boundary** and
+  treat `degraded` as a signal to pause time-sensitive operations
+  until a fresh `verified` anchor lands. A reboot surfaces as
+  `rebootDetected` with `time == null` after `initialize()` until
+  resync succeeds.
 - **Do not exempt the anchor from backup exclusion decisions.** Until
   R1/R2 mitigations land, excluding the app's secure-storage data from
   cloud/device backups removes the backup-forgery surface entirely.

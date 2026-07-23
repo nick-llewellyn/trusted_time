@@ -115,74 +115,72 @@ await TrustedTime.initialize(
 
 ### Get the current time
 
+All retrieval goes through one synchronous call — `getAssessment()` — which returns the time, the reason it is (or is not) trustworthy, and every caveat in a single immutable snapshot:
+
 ```dart
-// Synchronous — no I/O, typically completes in under 50µs
-final now = TrustedTime.now();
+final assessment = TrustedTime.getAssessment();
 
-// Unix milliseconds — avoids DateTime allocation
-final ms = TrustedTime.nowUnixMs();
-
-// ISO-8601 string
-final iso = TrustedTime.nowIso();
+switch (assessment.reason) {
+  case TrustStatusReason.synchronized:
+    // Fully verified: NTS-authenticated consensus.
+    final now = assessment.time!;
+  case TrustStatusReason.degraded:
+    // Usable time, but no cryptographic guarantee (NTP-only quorum).
+    final now = assessment.time!;
+  case TrustStatusReason.neverSynced:
+  case TrustStatusReason.rebootDetected:
+  case TrustStatusReason.syncFailed:
+    // No trusted time. assessment.time is null; assessment.estimate
+    // carries a best-effort extrapolation when one exists.
+    await TrustedTime.forceResync();
+}
 
 // Local time in a specific IANA timezone (immune to device timezone manipulation)
 final tokyo = TrustedTime.trustedLocalTimeIn('Asia/Tokyo');
 ```
 
-`now()` throws `TrustedTimeNotReadyException` if called before the engine has established its first anchor. Check `TrustedTime.isTrusted` before calling if you need to handle the unready state.
+`getAssessment()` never throws for posture reasons: an unanchored engine yields `time == null` plus the explanatory `reason` instead of an exception. It is a pure arithmetic projection (no I/O, typically under 50µs), so call it at every meaningful boundary — after `initialize()`, on app resume, before a high-value operation — rather than caching one result.
 
-### Check trust status
+### Inspect the caveats
 
 ```dart
-if (TrustedTime.isTrusted) {
-  final now = TrustedTime.now();
-} else {
-  // Still starting up, or sync failed
-  final estimate = TrustedTime.nowEstimated();
-}
+final a = TrustedTime.getAssessment();
 
-// Qualitative confidence grade
-final grade = TrustedTime.confidence; // ConfidenceLevel.low / medium / high
-
-// Decaying freshness score (1.0 = just synced, approaches 0.0 over time)
-final score = TrustedTime.confidenceScore;
-if (score < 0.5) {
-  await TrustedTime.forceResync();
-}
+a.isTrusted;   // time != null
+a.isSecure;    // authLevel == NtsAuthLevel.verified
+a.confidence;  // ConfidenceLevel.none / low / medium / high
+a.uncertainty; // ± error bound (consensus interval + modeled drift)
+a.anchorAge;   // elapsed monotonic time since the anchor was minted
 ```
 
 ### Enforce security requirements
 
+Strictness is a caller-side decision on the assessment — there is no throwing "secure getter":
+
 ```dart
+final a = TrustedTime.getAssessment();
+
 // Require NTS-authenticated time for high-value operations
-try {
-  final secureNow = TrustedTime.getTime(requireSecure: true);
-  // secureNow is backed by NTS-authenticated consensus
-} on TrustedTimeSecurityException catch (e) {
-  // NTS unavailable — fall back to consensus-only time or block the operation
+if (a.isSecure) {
+  submit(a.time!); // backed by NTS-authenticated consensus
+} else {
+  // Degraded or unanchored — block the operation or flag it
 }
 
 // Require a minimum confidence level
-try {
-  final now = TrustedTime.getTime(minConfidence: ConfidenceLevel.high);
-} on TrustedTimeSecurityException catch (e) {
-  // Confidence too low
+if (a.confidence.index >= ConfidenceLevel.high.index) {
+  submit(a.time!);
 }
 ```
 
-### Listen for integrity events
+### Trust posture changes
 
-Because time projection is anchored to the monotonic clock, changing the system wall clock has no effect on `TrustedTime.now()` — no monitoring is needed for that. The stream reports tier degradation:
+Because time projection is anchored to the monotonic clock, changing the system wall clock has no effect on projected time — no monitoring is needed for that. The two posture degradations are both expressed through assessment state:
 
-```dart
-TrustedTime.onIntegrityLost.listen((event) {
-  if (event.reason == TamperReason.degradedTier) {
-    // Sync cycle could not form an authenticated (Tier 1) quorum
-  }
-});
-```
+- **Tier degradation** — a sync cycle that cannot form an authenticated (Tier 1) quorum mints a best-effort anchor; assessments report `TrustStatusReason.degraded` with `isSecure == false`.
+- **Reboot** — a reboot always ends the process, so it is detected during `initialize()`: the stale anchor is discarded and assessments report `TrustStatusReason.rebootDetected` with `time == null` until a fresh network sync succeeds.
 
-Reboots are not delivered on this stream. A reboot always ends the process, so it is detected during `initialize()` and expressed through state: the stale anchor is discarded, `isTrusted` stays `false`, and `now()` throws `TrustedTimeNotReadyException` until a fresh network sync succeeds. Check `TrustedTime.isTrusted` after `initialize()` (and on app resume) rather than waiting for an event.
+Check `getAssessment()` after `initialize()` (and on app resume) rather than waiting for an event.
 
 ### Enable background sync
 
@@ -235,8 +233,9 @@ await TrustedTime.initialize(
 );
 
 // Check whether the current anchor is NTS-authenticated
-print(TrustedTime.isSecure);     // true / false
-print(TrustedTime.authLevel);    // NtsAuthLevel.verified / none
+final a = TrustedTime.getAssessment();
+print(a.isSecure);   // true / false
+print(a.authLevel);  // NtsAuthLevel.verified / none
 ```
 
 > **NTS implementation note:** NTS uses [`package:nts`](https://pub.dev/packages/nts), a Rust-backed RFC 8915 client (TLS 1.3 with RFC 5705 keying-material exporters and AES-SIV-CMAC-256 AEAD), so authenticated samples are fully cryptographically verified — not advisory. A successful handshake is recorded as `NtsAuthLevel.verified` only when the chain was anchored by the library-controlled trust store (bundled `webpki-roots` or caller-supplied custom roots); platform-mediated paths, which may chain through a corporate-injected or MDM-installed CA, are recorded as `NtsAuthLevel.none`. See [ADR 0007](doc/adr/0007-hybrid-trust-model.md) and `doc/design/tiered-trust-implementation.md` for the full rationale.
@@ -287,7 +286,7 @@ void main() {
   });
 
   test('uses trusted time for timestamp', () {
-    final ts = TrustedTime.now();
+    final ts = TrustedTime.getAssessment().time!;
     expect(ts.year, 2026);
   });
 }
@@ -341,7 +340,7 @@ When `initialize()` is called:
 2. If the anchor is valid (device has not rebooted since it was written), time is available immediately — no network round-trip needed.
 3. A background sync begins: NTP and NTS sources are queried in parallel. As samples arrive they are fed into Marzullo's algorithm. Once a stable, group-diverse quorum is reached, a new anchor is written.
 
-After initialization, `TrustedTime.now()` is a pure arithmetic operation it adds the elapsed monotonic time since the anchor was captured to the anchor's UTC value. There is no I/O and no platform channel call per invocation.
+After initialization, `TrustedTime.getAssessment()` is a pure arithmetic operation: it adds the elapsed monotonic time since the anchor was captured to the anchor's UTC value. There is no I/O and no platform channel call per invocation.
 
 Because projection depends only on the anchor and the monotonic clock, wall-clock changes made while the app is running (or stopped) cannot move trusted time — no runtime clock surveillance is required. The one event that invalidates an anchor is a reboot, which resets the monotonic counter; it is detected at initialization by comparing the anchor's recorded boot-session identifier against the current one (step 2 above).
 

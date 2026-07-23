@@ -4,9 +4,39 @@
 
 ### Breaking Changes
 
+- **Unified the public retrieval surface into a single
+  `TrustedTime.getAssessment()` call returning a `TimeAssessment`
+  snapshot.** The fragmented getters — `now()`, `nowUnixMs()`,
+  `nowIso()`, `getTime({requireSecure, minConfidence})`, `isTrusted`,
+  `isSecure`, `authLevel`, `confidence`, `confidenceScore`,
+  `nowEstimated()` — are removed. `TimeAssessment` carries the time
+  and every caveat in one immutable value: `time` (`DateTime?`,
+  non-null iff trusted), `reason` (`TrustStatusReason.synchronized` /
+  `degraded` / `neverSynced` / `rebootDetected` / `syncFailed`),
+  `authLevel`, `confidence` (now including `ConfidenceLevel.none`),
+  `uncertainty`, `anchorAge`, `estimate`, plus derived `isTrusted`
+  and `isSecure`. Posture is never an exception: an unanchored engine
+  yields `time == null` with an explanatory `reason` instead of
+  `TrustedTimeNotReadyException`, and strictness
+  (`requireSecure` / `minConfidence`) becomes a caller-side gate on
+  `isSecure` / `confidence` instead of a
+  `TrustedTimeSecurityException` throw. The `onIntegrityLost` stream,
+  `IntegrityEvent`, and `TamperReason` are removed with it: tier
+  degradation is reported as `TrustStatusReason.degraded` on every
+  assessment (plus an engine log warning), and reboot as
+  `rebootDetected` — the pull model replaces the push stream.
+  Migration: replace each removed getter with the corresponding
+  `TimeAssessment` field, replace `getTime(requireSecure: true)` with
+  an `isSecure` check, and replace `onIntegrityLost` listeners with
+  `reason` checks at meaningful boundaries (after `initialize()`, on
+  resume, before high-value operations). `TrustedTimeMock` loses
+  `simulateTampering()` / `dispose()` and gains `setConfidence()`;
+  `trustedLocalTimeIn()` and the exception types it throws are
+  unchanged.
+
 - **Removed the wall-clock drift monitor and native clock-change
   hooks.** Time projection is monotonic-only, so wall-clock
-  manipulation cannot affect `TrustedTime.now()`; monitoring it added
+  manipulation cannot affect projected time; monitoring it added
   battery/complexity cost without a security benefit. Removed:
   `TamperReason.systemClockJumped`, `TamperReason.timezoneChanged`,
   the Dart-side adaptive drift-check loop, and the
@@ -14,11 +44,11 @@
   implementations (Android `IntegrityWatcher` broadcast receiver,
   iOS/macOS `NSSystemClockDidChange` observers, Windows
   `WM_TIMECHANGE` subclassing, Linux `timerfd` cancel-on-set watcher).
-  `onIntegrityLost` still emits `degradedTier`; reboots (warm-start
-  boot-ID check) are expressed through state — `isTrusted` stays
-  `false` and `now()` throws until a fresh sync — rather than as a
-  stream event. Migration: delete `switch` cases on the two removed
-  enum members; reboot and degraded-tier handling is unchanged.
+  Reboots (warm-start boot-ID check) and tier degradation are
+  expressed through state rather than as stream events (see the
+  assessment-API entry above). Migration: delete `switch` cases on
+  the two removed enum members; reboot and degraded-tier handling
+  is unchanged.
 
 - **Dropped Web platform support.** The Web plugin
   (`trusted_time_web.dart`), its `pubspec.yaml` registration, the
@@ -92,7 +122,7 @@
 
 - **Sleep-aware projection is now observable and enforceable.** The
   suspend-frozen `Stopwatch` fallback (below) was previously silent: a
-  bridge-less config could not tell which timeline `now()` rode.
+  bridge-less config could not tell which timeline projection rode.
   - `TrustedTime.isProjectionSleepAware` reports whether projection
     rides the sleep-aware `nts.MonotonicClock` (`true`) or the
     suspend-frozen `Stopwatch` fallback (`false`).
@@ -100,9 +130,9 @@
     makes suspend-correct projection a hard requirement: when only the
     fallback is available, `initialize()` throws
     `TrustedTimeSecurityException` at engine start (fail-fast), and
-    `now()` carries the same guard as defence in depth. The default
-    preserves existing behaviour — the fallback is accepted and merely
-    observable.
+    time projection carries the same guard as defence in depth. The
+    default preserves existing behaviour — the fallback is accepted
+    and merely observable.
   - `resolveMonotonicReader()` now returns a `MonotonicReader` carrying
     the resolved `read` function and an `isSleepAware` flag;
     `SyncClock` exposes `isSleepAware` for the reader captured with the
@@ -112,7 +142,7 @@
 
 - **Projected time no longer freezes during device sleep** (with NTS
   configured). `SyncClock` — the sub-microsecond projection behind
-  `now()` — and the foreground-validate background-duration reading
+  the assessment — and the foreground-validate background-duration reading
   previously measured elapsed time with Dart's `Stopwatch`, whose
   underlying clock (`CLOCK_MONOTONIC` / `mach_absolute_time`) stops
   during suspend. A device that slept between syncs returned a
