@@ -22,11 +22,11 @@ This contract is written in the present tense to describe the **target end state
 **Live on trunk today:**
 
 - `NtsAuthLevel` is the binary `{verified, none}` shape; the pre-2.1.0 `advisory` value is removed.
-- `requireSecure: true` fails closed: `getTime` throws `TrustedTimeSecurityException` when the current anchor is not `verified`.
+- The assessment surface fails closed: `getAssessment()` reports `isSecure == true` only when the current anchor is `verified`, and reports no time at all (`time == null`) when the engine is unanchored.
 - `package:nts` is pinned at `^5.2.0` (PR #44). The trust primitives this contract consumes — `TrustMode.bundledOnly`, `TrustMode.custom`, and an `NtsClient` `customRoots` parameter — were introduced in `nts 5.1.0` (PR #42) and are wired into `TrustedTimeConfig` as of `trusted_time-rjt`: `usePlatformTrust` and `customRootCerts` resolve through `effectiveTrustMode` to `bundledOnly` (the effective default), `platformOnly`, or `custom`.
 - Per-sample `TrustBackend → NtsAuthLevel` mapping (PR #47). `NtsSource` maps each handshake's reported backend via `authLevelForTrustBackend`: `webpkiRoots` and `custom` yield `verified`; `platform` (and the Android hybrid fallback) yield `none`.
 - Tier-aware truth-box admission in `MarzulloEngine` (PR #48). `verified` samples define the truth box; `none` samples are admitted to consensus only when their intervals intersect it. The legacy weakest-link reduction is retired.
-- The `degradedTier` `IntegrityEvent` reason (PR #48). A member of `TamperReason`, emitted when a cycle's Tier 1 quorum cannot form.
+- Degraded-cycle surfacing (PR #48, reshaped by the assessment API). When a cycle's Tier 1 quorum cannot form, the minted anchor carries `authLevel == none` and assessments report `TrustStatusReason.degraded`; the engine also logs an explicit warning.
 
 **Target — `trusted_time-m8t` (not yet on trunk):**
 
@@ -108,7 +108,7 @@ On the current trunk the library has no mechanism to break this cycle:
 - It runs unprivileged and **cannot set the host clock**. Correcting the OS clock is the platform's responsibility (an OS NTP daemon, manual user action, carrier/NITZ time), not the library's.
 - The engine does not yet orchestrate a verification-time rescue. The pinned `package:nts` exposes the `verificationTimeMs` override on `NtsClient.query` / `NtsClient.warmCookies` (and the top-level `ntsQuery` / `ntsWarmCookies` wrappers) — the primitive that would let the handshake check the certificate's validity window against a coarse-corrected estimate rather than the broken clock (see [Pre-Sync rescue](#pre-sync-rescue-target)) — but nothing on trunk supplies it: cold-start warm-up still hands every NTS-KE handshake the host clock.
 
-The resulting behaviour is contract-correct, if degraded: NTS-KE fails, the warm / query catch path swallows the failure (it is indistinguishable from any other handshake failure), `authLevel` stays `none`, and `getTime(requireSecure: true)` **fails closed** with `TrustedTimeSecurityException`. Unauthenticated NTP / HTTPS samples may still serve `requireSecure: false` callers as best-effort time, but the `verified` path remains unavailable until some external agent brings the host clock back inside the certificate validity window.
+The resulting behaviour is contract-correct, if degraded: NTS-KE fails, the warm / query catch path swallows the failure (it is indistinguishable from any other handshake failure), `authLevel` stays `none`, and the assessment **fails closed** — `isSecure` reads `false` and `reason` reads `degraded`. Unauthenticated NTP / HTTPS samples may still serve best-effort callers via `TimeAssessment.time`, but the `verified` path remains unavailable until some external agent brings the host clock back inside the certificate validity window.
 
 ### Pre-Sync rescue (target)
 
@@ -127,49 +127,42 @@ Step 3 requires a per-handshake verification-time override threaded down to the 
 The Pre-Sync rescue is **operational-only** and changes nothing about what the library is willing to call `verified`:
 
 - The coarse NTP / HTTPS sample used to rescue the handshake is, and remains, `NtsAuthLevel.none` — Tier 3 under ADR 0007. It is never promoted, never admitted to the truth box, and never anchors consensus.
-- A Pre-Sync that has run does **not** satisfy `requireSecure: true`. Strict-mode callers continue to receive `TrustedTimeSecurityException` until a *subsequent* NTS-KE handshake (Tier 1) succeeds and its sample lands inside the truth box. The rescue produces the *opportunity* for a `verified` sample; it does not produce the verified sample itself.
+- A Pre-Sync that has run does **not** make assessments secure. `isSecure` continues to read `false` until a *subsequent* NTS-KE handshake (Tier 1) succeeds and its sample lands inside the truth box. The rescue produces the *opportunity* for a `verified` sample; it does not produce the verified sample itself.
 - The rescue widens *availability of the handshake*, not the set of conditions under which a sample is labelled `verified`. The fail-closed boundary specified in [Failure policy: fail closed](#failure-policy-fail-closed) is untouched: it governs which timestamps the library represents as authenticated, not whether the clock may be coarsely nudged to let a TLS handshake proceed.
 
 In short: Pre-Sync may *enable* trust, but it can never *be* trust.
 
 ## Consumer-facing API enforcement
 
-The library's public API surfaces this contract through several mechanisms.
+The library's public API surfaces this contract through a single retrieval call: `TrustedTime.getAssessment()`, which returns an immutable `TimeAssessment` snapshot. The contract's fail-closed property is expressed through the snapshot's fields rather than through throwing getters; strictness is a caller-side decision made on complete information.
 
-### `TrustedTime.getTime(requireSecure: true)`
+### `TimeAssessment.isSecure` (the authentication boundary)
 
-Consumer indicates that the returned time must be cryptographically authenticated. The library is required to:
+`isSecure` is `true` only if the current anchor is `verified` — that is, the anchor's `ConsensusResult.authLevel` is `verified`, which under ADR 0007's truth-box admission means the cycle's truth box was *defined by* `verified` samples, with Tier 2/3 samples admitted only when their intervals intersected it. The library is required to:
 
-- Return a time value only if the current anchor is `verified` — that is, the anchor's `ConsensusResult.authLevel` is `verified`, which under ADR 0007's truth-box admission means the cycle's truth box was *defined by* `verified` samples, with Tier 2/3 samples admitted only when their intervals intersected it.
-- Throw `TrustedTimeSecurityException` if no `verified` sample is available.
-- Never silently substitute a `none` sample's value when `requireSecure: true`.
+- Report `isSecure == true` only under the condition above.
+- Never misrepresent a `none`-backed anchor as secure.
 
-This is the strict-mode path and is the recommended path for consumers whose use case depends on the authenticity property — audit logging, replay-attack protection, license enforcement, anti-rollback checks, certificate expiry validation, or any other purpose where a wrong-but-plausible timestamp would be a security defect.
+Consumers whose use case depends on the authenticity property — audit logging, replay-attack protection, license enforcement, anti-rollback checks, certificate expiry validation, or any other purpose where a wrong-but-plausible timestamp would be a security defect — must gate on `isSecure` (or equivalently `reason == synchronized`) and reject the operation otherwise. This is the strict-mode discipline; the enforcement point moves from a library throw to a caller-side check, but the underlying guarantee (a degraded anchor can never present as verified) is unchanged.
 
-### `TrustedTime.getTime(requireSecure: false)` (default)
+### `TimeAssessment.time` (best-effort availability)
 
-Consumer accepts best-effort time. The library may return a time value derived from any combination of `verified` and `none` samples, subject to the consensus rules. The returned value should be treated as approximate and not relied on for authenticity-sensitive purposes.
+`time` is non-null whenever a live anchor exists, regardless of authentication level. A value derived from any combination of `verified` and `none` samples may be reported, subject to the consensus rules; when the anchor is degraded, `reason` is `TrustStatusReason.degraded` and `isSecure` is `false`. Consumers whose use case is purely operational — display, scheduling, non-security-sensitive event ordering, log timestamps — may use `time` whenever it is non-null.
 
-This is the relaxed-mode path and is appropriate for consumers whose use case is purely operational — display, scheduling, non-security-sensitive event ordering, log timestamps, and similar.
+### `TimeAssessment.authLevel`
 
-### `TrustedTime.authLevel`
-
-Consumer can inspect the authentication level of the current anchor without committing to a fetch. The value is the active anchor's `ConsensusResult.authLevel`, which under ADR 0007's truth-box admission reflects a Tier-1-defined box:
+Consumer can inspect the authentication level of the current anchor without committing to a decision. The value is the active anchor's `ConsensusResult.authLevel`, which under ADR 0007's truth-box admission reflects a Tier-1-defined box:
 
 - `NtsAuthLevel.verified` when the cycle's truth box was anchored by NTS (`verified`) samples and held per the intersection rules above.
 - `NtsAuthLevel.none` when no truth box could form (a degraded cycle) — regardless of how many unauthenticated samples participated.
 
-### `TrustedTime.isSecure`
+### `TimeAssessment.reason` (degradation surfacing)
 
-Consumer can inspect whether the current anchor is cryptographically authenticated. Equivalent to `authLevel == NtsAuthLevel.verified`.
+A degraded cycle (Tier 1 quorum cannot form) mints an anchor with `authLevel == none`; every subsequent assessment reports `TrustStatusReason.degraded` until a verified quorum returns. This replaces the former `degradedTier` integrity-event stream: the same signal is available at every retrieval, on the pull model, at the moment the consumer is about to *use* the time — which is the moment the posture matters. A security-sensitive client reacts by gating on `isSecure`; the engine additionally logs an explicit warning at the degradation boundary for operational visibility.
 
-### Integrity-event stream
+Reboots are likewise expressed through state: a reboot always ends the process, so it is detected during `initialize()` and every assessment reports `TrustStatusReason.rebootDetected` with `time == null` until a fresh sync succeeds.
 
-The library emits an `IntegrityEvent` of reason `degradedTier` when a sync cycle's NTS quorum cannot form. This signals to the consumer that, for the current cycle, the truth box could not be defined by authenticated samples and the consensus fell back to best-effort sources. Consumers reading this stream can adapt — for example, a security-sensitive client may pause anchor updates until a verified quorum returns.
-
-`degradedTier` is named in [ADR 0007](../adr/0007-hybrid-trust-model.md) §2 and is a member of `TamperReason` on trunk (PR #48). It is the only reason the production engine emits on `onIntegrityLost`. Reboots are not delivered on the stream: a reboot always ends the process, so it is detected during `initialize()` — before a listener could subscribe — and is expressed through state instead (the stale anchor is discarded, `isTrusted` stays `false`, and `now()` throws until a fresh sync succeeds). The remaining `TamperReason` members (`deviceRebooted`, `forcedNtpSync`, `unknown`) exist for test doubles and diagnostics.
-
-Emission of `degradedTier` is informational. It does not, by itself, invalidate the contract: a consumer using `requireSecure: true` will still see `TrustedTimeSecurityException` rather than receiving a degraded value. The event exists for consumers who want operational visibility into authentication state without polling.
+Degradation surfacing is informational. It does not, by itself, invalidate the contract: a strict consumer gating on `isSecure` never accepts a degraded value, because a degraded anchor can never report `isSecure == true`.
 
 ## Implementation requirements
 
@@ -181,13 +174,13 @@ To uphold this contract, the implementation must:
 2. **Pin the bundled trust anchor set** to a known, audited source (e.g., `webpki-roots` at a pinned version) and document the version, source, and update cadence in the package's release notes.
 3. **Emit `verified` only from time-source code paths that have established the chain per this contract.** The default in `TimeSample` (`NtsAuthLevel.none`) is the correct fallback for any source that does not explicitly establish end-to-end verification.
 4. **Surface trust-backend information** in `TimeSample.trustBackend` as informational metadata. The field does not, by itself, justify a `verified` label; the label is justified by the chain having been validated against bundled anchors, regardless of which backend performed the validation.
-5. **Fail closed on `requireSecure: true`** when no `verified` sample is available in the current consensus. The default behaviour for `requireSecure: false` consumers may return best-effort time, but only with the authentication level accurately reflected in the returned anchor.
+5. **Fail closed at the assessment boundary** when no `verified` sample is available in the current consensus: `isSecure` must read `false` and `reason` must read `degraded` (or an unanchored reason). Best-effort time may still be reported, but only with the authentication level accurately reflected in the same snapshot.
 6. **Reject silent downgrades.** No code path in the library that produces `verified` samples may fall back to platform-trust validation on chain failure. The correct response to a bundled-trust validation failure is to discard the sample (treating it as if the source had timed out) — not to retry with a weaker trust store.
 
 ## What this contract does not promise
 
 - **Accuracy of `verified` samples.** A `verified` sample's timestamp may be wrong. Accuracy is the consensus engine's responsibility. A single authenticated source whose clock is wrong will be admitted to consensus and filtered out by Marzullo only if other sources disagree with it.
-- **Availability in corporate-managed-network environments.** In environments where NTS-KE traffic is intercepted, blocked, or restricted to platform-CA validation, the library's contract is satisfied by returning `none` samples and (under `requireSecure: true`) by failing rather than misrepresenting. Consumers in such environments who require time service must either (a) accept best-effort time via `requireSecure: false`, (b) deploy alongside a MITM-resistant transport (Roughtime, RFC 3161 TSP, or a signed-payload relay; see [`doc/research/trust-model-evolution.md`](../research/trust-model-evolution.md)), or (c) obtain IT allowlisting that bypasses TLS inspection for the library's traffic.
+- **Availability in corporate-managed-network environments.** In environments where NTS-KE traffic is intercepted, blocked, or restricted to platform-CA validation, the library's contract is satisfied by returning `none` samples and reporting `isSecure == false` rather than misrepresenting. Consumers in such environments who require time service must either (a) accept best-effort time via `TimeAssessment.time`, (b) deploy alongside a MITM-resistant transport (Roughtime, RFC 3161 TSP, or a signed-payload relay; see [`doc/research/trust-model-evolution.md`](../research/trust-model-evolution.md)), or (c) obtain IT allowlisting that bypasses TLS inspection for the library's traffic.
 - **Resistance to compromise of the package distribution path.** If the published package itself contains hostile bundled trust anchors, the contract collapses. Mitigation is out of scope for the library; consumers must trust package distribution channels (pub.dev signatures, signed releases) independently.
 - **Freshness of bundled trust anchors.** Maintenance of the bundled set is the package maintainer's responsibility; consumers who require fresh revocation handling should monitor package releases. Stale roots remain trusted until the next release.
 - **Authentication of HTTPS or NTP samples.** These source kinds are useful for accuracy contribution under ADR 0007's tier-aware admission, but they are *never* `verified` and are never load-bearing for the authentication contract.
@@ -196,7 +189,7 @@ To uphold this contract, the implementation must:
 
 Conformance to this specification is checked by:
 
-- `test/security_policy_test.dart` — covers `requireSecure: true` enforcement at the `getTime` and `isSecure` boundary. Any new authentication-affecting API surface must add equivalent coverage.
+- `test/security_policy_test.dart` — covers the fail-closed semantics at the `TimeAssessment.isSecure` / `reason` boundary. Any new authentication-affecting API surface must add equivalent coverage.
 - `test/nts_auth_level_migration_test.dart` — covers the binary `{verified, none}` enum shape and the persisted-anchor ordinal migration path. Any future enum change must update this test.
 - Implementation-level tests that the bundled-trust-store validation path actually rejects platform-trusted-but-not-bundled chains. These tests are required when `package:nts` is updated, when the bundled root set is refreshed, or when the trust-mode configuration is changed in the library's construction of `NtsClient`.
 
@@ -215,9 +208,9 @@ A change that alters the conditions under which `NtsAuthLevel.verified` is emitt
 - RFC 8915 — Network Time Security
 - RFC 5705 — TLS keying-material exporters
 - `lib/src/sources/nts_auth_level.dart` — current implementation of the `NtsAuthLevel` enum
-- `lib/src/trusted_time_impl.dart` — current `isSecure` and `authLevel` getters
-- `lib/trusted_time.dart` — public API surface (`getTime`, `requireSecure`, `authLevel`, `isSecure`)
-- `test/security_policy_test.dart` — current `requireSecure: true` enforcement tests
+- `lib/src/time_assessment.dart` — the `TimeAssessment` snapshot and `TrustStatusReason` enum
+- `lib/trusted_time.dart` — public API surface (`getAssessment`)
+- `test/security_policy_test.dart` — current fail-closed assessment enforcement tests
 - `test/nts_auth_level_migration_test.dart` — current binary-enum migration tests
 
 
@@ -225,7 +218,7 @@ A change that alters the conditions under which `NtsAuthLevel.verified` is emitt
 
 This section adds the consumer-persona framing for the tiered trust model whose end-to-end implementation is documented in [`doc/design/tiered-trust-implementation.md`](../design/tiered-trust-implementation.md). The two personas are not separate code paths — the same library implements both — but they configure the engine differently and read its outputs with different expectations.
 
-> **[Implemented — PRs #46–#49]** The persona *config surface* below (`usePlatformTrust`, `customRootCerts`) is **live on trunk** as of `trusted_time-rjt` (PR #46), which also flipped the effective default to `bundledOnly` and removed the earlier single `ntsTrustMode` field. The *engine behaviour* these personas reference — the per-sample trust-backend mapping (PR #47), truth-box admission, and the `degradedTier` event (PR #48) — is **live as well**. The one exception is the cold-start Pre-Sync rescue, which remains pending and keeps its **[Target — `trusted_time-m8t`]** marker inline.
+> **[Implemented — PRs #46–#49]** The persona *config surface* below (`usePlatformTrust`, `customRootCerts`) is **live on trunk** as of `trusted_time-rjt` (PR #46), which also flipped the effective default to `bundledOnly` and removed the earlier single `ntsTrustMode` field. The *engine behaviour* these personas reference — the per-sample trust-backend mapping (PR #47), truth-box admission, and degraded-cycle surfacing (PR #48; since reshaped from an event stream into `TrustStatusReason.degraded` on the assessment) — is **live as well**. The one exception is the cold-start Pre-Sync rescue, which remains pending and keeps its **[Target — `trusted_time-m8t`]** marker inline.
 
 ### Persona: Security-Conscious (Bundled / Custom)
 
@@ -253,9 +246,9 @@ const TrustedTimeConfig(
 - Every NTS handshake runs against a library-controlled trust store: bundled `webpki-roots` (default) or `customRootCerts`. The platform store is not consulted.
 - Successful NTS samples carry `NtsAuthLevel.verified` and form the Tier 1 truth box.
 - Marzullo's truth-box construction is anchored exclusively by Tier 1 samples. Tier 2/3 contribute to consensus only when their intervals intersect the truth box.
-- `requireSecure: true` is honoured strictly: if the cycle's Tier 1 quorum fails to form, `getTime(requireSecure: true)` throws `TrustedTimeSecurityException`.
-- The `degradedTier` `IntegrityEvent` fires when Tier 1 quorum fails; consumers can read it from `onIntegrityLost` and pause anchor consumption.
-- **[Target — `trusted_time-m8t`]** **Cold-start clock skew is rescued, not refused.** If the device boots with a grossly wrong clock and NTS-KE fails in its TLS phase, the engine runs a bounded unauthenticated Pre-Sync to coax the handshake into the certificate's validity window (see [Cold-start bootstrapping and the NTS circular dependency](#cold-start-bootstrapping-and-the-nts-circular-dependency)). This persona **allows** the rescue: it is operational-only and never relaxes the `verified` boundary. Strict fail-closed is preserved — `requireSecure: true` still throws until a *real* Tier 1 sample lands in the truth box. Refusing the rescue would permanently deny `verified` time to skewed-clock devices for no security gain, since the Pre-Sync sample is itself never `verified`.
+- The secure boundary is honoured strictly: if the cycle's Tier 1 quorum fails to form, assessments report `isSecure == false` with `reason == degraded`; strict consumers gate on `isSecure` and reject.
+- Degradation is visible at every retrieval (`TrustStatusReason.degraded`), so consumers can pause anchor consumption the moment they observe it; the engine also logs a warning at the degradation boundary.
+- **[Target — `trusted_time-m8t`]** **Cold-start clock skew is rescued, not refused.** If the device boots with a grossly wrong clock and NTS-KE fails in its TLS phase, the engine runs a bounded unauthenticated Pre-Sync to coax the handshake into the certificate's validity window (see [Cold-start bootstrapping and the NTS circular dependency](#cold-start-bootstrapping-and-the-nts-circular-dependency)). This persona **allows** the rescue: it is operational-only and never relaxes the `verified` boundary. Strict fail-closed is preserved — `isSecure` stays `false` until a *real* Tier 1 sample lands in the truth box. Refusing the rescue would permanently deny `verified` time to skewed-clock devices for no security gain, since the Pre-Sync sample is itself never `verified`.
 - In TLS-inspecting / managed-network deployments where a corporate CA is required, this persona's NTS sources will fail — the bundled trust store does not include corporate CAs by design. The contract is satisfied by failing closed, not by misrepresenting platform-validated samples as `verified`.
 
 **Use this persona when:** authenticity is load-bearing for the consumer's logic (cryptographic signing, attestation, audit timestamps, certificate validity windows, replay protection, rate-limit windows whose integrity matters under adversarial conditions). The deployment must tolerate fail-closed behaviour on corporate networks; if it cannot, see the Operational-First persona.
@@ -276,8 +269,8 @@ const TrustedTimeConfig(
 - Every NTS handshake runs against the platform / OS trust store via `rustls-platform-verifier`. Bundled roots are not consulted.
 - Successful NTS samples carry `NtsAuthLevel.none` regardless of whether the handshake succeeded. `TimeSample.trustBackend` is populated with `TrustBackend.platform` (or `platformWithHybridFallback` on Android) so telemetry consumers can distinguish platform-mediated NTS from plain NTP / HTTPS.
 - Tier 1 (`verified`) samples will not be produced under this configuration. The truth box is never formed; Marzullo falls back to single-tier reduction over all available samples — the legacy pre-tier behaviour.
-- `requireSecure: true` will always fail under this configuration. Consumers using this persona must call `getTime(requireSecure: false)` (or `TrustedTime.now()`) and accept best-effort time.
-- `authLevel` will be `NtsAuthLevel.none`; `isSecure` will be `false`. Quality grading still works: `ConfidenceLevel` reflects source diversity and population depth, independent of authentication.
+- Assessments will never report `isSecure == true` under this configuration. Consumers using this persona must read `TimeAssessment.time` and accept best-effort time (`reason == degraded`).
+- `TimeAssessment.authLevel` will be `NtsAuthLevel.none`; `isSecure` will be `false`. Quality grading still works: `ConfidenceLevel` reflects source diversity and population depth, independent of authentication.
 - Managed-network deployments (corporate MDM, pinned roots) work: the platform store includes the deployment's CAs, NTS handshakes succeed, the engine produces samples, consensus forms.
 - **[Target — `trusted_time-m8t`]** Cold-start clock skew never affects this persona's *authentication* posture — it produces no `verified` samples regardless — but the same unauthenticated Pre-Sync still benefits operational accuracy: a coarse offset lets platform-mediated NTS-KE handshakes complete on a skewed-clock cold start, so their samples (still `none`) can contribute to consensus precision instead of failing in the TLS phase.
 
@@ -302,5 +295,5 @@ The two personas are mutually exclusive at construction:
 
 - **A runtime switch.** The persona is fixed at `TrustedTime.initialize()`. A consumer that needs both shapes in the same process must instantiate two engines (the public API supports a single global instance, so this would require a custom integration; out of scope for the spec).
 - **A confidence statement.** `ConfidenceLevel` and `NtsAuthLevel` are orthogonal. A Security-Conscious deployment can have low confidence (few sources, narrow geographic diversity); an Operational-First deployment can have high confidence (many sources, broad diversity). The personas describe the *trust path*, not the consensus quality.
-- **A network-environment classifier.** Neither persona detects whether the device is on a TLS-inspecting network. Detection happens implicitly: the Security-Conscious persona's NTS handshakes succeed iff the environment permits end-to-end TLS to the configured NTS-KE endpoint. A `degradedTier` event followed by sustained Tier-1 quorum failure is the operational signal for "the network is hostile to my trust configuration"; reacting to that signal is the consumer's responsibility.
+- **A network-environment classifier.** Neither persona detects whether the device is on a TLS-inspecting network. Detection happens implicitly: the Security-Conscious persona's NTS handshakes succeed iff the environment permits end-to-end TLS to the configured NTS-KE endpoint. Sustained `TrustStatusReason.degraded` assessments across cycles are the operational signal for "the network is hostile to my trust configuration"; reacting to that signal is the consumer's responsibility.
 

@@ -1,4 +1,3 @@
-import 'dart:async';
 import '../trusted_time.dart';
 
 /// The global test override for [TrustedTime] (internal use only).
@@ -9,21 +8,20 @@ void setTestOverride(TrustedTimeMock? mock) => testOverride = mock;
 
 /// High-fidelity test double for deterministic temporal testing.
 ///
-/// Provides a fully controllable virtual clock that simulates all aspects
-/// of the TrustedTime API — including trust state, time advancement,
-/// integrity events, and offline estimation.
+/// Provides a fully controllable virtual clock that simulates the
+/// TrustedTime assessment API — trust posture, time advancement, and
+/// offline estimation.
 ///
 /// ```dart
 /// final mock = TrustedTimeMock(initial: DateTime.utc(2024, 1, 1));
 /// TrustedTime.overrideForTesting(mock);
 ///
-/// expect(TrustedTime.now(), DateTime.utc(2024, 1, 1));
+/// expect(TrustedTime.getAssessment().time, DateTime.utc(2024, 1, 1));
 ///
 /// mock.advanceTime(const Duration(hours: 1));
-/// expect(TrustedTime.now(), DateTime.utc(2024, 1, 1, 1));
+/// expect(TrustedTime.getAssessment().time, DateTime.utc(2024, 1, 1, 1));
 ///
 /// TrustedTime.resetOverride();
-/// mock.dispose();
 /// ```
 final class TrustedTimeMock {
   /// Creates a new mock with an initial UTC timestamp.
@@ -34,26 +32,15 @@ final class TrustedTimeMock {
   DateTime _now;
   bool _trusted;
   NtsAuthLevel _authLevel = NtsAuthLevel.none;
+  ConfidenceLevel _confidence = ConfidenceLevel.high;
+  TrustStatusReason _unanchoredReason = TrustStatusReason.syncFailed;
   DateTime? _rebootTime;
-  final _controller = StreamController<IntegrityEvent>.broadcast();
 
-  /// The current time of the mock.
+  /// The scripted current time of the mock.
   DateTime get now => _now;
 
   /// Whether the mock is currently in a trusted state.
   bool get isTrusted => _trusted;
-
-  /// The current NTS authentication level of the mock.
-  NtsAuthLevel get authLevel => _authLevel;
-
-  /// The current time as Unix milliseconds since epoch.
-  int get nowUnixMs => _now.millisecondsSinceEpoch;
-
-  /// The current time in ISO-8601 format.
-  String get nowIso => _now.toIso8601String();
-
-  /// Emits integrity events simulated by this mock.
-  Stream<IntegrityEvent> get onIntegrityLost => _controller.stream;
 
   /// Advances the mock time by the given duration.
   void advanceTime(Duration delta) => _now = _now.add(delta);
@@ -62,43 +49,70 @@ final class TrustedTimeMock {
   void setNow(DateTime time) => _now = time.toUtc();
 
   /// Sets the mock to a trusted or untrusted state.
-  void setTrusted(bool trusted) => _trusted = trusted;
+  ///
+  /// When [trusted] is `false`, assessments report an unanchored
+  /// posture with a `null` time. Pass [reason] to script which one;
+  /// when omitted, the previously active unanchored reason is kept
+  /// (initially [TrustStatusReason.syncFailed]). This mirrors
+  /// production precedence: [TrustStatusReason.rebootDetected] set by
+  /// [simulateReboot] persists until a successful re-sync
+  /// ([restoreTrust]), not merely until the next trust-loss event.
+  void setTrusted(bool trusted, {TrustStatusReason? reason}) {
+    _trusted = trusted;
+    if (reason != null) _unanchoredReason = reason;
+  }
 
   /// Sets the NTS authentication level for this mock.
+  ///
+  /// With [NtsAuthLevel.verified], trusted assessments report
+  /// [TrustStatusReason.synchronized]; with [NtsAuthLevel.none] they
+  /// report [TrustStatusReason.degraded].
   void setAuthLevel(NtsAuthLevel level) => _authLevel = level;
+
+  /// Sets the confidence grade reported by trusted assessments.
+  void setConfidence(ConfidenceLevel level) => _confidence = level;
 
   /// Restores the mock to a trusted state and clears reboot history.
   void restoreTrust() {
     _trusted = true;
     _rebootTime = null;
+    _unanchoredReason = TrustStatusReason.syncFailed;
   }
 
   /// Simulates a device reboot, invalidating trust.
   ///
-  /// Mirrors production semantics: a reboot is expressed through state
-  /// ([isTrusted] becomes `false`), not as an [onIntegrityLost] event —
-  /// in production a reboot ends the process and is only detected during
-  /// `initialize()`, before any listener could subscribe.
+  /// Mirrors production semantics: assessments report
+  /// [TrustStatusReason.rebootDetected] with a `null` time until
+  /// [restoreTrust] simulates a successful re-sync.
   void simulateReboot() {
     _trusted = false;
     _rebootTime = _now;
+    _unanchoredReason = TrustStatusReason.rebootDetected;
   }
 
-  /// Simulates temporal tampering, emitting an integrity event with the given [reason] and optional [drift].
-  void simulateTampering(TamperReason reason, {Duration? drift}) {
-    _trusted = false;
-    _emit(IntegrityEvent(reason: reason, detectedAt: _now, drift: drift));
-  }
-
-  /// Returns an estimated time based on the current mock state.
-  TrustedTimeEstimate? nowEstimated() {
+  /// Builds a [TimeAssessment] snapshot from the scripted mock state.
+  TimeAssessment getAssessment() {
     if (_trusted) {
-      return TrustedTimeEstimate(
-        estimatedTime: _now,
-        confidence: 1.0,
-        estimatedError: Duration.zero,
+      return TimeAssessment(
+        reason: _authLevel == NtsAuthLevel.verified
+            ? TrustStatusReason.synchronized
+            : TrustStatusReason.degraded,
+        authLevel: _authLevel,
+        confidence: _confidence,
+        time: _now,
+        uncertainty: Duration.zero,
+        anchorAge: Duration.zero,
       );
     }
+    return TimeAssessment(
+      reason: _unanchoredReason,
+      authLevel: NtsAuthLevel.none,
+      confidence: ConfidenceLevel.none,
+      estimate: _estimate(),
+    );
+  }
+
+  TrustedTimeEstimate? _estimate() {
     if (_rebootTime == null) return null;
     final wallElapsed = _now.difference(_rebootTime!).abs();
     final confidence = (1.0 - wallElapsed.inMinutes / 4320.0).clamp(0.0, 1.0);
@@ -109,11 +123,4 @@ final class TrustedTimeMock {
       estimatedError: Duration(milliseconds: errorMs),
     );
   }
-
-  void _emit(IntegrityEvent event) {
-    if (!_controller.isClosed) _controller.add(event);
-  }
-
-  /// Closes the stream controller and cleans up resources.
-  void dispose() => _controller.close();
 }

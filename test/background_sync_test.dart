@@ -680,10 +680,7 @@ void main() {
       final mockTime = DateTime.utc(2026, 6, 1, 12);
       final mock = public_api.TrustedTimeMock(initial: mockTime);
       public_api.TrustedTime.overrideForTesting(mock);
-      addTearDown(() {
-        public_api.TrustedTime.resetOverride();
-        mock.dispose();
-      });
+      addTearDown(public_api.TrustedTime.resetOverride);
 
       final result = await public_api.TrustedTime.runBackgroundSync(
         config: _offlineConfig(
@@ -805,10 +802,7 @@ void main() {
       final mockTime = DateTime.utc(2026, 6, 1, 12);
       final mock = public_api.TrustedTimeMock(initial: mockTime);
       public_api.TrustedTime.overrideForTesting(mock);
-      addTearDown(() {
-        public_api.TrustedTime.resetOverride();
-        mock.dispose();
-      });
+      addTearDown(public_api.TrustedTime.resetOverride);
 
       TrustedTimeBackgroundResult? observed;
       final result = await public_api.TrustedTime.runBackgroundSync(
@@ -896,10 +890,7 @@ void main() {
     test('returns null under an active TrustedTimeMock override', () async {
       final mock = public_api.TrustedTimeMock(initial: DateTime.utc(2026));
       public_api.TrustedTime.overrideForTesting(mock);
-      addTearDown(() {
-        public_api.TrustedTime.resetOverride();
-        mock.dispose();
-      });
+      addTearDown(public_api.TrustedTime.resetOverride);
       var channelTouched = false;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (call) async {
@@ -1099,10 +1090,7 @@ void main() {
         initial: DateTime.utc(2026, 6, 1, 12),
       );
       public_api.TrustedTime.overrideForTesting(mock);
-      addTearDown(() {
-        public_api.TrustedTime.resetOverride();
-        mock.dispose();
-      });
+      addTearDown(public_api.TrustedTime.resetOverride);
 
       await public_api.TrustedTime.enableBackgroundSync(
         interval: const Duration(hours: 24),

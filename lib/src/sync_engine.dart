@@ -10,7 +10,6 @@ import 'exceptions.dart'
         TransientSourceError,
         TrustedTimeFreshnessProbeException,
         TrustedTimeSyncException;
-import 'integrity_event.dart';
 import 'models.dart';
 import 'monotonic_clock.dart';
 import 'source_quality_tracker.dart';
@@ -52,11 +51,9 @@ final class SyncEngine {
     SyncObserver? observer,
     ConsensusCache? cache,
     SourceQualityTracker? qualityTracker,
-    void Function(IntegrityEvent event)? onIntegrityEvent,
   }) : _config = config,
        _clock = clock,
        _observer = observer,
-       _onIntegrityEvent = onIntegrityEvent,
        _cache = cache,
        _qualityTracker = qualityTracker ?? SourceQualityTracker(),
        _engine = MarzulloEngine(
@@ -69,11 +66,6 @@ final class SyncEngine {
   final MonotonicClock _clock;
   final SyncObserver? _observer;
 
-  /// Sink for engine-originated integrity events (currently
-  /// [TamperReason.degradedTier]). `TrustedTimeImpl` wires this to
-  /// `IntegrityMonitor.report` so the event reaches the public
-  /// `onIntegrityLost` stream; tests may pass a recorder directly.
-  final void Function(IntegrityEvent event)? _onIntegrityEvent;
   final ConsensusCache? _cache;
   final MarzulloEngine _engine;
 
@@ -809,28 +801,22 @@ final class SyncEngine {
       }
       _observer?.onConsensusReached(result);
 
-      // Tier-aware admission bookkeeping. A degraded cycle (no Tier 1 truth
-      // box) raises a degradedTier integrity event so the public
-      // onIntegrityLost stream learns the published anchor is best-effort
-      // (authLevel: none); lower-tier samples dropped for falling outside
-      // the truth box are surfaced as per-source failures for telemetry.
+      // Tier-aware admission bookkeeping. A degraded cycle (no Tier 1
+      // truth box) mints an authLevel-none anchor, which the assessment
+      // API surfaces as TrustStatusReason.degraded; lower-tier samples
+      // dropped for falling outside the truth box are surfaced as
+      // per-source failures for telemetry.
       if (result.degradedTier) {
-        // Human-readable companion to the degradedTier integrity event:
-        // without it, a cycle that minted an authLevel-none anchor looks
-        // identical to a fully-verified success in the logs, and the
-        // requireSecure failure only surfaces later where getTime()
-        // throws — far from the cycle that caused it.
+        // Without this log line, a cycle that minted an authLevel-none
+        // anchor looks identical to a fully-verified success in the
+        // logs, and the degradation only surfaces later where the
+        // consumer inspects an assessment — far from the cycle that
+        // caused it.
         TrustedTimeLog.log(
           TrustedTimeLogLevel.warning,
           '[TrustedTime] anchor DEGRADED: consensus reached without a '
-          'verified-NTS quorum; authLevel=none. getTime() will throw '
-          'under requireSecure until a verified anchor is minted.',
-        );
-        _onIntegrityEvent?.call(
-          IntegrityEvent(
-            reason: TamperReason.degradedTier,
-            detectedAt: DateTime.now().toUtc(),
-          ),
+          'verified-NTS quorum; authLevel=none. Assessments will report '
+          'TrustStatusReason.degraded until a verified anchor is minted.',
         );
       }
       for (final dropped in result.droppedOutsideTruthBox) {

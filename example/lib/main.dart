@@ -248,12 +248,11 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // Null until the engine has reached its first trusted anchor. Reading
-  // TrustedTime.now() before isTrusted == true throws, so we defer the
-  // first read to the ticker (or the initState probe below).
-  DateTime? _now;
+  // Refreshed by the ticker (and an initState probe): the single
+  // pull-model snapshot driving Sections 1–3. Never null after the
+  // first build; getAssessment() is total (no not-ready throw).
+  TimeAssessment _assessment = TrustedTime.getAssessment();
   Timer? _ticker;
-  IntegrityEvent? _lastEvent;
   TrustedTimeEstimate? _estimate;
   bool _bgSyncEnabled = false;
 
@@ -287,14 +286,6 @@ class _HomePageState extends State<HomePage> {
   int _interCycleDelaySeconds = 5;
   Timer? _interCycleTimer;
   VoidCallback? _cycleEndDisposer;
-  // Stored so the Section 2 forensics subscription can be cancelled
-  // in dispose(). Without an explicit cancel the broadcast stream
-  // keeps the listener alive for the lifetime of the engine, which
-  // outlives this widget on hot reload / nested-Navigator pop /
-  // any future scenario that swaps the home page out — and the
-  // listener body calls setState, which throws after dispose.
-  StreamSubscription<IntegrityEvent>? _integritySub;
-
   // Worldwide Beauty Parade rotation state. When [_worldwideRotationActive]
   // is true, every cycle-end advances [_worldwideRotationOffset] by
   // [_worldwideSubsetSize] and reconfigures the engine with the next
@@ -338,39 +329,14 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
 
-    // Probe in case the engine reached trust before this widget mounted
-    // (warm-start path with a persisted anchor).
-    if (TrustedTime.isTrusted) {
-      _now = TrustedTime.now();
-    }
-
-    // Section 1: UI clock ticking every second. Skip the read until the
-    // engine has established a trusted anchor; the ticker will pick up
-    // the first sample within a second of isTrusted flipping to true.
+    // Section 1/2: pull-model clock. One assessment per second drives
+    // the live clock, the trust badge, and the status forensics card —
+    // getAssessment() is total, so no trusted-state pre-check is
+    // needed and an unanchored engine simply yields time == null with
+    // the explanatory reason.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!TrustedTime.isTrusted) {
-        // Force a rebuild so the badge / placeholder text refreshes
-        // even while we don't yet have a trusted reading.
-        setState(() {});
-        return;
-      }
       setState(() {
-        _now = TrustedTime.now();
-      });
-    });
-
-    // Section 2: Forensics subscription. Stored for cancellation in
-    // dispose() so a late event (broadcast streams keep emitting for
-    // the lifetime of the engine, which outlives this widget on hot
-    // reload or any nested-Navigator scenario) cannot fire setState
-    // after the State has been torn down. The mounted guard inside
-    // the callback is belt-and-braces for the window between event
-    // emission and the cancel propagating through the broadcast
-    // stream's internal scheduler.
-    _integritySub = TrustedTime.onIntegrityLost.listen((event) {
-      if (!mounted) return;
-      setState(() {
-        _lastEvent = event;
+        _assessment = TrustedTime.getAssessment();
       });
     });
 
@@ -532,8 +498,6 @@ class _HomePageState extends State<HomePage> {
     _cancelInterCycleTimer();
     _cycleEndDisposer?.call();
     _ticker?.cancel();
-    unawaited(_integritySub?.cancel());
-    _integritySub = null;
     _tzController.dispose();
     unawaited(_benchmarkLogger.dispose());
     super.dispose();
@@ -545,7 +509,7 @@ class _HomePageState extends State<HomePage> {
 
   void _getEstimate() {
     setState(() {
-      _estimate = TrustedTime.nowEstimated();
+      _estimate = TrustedTime.getAssessment().estimate;
     });
   }
 
@@ -724,7 +688,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
-    final isTrusted = TrustedTime.isTrusted;
+    final assessment = _assessment;
+    final isTrusted = assessment.isTrusted;
 
     return Scaffold(
       appBar: AppBar(title: const Text('TrustedTime V2 Features')),
@@ -738,9 +703,8 @@ class _HomePageState extends State<HomePage> {
               child: Column(
                 children: [
                   Text(
-                    isTrusted && _now != null
-                        ? _now!.toIso8601String()
-                        : 'Waiting for trusted time…',
+                    assessment.time?.toIso8601String() ??
+                        'Waiting for trusted time…',
                     style: const TextStyle(
                       fontSize: 20,
                       fontFamily: 'monospace',
@@ -769,13 +733,10 @@ class _HomePageState extends State<HomePage> {
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
                       ElevatedButton(
-                        // Disabled until the engine reaches its first
-                        // trusted anchor; tapping before would throw
-                        // TrustedTimeNotReadyException.
-                        onPressed: isTrusted
-                            ? () => setState(() => _now = TrustedTime.now())
-                            : null,
-                        child: const Text('Get Time'),
+                        onPressed: () => setState(() {
+                          _assessment = TrustedTime.getAssessment();
+                        }),
+                        child: const Text('Assess Now'),
                       ),
                       ElevatedButton(
                         onPressed: _forceSync,
@@ -786,23 +747,27 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
             ),
-            _sectionHeader('Section 2 — Tamper Forensics (F1)'),
+            _sectionHeader('Section 2 — Trust Status Forensics (F1)'),
             _card(
-              child: _lastEvent == null
-                  ? const Text('No tampering detected')
-                  : Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Reason: ${_lastEvent!.reason.name}',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        Text(
-                          'Drift: ${_lastEvent!.drift?.inMilliseconds ?? 'N/A'} ms',
-                        ),
-                        Text('Detected At: ${_lastEvent!.detectedAt}'),
-                      ],
-                    ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Reason: ${assessment.reason.name}',
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  Text('Auth Level: ${assessment.authLevel.name}'),
+                  Text('Confidence: ${assessment.confidence.name}'),
+                  Text(
+                    'Uncertainty: '
+                    '${assessment.uncertainty?.inMilliseconds ?? 'N/A'} ms',
+                  ),
+                  Text(
+                    'Anchor Age: '
+                    '${assessment.anchorAge?.inSeconds ?? 'N/A'} s',
+                  ),
+                ],
+              ),
             ),
             _sectionHeader('Section 3 — Offline Estimate (F2)'),
             _card(

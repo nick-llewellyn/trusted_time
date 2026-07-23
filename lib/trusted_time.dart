@@ -17,11 +17,14 @@
 /// ## Usage Patterns
 ///
 /// ```dart
-/// // Standard high-integrity retrieval
-/// final now = TrustedTime.now();
+/// // Unified retrieval: time, posture reason, and caveats in one call
+/// final assessment = TrustedTime.getAssessment();
+/// if (assessment.isTrusted) {
+///   useTimestamp(assessment.time!);
+/// }
 ///
-/// // Security-critical query (e.g. financial ledgering)
-/// final secureNow = TrustedTime.getTime(requireSecure: true);
+/// // Security-critical gate (e.g. financial ledgering)
+/// if (!assessment.isSecure) throw StateError('verified anchor required');
 /// ```
 library;
 
@@ -56,15 +59,13 @@ import 'src/background_sync.dart'
         TrustedTimeBackgroundResult;
 import 'src/background_sync.dart' as bg show runBackgroundSync;
 import 'src/exceptions.dart';
-import 'src/integrity_event.dart';
 import 'src/models.dart';
 import 'src/nts_bootstrap.dart';
-import 'src/trusted_time_estimate.dart';
+import 'src/time_assessment.dart';
 import 'src/trusted_time_impl.dart';
 import 'src/trusted_time_mock.dart';
 import 'src/infra/sync_observer.dart';
 import 'src/infra/trusted_time_log.dart';
-import 'src/sources/nts_auth_level.dart';
 
 export 'src/background_sync.dart'
     show
@@ -73,7 +74,6 @@ export 'src/background_sync.dart'
         BackgroundSyncSuccess,
         TrustedTimeBackgroundResult;
 export 'src/exceptions.dart';
-export 'src/integrity_event.dart';
 export 'src/models.dart'
     show
         TrustedTimeConfig,
@@ -96,6 +96,7 @@ export 'src/models.dart'
 // needing to add `package:nts` to their own pubspec — it is already
 // a transitive dependency of this package.
 export 'package:nts/nts.dart' show TrustMode, TrustBackend, NtsTrustStatus;
+export 'src/time_assessment.dart';
 export 'src/trusted_time_estimate.dart';
 export 'src/trusted_time_mock.dart';
 export 'src/infra/sync_observer.dart';
@@ -123,9 +124,11 @@ export 'src/domain/time_source.dart' show TimeSource, Warmable;
 /// [TrustedTime] implements a self-healing operational state machine. It handles
 /// initial synchronization, background maintenance, and proactive drift detection.
 ///
-/// For most use cases, [now] is the preferred retrieval method. For high-security
-/// applications, use [getTime] to enforce specific cryptographic or confidence
-/// requirements.
+/// Retrieval is unified behind [getAssessment], which answers "what time
+/// is it, why, and with what caveats" in a single synchronous call. Check
+/// the assessment at meaningful boundaries — after [initialize], on
+/// foreground resume, before a high-value operation — rather than caching
+/// one result.
 abstract final class TrustedTime {
   TrustedTime._();
 
@@ -183,67 +186,49 @@ abstract final class TrustedTime {
     await TrustedTimeImpl.init(config);
   }
 
-  /// Synchronously returns the current trusted UTC time.
+  /// Synchronously evaluates the current time and its trust posture.
   ///
-  /// This operation is optimized for performance, typically completing in **<50µs**.
-  /// It performs a simple arithmetic projection based on the active hardware anchor
-  /// and does not involve any platform channel or I/O overhead.
+  /// Returns a [TimeAssessment] — one immutable snapshot answering
+  /// "what time is it?" ([TimeAssessment.time]), "why is it reported
+  /// this way?" ([TimeAssessment.reason]) and "what are the caveats?"
+  /// ([TimeAssessment.authLevel], [TimeAssessment.confidence],
+  /// [TimeAssessment.uncertainty], [TimeAssessment.anchorAge]).
   ///
-  /// Throws [TrustedTimeNotReadyException] if called before the engine has established
-  /// its initial trust anchor.
-  static DateTime now() {
-    if (_override != null) return _override!.now;
-    return TrustedTimeImpl.instance.now();
-  }
-
-  /// Returns the current trusted Unix timestamp (milliseconds since epoch).
+  /// The call is cheap (arithmetic projection on the monotonic
+  /// timeline, no platform-channel or network I/O) and never throws
+  /// for posture reasons: when no trust anchor exists,
+  /// [TimeAssessment.time] is `null`, [TimeAssessment.reason] explains
+  /// why ([TrustStatusReason.neverSynced], [TrustStatusReason.rebootDetected],
+  /// or [TrustStatusReason.syncFailed]), and [TimeAssessment.estimate]
+  /// carries a best-effort wall-clock extrapolation when available.
   ///
-  /// High-performance variant of [now] that avoids the overhead of [DateTime]
-  /// object instantiation. Recommended for high-frequency audit logging or
-  /// real-time security signatures.
-  static int nowUnixMs() {
-    if (_override != null) return _override!.nowUnixMs;
-    return TrustedTimeImpl.instance.nowUnixMs();
-  }
-
-  /// Returns the current trusted time in ISO-8601 format.
+  /// Typical pull-model usage — assess at meaningful boundaries rather
+  /// than caching one result:
   ///
-  /// Optimized for transmission over network protocols or persistent logging.
-  /// Example: `2024-05-02T12:00:00.000Z`
-  static String nowIso() {
-    if (_override != null) return _override!.nowIso;
-    return TrustedTimeImpl.instance.nowIso();
-  }
-
-  /// Returns `true` if the engine has successfully established a consensus-based
-  /// trust anchor.
+  /// ```dart
+  /// Future<void> placeOrder(Order order) async {
+  ///   final assessment = TrustedTime.getAssessment();
+  ///   switch (assessment.reason) {
+  ///     case TrustStatusReason.synchronized:
+  ///       submitOrder(order, timestamp: assessment.time!);
+  ///     case TrustStatusReason.degraded:
+  ///       // Time is usable, cryptographic guarantees are not.
+  ///       submitOrder(order, timestamp: assessment.time!, flagged: true);
+  ///     case TrustStatusReason.neverSynced:
+  ///     case TrustStatusReason.rebootDetected:
+  ///     case TrustStatusReason.syncFailed:
+  ///       await TrustedTime.forceResync();
+  ///   }
+  /// }
+  /// ```
   ///
-  /// When this is `false`, [now] will throw. This state occurs during initial
-  /// synchronization or after a critical integrity failure (e.g. a device reboot).
-  static bool get isTrusted {
-    if (_override != null) return _override!.isTrusted;
-    return TrustedTimeImpl.instance.isTrusted;
-  }
-
-  /// Returns the qualitative confidence grade of the current trust anchor.
-  ///
-  /// A [ConfidenceLevel.high] grade indicates a consensus reached with high
-  /// source diversity and depth, whereas [ConfidenceLevel.low] may indicate
-  /// a valid but geographically or provider-limited consensus.
-  static ConfidenceLevel get confidence {
-    if (_override != null) return ConfidenceLevel.high;
-    return TrustedTimeImpl.instance.anchor?.confidence ?? ConfidenceLevel.low;
-  }
-
-  /// Returns a probabilistic "freshness" score (0.0 to 1.0).
-  ///
-  /// This score models the temporal uncertainty of the anchor. It decays
-  /// exponentially as the anchor ages. High-value transactions should check
-  /// this score and potentially trigger a [forceResync] if it falls below
-  /// an application-defined threshold (e.g. 0.5).
-  static double get confidenceScore {
-    if (_override != null) return 1.0;
-    return TrustedTimeImpl.instance.anchor?.confidenceScore ?? 0.0;
+  /// For strict enforcement, gate on the derived properties: require
+  /// [TimeAssessment.isSecure] before trusting the timestamp for
+  /// signature-grade operations, or combine [TimeAssessment.confidence]
+  /// and [TimeAssessment.uncertainty] against application thresholds.
+  static TimeAssessment getAssessment() {
+    if (_override != null) return _override!.getAssessment();
+    return TrustedTimeImpl.instance.getAssessment();
   }
 
   /// Returns the [TrustedTimeConfig] the engine is currently running
@@ -340,77 +325,6 @@ abstract final class TrustedTime {
   // even though both names refer to the same class.
   static NtsTrustStatus ntsTrustStatus() => nts.ntsTrustStatus();
 
-  /// Advanced retrieval that enforces the Secure Time Contract's security
-  /// and integrity constraints.
-  ///
-  /// Use this when your application logic requires higher guarantees than
-  /// standard consensus.
-  ///
-  /// * Set [requireSecure] to `true` to fail closed unless the active anchor
-  ///   is [NtsAuthLevel.verified] — established from a Tier 1 truth box of NTS
-  ///   samples authenticated against a library-controlled trust store
-  ///   (bundled webpki-roots or custom roots). Anchors established under
-  ///   platform-mediated trust, or degraded to lower-tier (NTP)
-  ///   consensus, are [NtsAuthLevel.none] and throw.
-  /// * Set [minConfidence] to enforce a minimum qualitative trust level.
-  ///
-  /// [requireSecure] gates *authentication*, not freshness or accuracy:
-  ///
-  /// * A verified anchor satisfies the gate regardless of age — including
-  ///   one warm-restored from the persisted cache within the same boot
-  ///   session. Staleness is governed separately, by [confidenceScore],
-  ///   [validateFreshness], and the refresh scheduler; combine the gate
-  ///   with [minConfidence] or a [confidenceScore] check when age matters.
-  /// * Unauthenticated sources never satisfy the gate: plain NTP and
-  ///   custom `additionalSources` carry no application-layer signature
-  ///   over the timestamp, so an anchor built from such consensus is
-  ///   [NtsAuthLevel.none] even though best-effort calls keep working.
-  /// * If every NTS server becomes unreachable after a verified anchor was
-  ///   established, the anchor's verified label persists across *failed*
-  ///   resync cycles; a *successful* degraded cycle (unauthenticated
-  ///   survivors reach quorum) replaces the anchor and the gate fails
-  ///   closed from then on. Verified status is never carried over onto a
-  ///   degraded consensus.
-  ///
-  /// Throws [TrustedTimeSecurityException] when the authentication or
-  /// confidence requirement is not met, and [TrustedTimeNotReadyException]
-  /// when no usable anchor exists at all (e.g. a cold start with no cache
-  /// and no network, or after trust was invalidated pending resync). The
-  /// authentication gate is checked first, so a cold start with
-  /// `requireSecure: true` surfaces the actionable security error rather
-  /// than NotReady. See the Secure Time Contract
-  /// (`doc/specification/secure-time-contract.md`) for the full
-  /// `requireSecure` semantics and trust-tiering rules.
-  static DateTime getTime({
-    bool requireSecure = false,
-    ConfidenceLevel minConfidence = ConfidenceLevel.low,
-  }) {
-    if (requireSecure && !isSecure) {
-      throw const TrustedTimeSecurityException(
-        'Time is required to be cryptographically authenticated against '
-        'a library-controlled trust store (bundled webpki-roots or '
-        'custom roots), but the active anchor is not verified. This '
-        'happens when NTS was unavailable and the engine fell back to '
-        'lower-tier (NTP) consensus, or when NTS was validated '
-        'under platform-mediated trust rather than the library-controlled '
-        'store. To satisfy requireSecure: true, configure reachable NTS '
-        'servers (so a verified anchor can be established) and keep '
-        'usePlatformTrust: false (the default, so NTS is validated against '
-        'the library-controlled store). Otherwise reduce the requirement '
-        'with requireSecure: false.',
-      );
-    }
-
-    final currentConfidence = confidence;
-    if (currentConfidence.index < minConfidence.index) {
-      throw TrustedTimeSecurityException(
-        'Confidence level ${currentConfidence.name} is below required ${minConfidence.name}.',
-      );
-    }
-
-    return now();
-  }
-
   /// Returns `true` if the system is configured to support Network Time
   /// Security (NTS).
   static bool get supportsSecureTime {
@@ -418,8 +332,8 @@ abstract final class TrustedTime {
     return TrustedTimeImpl.instance.supportsSecureTime;
   }
 
-  /// Whether the projection behind [now] rides a sleep-aware monotonic
-  /// timeline.
+  /// Whether the projection behind [TimeAssessment.time] rides a
+  /// sleep-aware monotonic timeline.
   ///
   /// `true` when elapsed time since the last trust anchor is measured on
   /// the `package:nts` monotonic clock (`CLOCK_BOOTTIME` /
@@ -427,57 +341,18 @@ abstract final class TrustedTime {
   /// counting through device suspend. `false` when the engine is on the
   /// suspend-frozen `Stopwatch` fallback — NTP-only configs
   /// or a failed nts bridge bootstrap — where a device sleep between
-  /// syncs leaves [now] behind by the sleep duration until the next
-  /// sync or integrity reconciliation.
+  /// syncs leaves the projected time behind by the sleep duration until
+  /// the next sync.
   ///
   /// Consumers for whom the frozen fallback is unacceptable should set
   /// [TrustedTimeConfig.requireSleepAwareProjection] instead of polling
   /// this getter; the config gate fails closed at [initialize] and
-  /// [now]. Under a [TrustedTimeMock] override this returns `true`
-  /// (mock time is script-driven and does not drift during suspend).
+  /// assessment time. Under a [TrustedTimeMock] override this returns
+  /// `true` (mock time is script-driven and does not drift during
+  /// suspend).
   static bool get isProjectionSleepAware {
     if (_override != null) return true;
     return TrustedTimeImpl.instance.isProjectionSleepAware;
-  }
-
-  /// Emits events when the engine detects an integrity violation.
-  ///
-  /// The library emits [TamperReason.degradedTier] when a sync cycle
-  /// cannot establish a Tier 1 truth box. Reboots are not signalled on
-  /// this stream: a reboot always ends the process, so it is only ever
-  /// detected during [initialize] — before a listener could subscribe.
-  /// Its effect is expressed through state instead: the stale anchor is
-  /// discarded, [isTrusted] stays `false`, and [now] throws until a
-  /// fresh network sync succeeds. Wall-clock changes are not monitored:
-  /// projection is monotonic-only, so a wall-clock jump cannot affect
-  /// [now].
-  static Stream<IntegrityEvent> get onIntegrityLost {
-    if (_override != null) return _override!.onIntegrityLost;
-    return TrustedTimeImpl.instance.onIntegrityLost;
-  }
-
-  /// Whether the active trust anchor is [NtsAuthLevel.verified] under the
-  /// Secure Time Contract — backed by a Tier 1 NTS truth box authenticated
-  /// against a library-controlled trust store (RFC 8915).
-  ///
-  /// Equivalent to `authLevel == NtsAuthLevel.verified`. Returns `false` for
-  /// platform-mediated NTS and for lower-tier (NTP) or degraded
-  /// consensus. This is the boundary [getTime] enforces under
-  /// `requireSecure: true`.
-  static bool get isSecure {
-    if (_override != null) return false;
-    return TrustedTimeImpl.instance.isSecure;
-  }
-
-  /// The cryptographic authentication level of the active trust anchor.
-  ///
-  /// Binary under the Secure Time Contract: [NtsAuthLevel.verified] only when
-  /// the anchor was established from a Tier 1 NTS truth box (library-controlled
-  /// trust store), otherwise [NtsAuthLevel.none]. Mirrors [isSecure]
-  /// (`verified` ⟺ `isSecure == true`).
-  static NtsAuthLevel get authLevel {
-    if (_override != null) return NtsAuthLevel.none;
-    return TrustedTimeImpl.instance.authLevel;
   }
 
   /// Hooks into the internal synchronization lifecycle.
@@ -494,16 +369,6 @@ abstract final class TrustedTime {
   static void unregisterObserver(SyncObserver observer) {
     if (_override != null) return;
     TrustedTimeImpl.instance.unregisterObserver(observer);
-  }
-
-  /// Best-effort time estimation for offline or unanchored scenarios.
-  ///
-  /// Returns a [TrustedTimeEstimate] extrapolated from the last known state.
-  /// **WARNING**: This estimate is susceptible to wall-clock manipulation.
-  /// Use only for non-critical UI hints when [isTrusted] is false.
-  static TrustedTimeEstimate? nowEstimated() {
-    if (_override != null) return _override!.nowEstimated();
-    return TrustedTimeImpl.instance.nowEstimated();
   }
 
   /// Forces an immediate network synchronization cycle.
@@ -545,10 +410,10 @@ abstract final class TrustedTime {
   /// "freshness unknown" outcome is deliberately distinct from the
   /// `false` "anchor drifted" observation.
   ///
-  /// Under a test override this returns the mock's [TrustedTimeMock.isTrusted]
-  /// state without touching the engine, so a mock placed in an untrusted
-  /// state (e.g. via [TrustedTimeMock.simulateTampering]) reports a failed
-  /// freshness check consistently with [isTrusted].
+  /// Under a test override this returns the mock's trusted state
+  /// without touching the engine, so a mock placed in an untrusted
+  /// state (e.g. via [TrustedTimeMock.setTrusted]) reports a failed
+  /// freshness check consistently with its assessments.
   static Future<bool> validateFreshness() {
     if (_override != null) return Future.value(_override!.isTrusted);
     return TrustedTimeImpl.instance.validateFreshness();
@@ -761,7 +626,7 @@ abstract final class TrustedTime {
     // for the headless entrypoint as well.
     final override = _override;
     if (override != null) {
-      final nowMs = override.nowUnixMs;
+      final nowMs = override.now.millisecondsSinceEpoch;
       final synthetic = BackgroundSyncSuccess(
         anchor: TrustAnchor(
           networkUtcMs: nowMs,
@@ -1033,17 +898,21 @@ abstract final class TrustedTime {
   /// embedded IANA database. This ensures the result is immune to
   /// device-level timezone manipulation.
   ///
-  /// Throws [UnknownTimezoneException] if the [timezoneIdentifier]
-  /// is not found in the database.
+  /// Throws [TrustedTimeNotReadyException] when no live trust anchor
+  /// exists (check [getAssessment] first to learn why), and
+  /// [UnknownTimezoneException] if the [timezoneIdentifier] is not
+  /// found in the database.
   static DateTime trustedLocalTimeIn(String timezoneIdentifier) {
-    if (!isTrusted) throw const TrustedTimeNotReadyException();
+    final assessment = getAssessment();
+    final utcTime = assessment.time;
+    if (utcTime == null) throw const TrustedTimeNotReadyException();
     tz.Location location;
     try {
       location = tz.getLocation(timezoneIdentifier);
     } catch (_) {
       throw UnknownTimezoneException(timezoneIdentifier);
     }
-    return tz.TZDateTime.from(now(), location);
+    return tz.TZDateTime.from(utcTime, location);
   }
 
   /// Injects a mock implementation for hermetic unit and widget testing.

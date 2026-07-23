@@ -9,7 +9,6 @@ import 'package:trusted_time/src/domain/time_sample.dart';
 import 'package:trusted_time/src/exceptions.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
 import 'package:trusted_time/src/infra/sync_observer.dart';
-import 'package:trusted_time/src/integrity_event.dart';
 import 'package:trusted_time/src/infra/trusted_time_log.dart';
 import 'package:trusted_time/src/models.dart';
 import 'package:trusted_time/src/monotonic_clock.dart';
@@ -147,7 +146,6 @@ class _RecordingObserver implements SyncObserver {
 SyncEngine _engineFor(
   List<TimeSource> sources, {
   required _RecordingObserver observer,
-  required List<IntegrityEvent> events,
   MonotonicClock? clock,
 }) {
   return SyncEngine(
@@ -162,7 +160,6 @@ SyncEngine _engineFor(
     ).copyWith(additionalSources: sources),
     clock: clock ?? _MockClock(),
     observer: observer,
-    onIntegrityEvent: events.add,
   );
 }
 
@@ -171,46 +168,41 @@ void main() {
     test('Tier 1 quorum forms the truth box and admits only intersecting '
         'lower-tier samples', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
       // Two verified samples overlap at [1005, 1020] — the truth box.
-      final engine = _engineFor(
-        [
-          _TierSource(
-            id: 'nts:v1',
-            groupId: 'g1',
-            startMs: 1000,
-            endMs: 1020,
-            authLevel: NtsAuthLevel.verified,
-            trustBackend: nts.TrustBackend.webpkiRoots,
-          ),
-          _TierSource(
-            id: 'nts:v2',
-            groupId: 'g2',
-            startMs: 1005,
-            endMs: 1025,
-            authLevel: NtsAuthLevel.verified,
-            trustBackend: nts.TrustBackend.webpkiRoots,
-          ),
-          // Platform-mediated NTS (Tier 2) inside the truth box.
-          _TierSource(
-            id: 'nts:in',
-            groupId: 'g3',
-            startMs: 1010,
-            endMs: 1015,
-            trustBackend: nts.TrustBackend.platform,
-          ),
-          // Platform-mediated NTS (Tier 2) outside the truth box.
-          _TierSource(
-            id: 'nts:out',
-            groupId: 'g4',
-            startMs: 1100,
-            endMs: 1120,
-            trustBackend: nts.TrustBackend.platform,
-          ),
-        ],
-        observer: observer,
-        events: events,
-      );
+      final engine = _engineFor([
+        _TierSource(
+          id: 'nts:v1',
+          groupId: 'g1',
+          startMs: 1000,
+          endMs: 1020,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        _TierSource(
+          id: 'nts:v2',
+          groupId: 'g2',
+          startMs: 1005,
+          endMs: 1025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        // Platform-mediated NTS (Tier 2) inside the truth box.
+        _TierSource(
+          id: 'nts:in',
+          groupId: 'g3',
+          startMs: 1010,
+          endMs: 1015,
+          trustBackend: nts.TrustBackend.platform,
+        ),
+        // Platform-mediated NTS (Tier 2) outside the truth box.
+        _TierSource(
+          id: 'nts:out',
+          groupId: 'g4',
+          startMs: 1100,
+          endMs: 1120,
+          trustBackend: nts.TrustBackend.platform,
+        ),
+      ], observer: observer);
 
       final anchor = await engine.sync();
 
@@ -231,30 +223,24 @@ void main() {
         ),
         isTrue,
       );
-      expect(events, isEmpty);
     });
 
-    test('Tier 1 quorum fails: legacy single-tier reduction with a '
-        'degradedTier integrity event', () async {
+    test('Tier 1 quorum fails: legacy single-tier reduction flagged '
+        'degradedTier', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
       // No verified samples. Three lower-tier samples (one platform-mediated
       // NTS, two plain) agree at [1005, 1020].
-      final engine = _engineFor(
-        [
-          _TierSource(
-            id: 'nts:a',
-            groupId: 'g1',
-            startMs: 1000,
-            endMs: 1020,
-            trustBackend: nts.TrustBackend.platform,
-          ),
-          _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
-          _TierSource(id: 'ntp:c', groupId: 'g3', startMs: 1000, endMs: 1020),
-        ],
-        observer: observer,
-        events: events,
-      );
+      final engine = _engineFor([
+        _TierSource(
+          id: 'nts:a',
+          groupId: 'g1',
+          startMs: 1000,
+          endMs: 1020,
+          trustBackend: nts.TrustBackend.platform,
+        ),
+        _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+        _TierSource(id: 'ntp:c', groupId: 'g3', startMs: 1000, endMs: 1020),
+      ], observer: observer);
 
       final anchor = await engine.sync();
 
@@ -268,47 +254,40 @@ void main() {
         result.participants.map((s) => s.sourceId),
         containsAll(<String>['nts:a', 'ntp:b', 'ntp:c']),
       );
-      expect(events, hasLength(1));
-      expect(events.single.reason, TamperReason.degradedTier);
     });
 
     test('coordinated lower-tier cluster outside the truth box cannot move '
         'the consensus', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
       // Two verified samples agree near T (~10012). Three coordinated
       // lower-tier samples cluster at T+10s, well outside the truth box.
-      final engine = _engineFor(
-        [
-          _TierSource(
-            id: 'nts:v1',
-            groupId: 'g1',
-            startMs: 10000,
-            endMs: 10020,
-            authLevel: NtsAuthLevel.verified,
-            trustBackend: nts.TrustBackend.webpkiRoots,
-          ),
-          _TierSource(
-            id: 'nts:v2',
-            groupId: 'g2',
-            startMs: 10005,
-            endMs: 10025,
-            authLevel: NtsAuthLevel.verified,
-            trustBackend: nts.TrustBackend.webpkiRoots,
-          ),
-          _TierSource(
-            id: 'nts:x',
-            groupId: 'g3',
-            startMs: 20005,
-            endMs: 20025,
-            trustBackend: nts.TrustBackend.platform,
-          ),
-          _TierSource(id: 'ntp:y', groupId: 'g4', startMs: 20000, endMs: 20020),
-          _TierSource(id: 'ntp:z', groupId: 'g5', startMs: 20005, endMs: 20025),
-        ],
-        observer: observer,
-        events: events,
-      );
+      final engine = _engineFor([
+        _TierSource(
+          id: 'nts:v1',
+          groupId: 'g1',
+          startMs: 10000,
+          endMs: 10020,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        _TierSource(
+          id: 'nts:v2',
+          groupId: 'g2',
+          startMs: 10005,
+          endMs: 10025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        _TierSource(
+          id: 'nts:x',
+          groupId: 'g3',
+          startMs: 20005,
+          endMs: 20025,
+          trustBackend: nts.TrustBackend.platform,
+        ),
+        _TierSource(id: 'ntp:y', groupId: 'g4', startMs: 20000, endMs: 20020),
+        _TierSource(id: 'ntp:z', groupId: 'g5', startMs: 20005, endMs: 20025),
+      ], observer: observer);
 
       final anchor = await engine.sync();
 
@@ -327,7 +306,6 @@ void main() {
         result.droppedOutsideTruthBox.map((s) => s.sourceId),
         containsAll(<String>['nts:x', 'ntp:y', 'ntp:z']),
       );
-      expect(events, isEmpty);
     });
   });
 
@@ -345,32 +323,27 @@ void main() {
         'kinds, and the consensus line names won and rejected '
         'sources', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
-      final engine = _engineFor(
-        [
-          _TierSource(
-            id: 'nts:v1',
-            groupId: 'g1',
-            startMs: 1000,
-            endMs: 1020,
-            authLevel: NtsAuthLevel.verified,
-            trustBackend: nts.TrustBackend.webpkiRoots,
-          ),
-          _TierSource(
-            id: 'nts:v2',
-            groupId: 'g2',
-            startMs: 1005,
-            endMs: 1025,
-            authLevel: NtsAuthLevel.verified,
-            trustBackend: nts.TrustBackend.webpkiRoots,
-          ),
-          _TierSource(id: 'ntp:in', groupId: 'g3', startMs: 1010, endMs: 1015),
-          _TierSource(id: 'ntp:out', groupId: 'g4', startMs: 1100, endMs: 1120),
-          _FailingNtsSource(),
-        ],
-        observer: observer,
-        events: events,
-      );
+      final engine = _engineFor([
+        _TierSource(
+          id: 'nts:v1',
+          groupId: 'g1',
+          startMs: 1000,
+          endMs: 1020,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        _TierSource(
+          id: 'nts:v2',
+          groupId: 'g2',
+          startMs: 1005,
+          endMs: 1025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        _TierSource(id: 'ntp:in', groupId: 'g3', startMs: 1010, endMs: 1015),
+        _TierSource(id: 'ntp:out', groupId: 'g4', startMs: 1100, endMs: 1120),
+        _FailingNtsSource(),
+      ], observer: observer);
 
       await engine.sync();
 
@@ -414,17 +387,12 @@ void main() {
     });
 
     test('a degraded cycle emits an explicit warning naming the '
-        'requireSecure consequence', () async {
+        'assessment consequence', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
-      final engine = _engineFor(
-        [
-          _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
-          _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
-        ],
-        observer: observer,
-        events: events,
-      );
+      final engine = _engineFor([
+        _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+        _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+      ], observer: observer);
 
       await engine.sync();
 
@@ -433,36 +401,29 @@ void main() {
       );
       expect(degraded.$1, TrustedTimeLogLevel.warning);
       expect(degraded.$2, contains('authLevel=none'));
-      expect(degraded.$2, contains('requireSecure'));
-      // The integrity event still fires alongside the log line.
-      expect(events.single.reason, TamperReason.degradedTier);
+      expect(degraded.$2, contains('TrustStatusReason.degraded'));
     });
 
     test('a healthy verified cycle emits no DEGRADED warning', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
-      final engine = _engineFor(
-        [
-          _TierSource(
-            id: 'nts:v1',
-            groupId: 'g1',
-            startMs: 1000,
-            endMs: 1020,
-            authLevel: NtsAuthLevel.verified,
-            trustBackend: nts.TrustBackend.webpkiRoots,
-          ),
-          _TierSource(
-            id: 'nts:v2',
-            groupId: 'g2',
-            startMs: 1005,
-            endMs: 1025,
-            authLevel: NtsAuthLevel.verified,
-            trustBackend: nts.TrustBackend.webpkiRoots,
-          ),
-        ],
-        observer: observer,
-        events: events,
-      );
+      final engine = _engineFor([
+        _TierSource(
+          id: 'nts:v1',
+          groupId: 'g1',
+          startMs: 1000,
+          endMs: 1020,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        _TierSource(
+          id: 'nts:v2',
+          groupId: 'g2',
+          startMs: 1005,
+          endMs: 1025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+      ], observer: observer);
 
       await engine.sync();
 
@@ -479,14 +440,12 @@ void main() {
     // network sync.
     test('sync() stamps the clock boot ID onto the anchor', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
       final engine = _engineFor(
         [
           _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
           _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
         ],
         observer: observer,
-        events: events,
         clock: _MockClock(bootId: 'boot-uuid-42'),
       );
 
@@ -498,14 +457,12 @@ void main() {
     test('sync() leaves the anchor bootId null when the platform provides '
         'none (fails closed on later warm restore)', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
       final engine = _engineFor(
         [
           _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
           _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
         ],
         observer: observer,
-        events: events,
         clock: _MockClock(bootId: null),
       );
 
@@ -518,21 +475,16 @@ void main() {
   group('SyncEngine.validate() freshness probe (ADR 0006)', () {
     test('returns the sample from the top-ranked NTS source', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
-      final engine = _engineFor(
-        [
-          _TierSource(
-            id: 'nts:probe',
-            groupId: 'g1',
-            startMs: 1000,
-            endMs: 1020,
-            authLevel: NtsAuthLevel.verified,
-            trustBackend: nts.TrustBackend.webpkiRoots,
-          ),
-        ],
-        observer: observer,
-        events: events,
-      );
+      final engine = _engineFor([
+        _TierSource(
+          id: 'nts:probe',
+          groupId: 'g1',
+          startMs: 1000,
+          endMs: 1020,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+      ], observer: observer);
 
       final sample = await engine.validate();
 
@@ -543,15 +495,10 @@ void main() {
     test('throws TrustedTimeFreshnessProbeException when no NTS source '
         'is configured', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
-      final engine = _engineFor(
-        [
-          _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
-          _TierSource(id: 'https:b', groupId: 'g2', startMs: 1000, endMs: 1020),
-        ],
-        observer: observer,
-        events: events,
-      );
+      final engine = _engineFor([
+        _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+        _TierSource(id: 'https:b', groupId: 'g2', startMs: 1000, endMs: 1020),
+      ], observer: observer);
 
       await expectLater(
         engine.validate(),
@@ -562,12 +509,7 @@ void main() {
     test('throws TrustedTimeFreshnessProbeException when the probe query '
         'fails', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
-      final engine = _engineFor(
-        [_FailingNtsSource()],
-        observer: observer,
-        events: events,
-      );
+      final engine = _engineFor([_FailingNtsSource()], observer: observer);
 
       await expectLater(
         engine.validate(),
@@ -578,12 +520,11 @@ void main() {
 
     test('makes exactly one getTime() call per probe', () async {
       final observer = _RecordingObserver();
-      final events = <IntegrityEvent>[];
       // The wire-level burst lives inside the source's own getTime();
       // the probe makes exactly one call rather than multiplying the
       // source burst by an engine-level loop.
       final source = _BurstNtsSource([80, 20, 50]);
-      final engine = _engineFor([source], observer: observer, events: events);
+      final engine = _engineFor([source], observer: observer);
 
       final sample = await engine.validate();
 
@@ -598,12 +539,7 @@ void main() {
       // OS budget above it — indefinitely.
       fakeAsync((async) {
         final observer = _RecordingObserver();
-        final events = <IntegrityEvent>[];
-        final engine = _engineFor(
-          [_HungWarmNtsSource()],
-          observer: observer,
-          events: events,
-        );
+        final engine = _engineFor([_HungWarmNtsSource()], observer: observer);
 
         TimeSample? sample;
         unawaited(engine.validate().then((s) => sample = s));

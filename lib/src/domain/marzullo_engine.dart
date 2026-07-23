@@ -116,9 +116,10 @@ final class ConsensusResult {
   /// Whether this consensus was published without a Tier 1 (verified) truth
   /// box and therefore fell back to a legacy single-tier reduction.
   ///
-  /// `true` implies [authLevel] is [NtsAuthLevel.none]; `SyncEngine` reads
-  /// this flag to emit a [TamperReason.degradedTier] integrity event for the
-  /// cycle. Tier-aware results that formed a truth box report `false`.
+  /// `true` implies [authLevel] is [NtsAuthLevel.none]; anchors minted
+  /// from such a cycle surface as `TrustStatusReason.degraded` in the
+  /// public assessment API. Tier-aware results that formed a truth box
+  /// report `false`.
   final bool degradedTier;
 
   /// Lower-tier samples (platform-mediated NTS or plain NTP) that were
@@ -218,9 +219,9 @@ final class MarzulloEngine {
   /// *degraded*. The engine falls back to a legacy single-tier Marzullo over
   /// all [samples], forces
   /// `authLevel == NtsAuthLevel.none`, and sets
-  /// [ConsensusResult.degradedTier] so `SyncEngine` can emit
-  /// [TamperReason.degradedTier]. Returns `null` only when even the
-  /// fallback reduction cannot reach a quorum.
+  /// [ConsensusResult.degradedTier] so the degradation is surfaced (log
+  /// warning; `TrustStatusReason.degraded` in assessments). Returns
+  /// `null` only when even the fallback reduction cannot reach a quorum.
   ConsensusResult? resolve(List<TimeSample> samples) {
     final verified = samples
         .where((s) => _tierOf(s) == _Tier.verified)
