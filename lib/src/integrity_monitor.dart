@@ -12,7 +12,7 @@ import 'monotonic_clock.dart';
 /// resets — which [checkRebootOnWarmStart] detects via boot-session
 /// identity plus an uptime-regression tripwire.
 final class IntegrityMonitor {
-  /// Documented.
+  /// Creates a monitor that samples uptime and boot identity via [clock].
   IntegrityMonitor({required MonotonicClock clock}) : _clock = clock;
 
   final MonotonicClock _clock;
