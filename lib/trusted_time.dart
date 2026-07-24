@@ -139,15 +139,32 @@ abstract final class TrustedTime {
   /// This must be called at app launch. It performs several critical actions:
   /// 1. Initializes the embedded IANA timezone database.
   /// 2. Restores the last known trust anchor from secure storage.
-  /// 3. Launches the initial network synchronization cycle.
+  /// 3. Launches the initial network synchronization cycle **in the
+  ///    background** — the returned future does not wait for it.
+  ///
+  /// The returned future resolves after local work only (storage
+  /// restore, reboot check, timer arming); it never blocks on the
+  /// network. On a warm start the engine is already trusted when it
+  /// resolves; on a cold start the first sync cycle continues in the
+  /// background, observable as `getAssessment().syncInProgress` and
+  /// awaitable via [firstSyncSettled]:
   ///
   /// ```dart
   /// void main() async {
   ///   WidgetsFlutterBinding.ensureInitialized();
-  ///   await TrustedTime.initialize(); // Essential first step
-  ///   runApp(MyApp());
+  ///   await TrustedTime.initialize(); // Fast: local work only.
+  ///   runApp(MyApp()); // Render immediately; check getAssessment()
+  ///   //                  (or await firstSyncSettled) for trust.
   /// }
   /// ```
+  ///
+  /// The error split is deliberate: configuration errors (an invalid
+  /// [TrustedTimeConfig] such as `usePlatformTrust` combined with
+  /// `customRootCerts`, or an unsatisfiable
+  /// [TrustedTimeConfig.requireSleepAwareProjection]) still throw from
+  /// this future — fail fast on programmer error. Network outcomes
+  /// never do: a failed first sync surfaces as an assessment with
+  /// [TrustStatusReason.syncFailed], not as an exception here.
   ///
   /// [onLog] installs a process-global [TrustedTimeLogSink] that
   /// receives every `[TrustedTime]` diagnostic line (per-source sample
@@ -184,6 +201,40 @@ abstract final class TrustedTime {
     config = await ensureNtsRuntime(config);
 
     await TrustedTimeImpl.init(config);
+  }
+
+  /// Completes when the first sync cycle has concluded — success or
+  /// failure alike.
+  ///
+  /// [initialize] resolves after local work only; on a cold start the
+  /// first network sync continues in the background. This future is
+  /// the explicit rendezvous for callers who need a definitive first
+  /// answer before proceeding (a launch gate, a compliance check):
+  ///
+  /// ```dart
+  /// await TrustedTime.initialize();
+  /// runApp(MyApp());
+  /// // Elsewhere, when a definitive answer is required:
+  /// await TrustedTime.firstSyncSettled;
+  /// final assessment = TrustedTime.getAssessment();
+  /// // reason is now a concluded posture: synchronized / degraded /
+  /// // syncFailed — not an in-flight neverSynced.
+  /// ```
+  ///
+  /// It reports *conclusion, not outcome*: after it completes, consult
+  /// [getAssessment] for the verdict. On a warm start (persisted
+  /// anchor restored) it is already complete when [initialize]
+  /// resolves. It also completes if the engine is disposed before the
+  /// first cycle concludes, so a waiter never hangs across teardown.
+  /// Re-initializing creates a fresh engine with a fresh first-sync
+  /// gate.
+  ///
+  /// Under a [TrustedTimeMock] override this returns an
+  /// already-completed future (mock time needs no sync). Like the
+  /// other accessors, [initialize] must have completed first.
+  static Future<void> get firstSyncSettled {
+    if (_override != null) return Future.value();
+    return TrustedTimeImpl.instance.firstSyncSettled;
   }
 
   /// Synchronously evaluates the current time and its trust posture.

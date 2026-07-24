@@ -4,6 +4,31 @@
 
 ### Breaking Changes
 
+- **`TrustedTime.initialize()` no longer waits for the first network
+  sync.** The returned future resolves after local work only (storage
+  restore, reboot check, timer arming) on every path; on a cold start
+  the first sync cycle runs in the background. Anyone relying on
+  "awaited `initialize()` ⇒ time is trusted" on a cold start is
+  broken by this change and must adopt one of the two new
+  primitives: `TimeAssessment.syncInProgress` (a new field — `true`
+  whenever a sync cycle is in flight, including background refreshes
+  and `forceResync`; unanchored + `syncInProgress` is the "resolution
+  imminent" wait state) or `TrustedTime.firstSyncSettled` (a future
+  completing when the first cycle concludes — success or failure
+  alike; already complete on a warm restore; consult
+  `getAssessment()` for the verdict afterwards). Awaiting
+  `initialize()` then immediately reading `getAssessment()` on a cold
+  start now yields `neverSynced` with `syncInProgress: true` instead
+  of a concluded posture; insert `await TrustedTime.firstSyncSettled`
+  where the old blocking behaviour is genuinely required. The error
+  split is unchanged and now uniform: configuration errors
+  (`ArgumentError` for an invalid trust config — now validated
+  eagerly on every path, including warm restores that previously
+  deferred it — or `TrustedTimeSecurityException` for an
+  unsatisfiable `requireSleepAwareProjection`) throw from
+  `initialize()`; network outcomes never do. `TrustedTimeMock` gains
+  `setSyncInProgress()` to script the new field.
+
 - **Unified the public retrieval surface into a single
   `TrustedTime.getAssessment()` call returning a `TimeAssessment`
   snapshot.** The fragmented getters — `now()`, `nowUnixMs()`,

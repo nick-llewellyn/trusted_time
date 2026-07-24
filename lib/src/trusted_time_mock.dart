@@ -35,6 +35,7 @@ final class TrustedTimeMock {
   ConfidenceLevel _confidence = ConfidenceLevel.high;
   TrustStatusReason _unanchoredReason = TrustStatusReason.syncFailed;
   DateTime? _rebootTime;
+  bool _syncInProgress = false;
 
   /// The scripted current time of the mock.
   DateTime get now => _now;
@@ -72,6 +73,14 @@ final class TrustedTimeMock {
   /// Sets the confidence grade reported by trusted assessments.
   void setConfidence(ConfidenceLevel level) => _confidence = level;
 
+  /// Scripts the [TimeAssessment.syncInProgress] flag on assessments.
+  ///
+  /// Orthogonal to the trust posture, mirroring production: script it
+  /// alongside `setTrusted(false)` to exercise the "unanchored but
+  /// resolution imminent" wait state, or while trusted to simulate a
+  /// background refresh in flight.
+  void setSyncInProgress(bool inProgress) => _syncInProgress = inProgress;
+
   /// Restores the mock to a trusted state and clears reboot history.
   void restoreTrust() {
     _trusted = true;
@@ -102,6 +111,7 @@ final class TrustedTimeMock {
         time: _now,
         uncertainty: Duration.zero,
         anchorAge: Duration.zero,
+        syncInProgress: _syncInProgress,
       );
     }
     return TimeAssessment(
@@ -109,6 +119,7 @@ final class TrustedTimeMock {
       authLevel: NtsAuthLevel.none,
       confidence: ConfidenceLevel.none,
       estimate: _estimate(),
+      syncInProgress: _syncInProgress,
     );
   }
 

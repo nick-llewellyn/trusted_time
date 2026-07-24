@@ -90,15 +90,24 @@ No additional setup required.
 
 ### Initialize at app startup
 
-Call `initialize()` once before `runApp`. It restores the last persisted anchor from secure storage and begins the first network sync in the background.
+Call `initialize()` once before `runApp`. It restores the last persisted anchor from secure storage and begins the first network sync in the background — the returned future resolves after local work only and never blocks on the network, so startup latency is independent of network conditions.
 
 ```dart
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await TrustedTime.initialize();
+  await TrustedTime.initialize(); // Fast: local work only.
   runApp(const MyApp());
 }
 ```
+
+On a warm start (persisted anchor restored) time is trusted as soon as `initialize()` resolves. On a cold start the first sync continues in the background: `getAssessment().syncInProgress` reports it, and `TrustedTime.firstSyncSettled` awaits its conclusion when a definitive first answer is required:
+
+```dart
+await TrustedTime.firstSyncSettled; // Concluded: success or failure.
+final a = TrustedTime.getAssessment(); // Verdict lives here.
+```
+
+Configuration errors (an invalid `TrustedTimeConfig`) still throw from `initialize()` itself; network outcomes never do — a failed first sync surfaces as `TrustStatusReason.syncFailed` on the assessment.
 
 You can pass a `TrustedTimeConfig` to customise sources, sync intervals, and security requirements:
 
@@ -133,7 +142,14 @@ Future<void> stampEvent(Event event) async {
     case TrustStatusReason.syncFailed:
       // No trusted time. assessment.time is null; assessment.estimate
       // carries a best-effort extrapolation when one exists.
-      await TrustedTime.forceResync();
+      if (assessment.syncInProgress) {
+        // Resolution imminent — a sync cycle is in flight. Show a
+        // wait state and re-assess (or await firstSyncSettled)
+        // instead of triggering another cycle.
+        await TrustedTime.firstSyncSettled;
+      } else {
+        await TrustedTime.forceResync();
+      }
   }
 }
 
@@ -148,11 +164,12 @@ final tokyo = TrustedTime.trustedLocalTimeIn('Asia/Tokyo');
 ```dart
 final a = TrustedTime.getAssessment();
 
-a.isTrusted;   // time != null
-a.isSecure;    // authLevel == NtsAuthLevel.verified
-a.confidence;  // ConfidenceLevel.none / low / medium / high
-a.uncertainty; // ± error bound (consensus interval + modeled drift)
-a.anchorAge;   // elapsed monotonic time since the anchor was minted
+a.isTrusted;       // time != null
+a.isSecure;        // authLevel == NtsAuthLevel.verified
+a.confidence;      // ConfidenceLevel.none / low / medium / high
+a.uncertainty;     // ± error bound (consensus interval + modeled drift)
+a.anchorAge;       // elapsed monotonic time since the anchor was minted
+a.syncInProgress;  // a sync cycle is in flight right now
 ```
 
 ### Enforce security requirements

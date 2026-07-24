@@ -146,6 +146,10 @@ void main() {
         // bootstrap (no-quorum) can't fire a stray _performSync into
         // a sibling test in this suite.
         addTearDown(TrustedTimeImpl.instance.dispose);
+        // Let the detached first cycle conclude before registering the
+        // probe: forceResync would otherwise converge on that in-flight
+        // cycle (whose onSyncStarted predates the registration).
+        await TrustedTime.firstSyncSettled;
 
         final probe = _SyncStartedProbe();
         TrustedTime.registerObserver(probe);
@@ -184,6 +188,11 @@ void main() {
           ),
         );
         addTearDown(TrustedTimeImpl.instance.dispose);
+        // Let the detached first cycle conclude first: the three
+        // forceResync calls below must converge on *their own* single
+        // cycle, not silently join the in-flight bootstrap cycle
+        // (whose onSyncStarted predates the probe registration).
+        await TrustedTime.firstSyncSettled;
 
         final probe = _SyncStartedProbe();
         TrustedTime.registerObserver(probe);
@@ -409,13 +418,15 @@ void main() {
   });
 
   group('bootstrap warm-barrier cap', () {
-    test('a hung warm() cannot stall initialize() past warmBarrierCap', () {
-      // Pins the bootstrap warm await's bound: _bootstrap()'s explicit
-      // warmAllSources() call must carry the same warmBarrierCap as
-      // sync()'s warming barrier, so a blackholed NTS-KE handshake
-      // cannot hang initialize() indefinitely. On timeout the wait is
-      // abandoned (warm futures are memoized, not cancellable) and the
-      // first sync cycle proceeds under its own bounds.
+    test('a hung warm() cannot stall initialize(), and the detached '
+        'first cycle stays bounded by warmBarrierCap', () {
+      // Pins the non-blocking cold start against the pathological warm
+      // case: a blackholed NTS-KE handshake must not delay initialize()
+      // at all (the first cycle is detached), and inside that detached
+      // chain the warm wait must still carry warmBarrierCap so the
+      // cycle itself concludes under its own bounds. On timeout the
+      // wait is abandoned (warm futures are memoized, not cancellable)
+      // and the cycle proceeds.
       fakeAsync((async) {
         TrustedTimeImpl? impl;
         Object? initError;
@@ -426,7 +437,7 @@ void main() {
               ntsServers: const [],
               persistState: false,
               // Shrink the first cycle's outer safety timeout
-              // (maxLatency + 6s) so the post-cap window this test
+              // (maxLatency + 6s) so the settle window this test
               // must elapse stays small and explicit.
               maxLatency: const Duration(seconds: 1),
               additionalSources: [_HungWarmSource()],
@@ -434,30 +445,36 @@ void main() {
           ).then((i) => impl = i, onError: (Object e) => initError = e),
         );
 
-        // Just before the cap: still blocked on the hung warm.
-        async.elapse(SyncEngine.warmBarrierCap - const Duration(seconds: 1));
-        expect(impl, isNull);
+        // initialize() resolves after local work only — with zero
+        // elapsed fake time, despite the hung warm. The engine is
+        // unanchored with the first cycle in flight.
+        async.flushMicrotasks();
         expect(initError, isNull);
+        expect(impl, isNotNull);
+        expect(impl!.getAssessment().isTrusted, isFalse);
+        expect(impl!.getAssessment().syncInProgress, isTrue);
+        var settled = false;
+        unawaited(impl!.firstSyncSettled.then((_) => settled = true));
 
-        // Past the cap, bootstrap abandons the warm wait and runs the
-        // first sync cycle, which is bounded by its own warming-barrier
-        // cap (the memoized warm future is still hung) plus the outer
-        // safety timeout (maxLatency + 6s). Elapse the remaining budget
-        // with a second of slack: the cycle fails quorum (the hung
-        // source never samples), _performSync swallows the failure, and
-        // init completes untrusted.
+        // The detached chain: bootstrap warm wait (warmBarrierCap),
+        // then the cycle's own warming barrier re-joins the memoized
+        // hung future (another warmBarrierCap), then the outer safety
+        // timeout (maxLatency + 6s). Elapse with a second of slack:
+        // the cycle fails quorum (the hung source never samples),
+        // _performSync swallows the failure, and the first sync
+        // settles untrusted.
         async.elapse(
-          const Duration(seconds: 1) + // remainder of the bootstrap cap
+          SyncEngine.warmBarrierCap + // bootstrap warm wait cap
               SyncEngine.warmBarrierCap + // sync()'s own barrier cap
               const Duration(seconds: 7) + // outer timeout (1s + 6s)
               const Duration(seconds: 1), // slack
         );
-        expect(initError, isNull);
-        expect(impl, isNotNull);
+        expect(settled, isTrue);
         expect(impl!.getAssessment().isTrusted, isFalse);
+        expect(impl!.getAssessment().syncInProgress, isFalse);
 
         // Cancel the retry timer armed by the failed (transient)
-        // bootstrap cycle so no work leaks out of the fakeAsync zone.
+        // first cycle so no work leaks out of the fakeAsync zone.
         impl!.dispose();
         async.flushMicrotasks();
       });
@@ -636,6 +653,7 @@ void main() {
         ),
       );
       addTearDown(TrustedTimeImpl.instance.dispose);
+      await TrustedTime.firstSyncSettled;
 
       expect(TrustedTime.getAssessment().isTrusted, isFalse);
       expect(TrustedTimeImpl.instance.debugRetryTimerActive, isTrue);
@@ -656,6 +674,7 @@ void main() {
           ),
         );
         addTearDown(TrustedTimeImpl.instance.dispose);
+        await TrustedTime.firstSyncSettled;
 
         expect(TrustedTime.getAssessment().isTrusted, isFalse);
         expect(TrustedTimeImpl.instance.debugRetryTimerActive, isFalse);
@@ -696,6 +715,7 @@ void main() {
         ),
       );
       addTearDown(TrustedTimeImpl.instance.dispose);
+      await TrustedTime.firstSyncSettled;
 
       expect(TrustedTime.getAssessment().isTrusted, isFalse);
       expect(TrustedTimeImpl.instance.debugRetryTimerActive, isFalse);
@@ -790,6 +810,7 @@ void main() {
         ),
       );
       addTearDown(TrustedTimeImpl.instance.dispose);
+      await TrustedTime.firstSyncSettled;
 
       expect(TrustedTime.getAssessment().isTrusted, isFalse);
       await expectLater(
@@ -817,6 +838,7 @@ void main() {
           ),
         );
         addTearDown(TrustedTimeImpl.instance.dispose);
+        await TrustedTime.firstSyncSettled;
 
         expect(TrustedTime.getAssessment().isTrusted, isTrue);
         await expectLater(
@@ -845,6 +867,7 @@ void main() {
           ),
         );
         addTearDown(TrustedTimeImpl.instance.dispose);
+        await TrustedTime.firstSyncSettled;
 
         expect(TrustedTime.getAssessment().isTrusted, isTrue);
         expect(await TrustedTime.validateFreshness(), isTrue);
@@ -891,6 +914,7 @@ void main() {
           ),
         );
         addTearDown(TrustedTimeImpl.instance.dispose);
+        await TrustedTime.firstSyncSettled;
 
         // The establish cycle built a Tier 1 (verified) anchor.
         expect(TrustedTime.getAssessment().isTrusted, isTrue);
@@ -926,6 +950,7 @@ void main() {
         ),
       );
       addTearDown(TrustedTimeImpl.instance.dispose);
+      await TrustedTime.firstSyncSettled;
       expect(TrustedTime.getAssessment().isTrusted, isTrue);
 
       // Move the probe (10s) far outside the configured 5s uncertainty
@@ -958,6 +983,9 @@ void main() {
           ],
         ),
       );
+      // These tests assert on the establish cycle's concluded anchor
+      // and the timers it arms; wait for the detached cycle to settle.
+      await TrustedTime.firstSyncSettled;
       addTearDown(() => TrustedTimeImpl.instance.dispose());
     }
 
@@ -1134,6 +1162,7 @@ void main() {
         ),
       );
       addTearDown(() => TrustedTimeImpl.instance.dispose());
+      await TrustedTime.firstSyncSettled;
       final impl = TrustedTimeImpl.instance;
 
       // The bootstrap establish cycle queried the sources; only
@@ -1252,6 +1281,7 @@ void main() {
         ),
       );
       addTearDown(() => TrustedTimeImpl.instance.dispose());
+      await TrustedTime.firstSyncSettled;
       return counter;
     }
 
@@ -1358,19 +1388,18 @@ void main() {
       });
     });
 
-    test('an invalid trust config cannot crash the zone from the '
-        'unawaited background warm-up', () {
-      // The warm-start restore never touches SyncEngine._sources, so
-      // the first access happens inside the backgrounded
-      // warmAllSources() — where the lazy initializer's ArgumentError
-      // (usePlatformTrust + customRootCerts, via effectiveTrustMode)
-      // would surface as an unhandled async exception after
-      // initialize() has returned. _bootstrap must catch it: an
-      // uncaught error here fails the fakeAsync zone and this test.
-      // (The cold path keeps propagating the same error through its
-      // awaited warm call — fail-fast on misconfiguration.)
+    test('an invalid trust config fails initialize() even on the '
+        'warm-restore path', () {
+      // The eager effectiveTrustMode gate in _bootstrap validates the
+      // trust config on every path. Before the gate, a warm restore
+      // never touched SyncEngine._sources, so usePlatformTrust +
+      // customRootCerts sailed through initialize() and only surfaced
+      // later from the backgrounded warm-up. Now the misconfiguration
+      // throws from initialize() itself — the documented error split:
+      // config errors throw, network outcomes never do.
       fakeAsync((async) {
         TrustedTimeImpl? impl;
+        Object? initError;
         unawaited(
           TrustedTimeImpl.init(
             const TrustedTimeConfig(
@@ -1379,17 +1408,15 @@ void main() {
               usePlatformTrust: true,
               customRootCerts: [1, 2, 3],
             ),
-          ).then((i) => impl = i),
+          ).then((i) => impl = i, onError: (Object e) => initError = e),
         );
         async.flushMicrotasks();
 
-        // The restore itself is unaffected: initialize() completed
-        // and the persisted anchor is live.
-        expect(impl, isNotNull);
-        expect(impl!.getAssessment().isTrusted, isTrue);
-
-        impl!.dispose();
-        async.flushMicrotasks();
+        expect(impl, isNull);
+        expect(initError, isA<ArgumentError>());
+        // The failed init released its partial engine: no timers leak
+        // out of the zone.
+        expect(async.pendingTimers, isEmpty);
       });
     });
 
@@ -1418,6 +1445,163 @@ void main() {
         async.elapse(const Duration(seconds: 30));
         expect(async.pendingTimers, isEmpty);
       });
+    });
+
+    test('firstSyncSettled is already complete when initialize() '
+        'resolves on a warm restore', () {
+      // A warm restore needs no first cycle: the settle gate must not
+      // make callers wait on the background warm-up (which is not a
+      // sync), and the assessment must not flag activity.
+      fakeAsync((async) {
+        TrustedTimeImpl? impl;
+        unawaited(
+          TrustedTimeImpl.init(
+            const TrustedTimeConfig(ntpServers: [], ntsServers: []),
+          ).then((i) => impl = i),
+        );
+        async.flushMicrotasks();
+        expect(impl, isNotNull);
+        expect(impl!.getAssessment().isTrusted, isTrue);
+        expect(impl!.getAssessment().syncInProgress, isFalse);
+
+        var settled = false;
+        unawaited(impl!.firstSyncSettled.then((_) => settled = true));
+        async.flushMicrotasks();
+        expect(settled, isTrue);
+
+        impl!.dispose();
+        async.flushMicrotasks();
+      });
+    });
+  });
+
+  group('non-blocking initialize (cold start)', () {
+    // The trusted_time-pzq contract: initialize() resolves after local
+    // work only; the first sync cycle runs detached, observable as
+    // syncInProgress and awaitable via firstSyncSettled.
+    const config = TrustedTimeConfig(
+      ntpServers: [],
+      ntsServers: [],
+      persistState: false,
+      minimumQuorum: 2,
+      minGroupCount: 1,
+      earlyExit: false,
+    );
+
+    test('initialize() resolves while the first cycle is still in '
+        'flight, and firstSyncSettled reports its conclusion', () async {
+      final gate = Completer<void>();
+      await TrustedTimeImpl.init(
+        config.copyWith(
+          additionalSources: [
+            _GatedSource(gate, id: 'nts:a', groupId: 'g1'),
+            _GatedSource(gate, id: 'nts:b', groupId: 'g2'),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+
+      // init resolved with both sources still blocked on the gate:
+      // unanchored, cycle in flight, settle gate open.
+      final during = TrustedTime.getAssessment();
+      expect(during.isTrusted, isFalse);
+      expect(during.reason, TrustStatusReason.neverSynced);
+      expect(during.syncInProgress, isTrue);
+      var settled = false;
+      unawaited(TrustedTime.firstSyncSettled.then((_) => settled = true));
+      await Future<void>.delayed(Duration.zero);
+      expect(settled, isFalse);
+
+      // Release the sources; the detached cycle concludes trusted.
+      gate.complete();
+      await TrustedTime.firstSyncSettled;
+      final after = TrustedTime.getAssessment();
+      expect(after.isTrusted, isTrue);
+      expect(after.syncInProgress, isFalse);
+    });
+
+    test('a failed first cycle settles firstSyncSettled without '
+        'throwing, leaving a syncFailed posture', () async {
+      await TrustedTimeImpl.init(
+        config.copyWith(
+          additionalSources: [
+            _FailingSource(id: 'nts:a', groupId: 'g1'),
+            _FailingSource(id: 'nts:b', groupId: 'g2'),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+
+      // Conclusion, not outcome: the await completes normally even
+      // though the cycle failed — the verdict lives on the assessment.
+      await TrustedTime.firstSyncSettled;
+      final assessment = TrustedTime.getAssessment();
+      expect(assessment.isTrusted, isFalse);
+      expect(assessment.reason, TrustStatusReason.syncFailed);
+      expect(assessment.syncInProgress, isFalse);
+    });
+
+    test('dispose before the first cycle concludes settles the gate '
+        'so a waiter cannot hang', () async {
+      final gate = Completer<void>();
+      final impl = await TrustedTimeImpl.init(
+        config.copyWith(
+          additionalSources: [
+            _GatedSource(gate, id: 'nts:a', groupId: 'g1'),
+            _GatedSource(gate, id: 'nts:b', groupId: 'g2'),
+          ],
+        ),
+      );
+
+      expect(impl.getAssessment().syncInProgress, isTrue);
+      impl.dispose();
+      // Must complete promptly despite the still-blocked sources.
+      await impl.firstSyncSettled.timeout(const Duration(seconds: 5));
+      gate.complete();
+    });
+
+    test('forceResync reports syncInProgress while its cycle is in '
+        'flight', () async {
+      // The flag is an activity signal beyond the first cycle: a
+      // forceResync purges the anchor (documented) and rebuilds — the
+      // in-flight window must read as unanchored *with* activity, the
+      // "resolution imminent" wait state rather than a settled failure.
+      final gate = Completer<void>();
+      var firstCycleDone = false;
+      await TrustedTimeImpl.init(
+        config.copyWith(
+          additionalSources: [
+            _GatedThenBoxedSource(
+              () => firstCycleDone,
+              gate,
+              id: 'nts:a',
+              groupId: 'g1',
+            ),
+            _GatedThenBoxedSource(
+              () => firstCycleDone,
+              gate,
+              id: 'nts:b',
+              groupId: 'g2',
+            ),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      await TrustedTime.firstSyncSettled;
+      firstCycleDone = true;
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
+      expect(TrustedTime.getAssessment().syncInProgress, isFalse);
+
+      final resync = TrustedTime.forceResync();
+      await Future<void>.delayed(Duration.zero);
+      final during = TrustedTime.getAssessment();
+      expect(during.isTrusted, isFalse);
+      expect(during.syncInProgress, isTrue);
+
+      gate.complete();
+      await resync;
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
+      expect(TrustedTime.getAssessment().syncInProgress, isFalse);
     });
   });
 }
@@ -1567,6 +1751,67 @@ class _HungWarmSource implements TimeSource, Warmable {
 
   @override
   Future<TimeSample> getTime() => Completer<TimeSample>().future;
+}
+
+/// A [TimeSource] blocked on an external gate, letting a test hold the
+/// first sync cycle in flight and release it deterministically.
+class _GatedSource implements TimeSource {
+  _GatedSource(this._gate, {required this.id, required this.groupId});
+
+  final Completer<void> _gate;
+  @override
+  final String id;
+  @override
+  final String groupId;
+  static const int halfWidthMs = 10;
+
+  @override
+  Future<TimeSample> getTime() async {
+    await _gate.future;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    return TimeSample(
+      interval: TimeInterval(
+        startMs: nowMs - halfWidthMs,
+        endMs: nowMs + halfWidthMs,
+      ),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
+}
+
+/// A [TimeSource] that answers immediately until the flag flips, then
+/// blocks on the gate — so a test can establish an anchor with the
+/// first cycle and hold a *subsequent* cycle in flight.
+class _GatedThenBoxedSource implements TimeSource {
+  _GatedThenBoxedSource(
+    this._gateActive,
+    this._gate, {
+    required this.id,
+    required this.groupId,
+  });
+
+  final bool Function() _gateActive;
+  final Completer<void> _gate;
+  @override
+  final String id;
+  @override
+  final String groupId;
+  static const int halfWidthMs = 10;
+
+  @override
+  Future<TimeSample> getTime() async {
+    if (_gateActive()) await _gate.future;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    return TimeSample(
+      interval: TimeInterval(
+        startMs: nowMs - halfWidthMs,
+        endMs: nowMs + halfWidthMs,
+      ),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
 }
 
 /// A [TimeSource] that reports an interval centred on a [_MidpointBox]

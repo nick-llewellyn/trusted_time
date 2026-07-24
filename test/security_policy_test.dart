@@ -121,6 +121,9 @@ void main() {
           usePlatformTrust: false,
         ).copyWith(additionalSources: sources),
       );
+      // initialize() is non-blocking: these tests assert on the first
+      // cycle's concluded posture, so wait for it to settle.
+      await TrustedTime.firstSyncSettled;
       addTearDown(TrustedTimeImpl.instance.dispose);
     }
 
@@ -226,6 +229,9 @@ void main() {
           usePlatformTrust: false,
         ).copyWith(additionalSources: sources),
       );
+      // initialize() is non-blocking: these tests assert on the first
+      // cycle's concluded posture, so wait for it to settle.
+      await TrustedTime.firstSyncSettled;
       addTearDown(TrustedTimeImpl.instance.dispose);
     }
 
