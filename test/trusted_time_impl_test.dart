@@ -1358,6 +1358,41 @@ void main() {
       });
     });
 
+    test('an invalid trust config cannot crash the zone from the '
+        'unawaited background warm-up', () {
+      // The warm-start restore never touches SyncEngine._sources, so
+      // the first access happens inside the backgrounded
+      // warmAllSources() — where the lazy initializer's ArgumentError
+      // (usePlatformTrust + customRootCerts, via effectiveTrustMode)
+      // would surface as an unhandled async exception after
+      // initialize() has returned. _bootstrap must catch it: an
+      // uncaught error here fails the fakeAsync zone and this test.
+      // (The cold path keeps propagating the same error through its
+      // awaited warm call — fail-fast on misconfiguration.)
+      fakeAsync((async) {
+        TrustedTimeImpl? impl;
+        unawaited(
+          TrustedTimeImpl.init(
+            const TrustedTimeConfig(
+              ntpServers: [],
+              ntsServers: [],
+              usePlatformTrust: true,
+              customRootCerts: [1, 2, 3],
+            ),
+          ).then((i) => impl = i),
+        );
+        async.flushMicrotasks();
+
+        // The restore itself is unaffected: initialize() completed
+        // and the persisted anchor is live.
+        expect(impl, isNotNull);
+        expect(impl!.getAssessment().isTrusted, isTrue);
+
+        impl!.dispose();
+        async.flushMicrotasks();
+      });
+    });
+
     test('immediate dispose after warm restore is safe with the '
         'background warm still in flight', () {
       fakeAsync((async) {

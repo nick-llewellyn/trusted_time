@@ -539,12 +539,31 @@ final class TrustedTimeImpl {
         // Prime per-source warm state (e.g., NTS cookie jars) in the
         // background so the scheduled refresh cycle finds warmed
         // sources, without holding up the already-restored
-        // initialize(). Unawaited is clean here: warmAllSources()
-        // swallows per-source failures internally and cannot throw,
-        // and warm futures are memoized so the refresh cycle's
-        // warming barrier re-joins (or has already joined) the same
-        // work.
-        unawaited(_syncEngine.warmAllSources());
+        // initialize(). warmAllSources() swallows per-source warm()
+        // failures internally, but it can still complete with an
+        // error before reaching them: the engine's lazy _sources
+        // initializer runs on first access and throws ArgumentError
+        // on an invalid trust config (effectiveTrustMode). On the
+        // cold path below that throw propagates through the awaited
+        // call and fails initialize() fast — the right outcome for a
+        // misconfiguration. Here the future is unawaited, so the
+        // same throw would surface as an unhandled async exception
+        // after initialize() has already returned. Catch and log it
+        // instead: this warm-up is strictly best-effort, and the
+        // misconfiguration still surfaces deterministically at the
+        // next scheduled refresh through _performSync's catch. Warm
+        // futures are memoized, so the refresh cycle's warming
+        // barrier re-joins (or has already joined) the same work.
+        unawaited(
+          Future.sync(_syncEngine.warmAllSources).catchError((Object e) {
+            if (TrustedTimeLog.enabled) {
+              TrustedTimeLog.log(
+                TrustedTimeLogLevel.warning,
+                '[TrustedTime] Background bootstrap warm-up failed: $e',
+              );
+            }
+          }),
+        );
         return;
       }
       // R5: the persisted anchor was discarded because the device
