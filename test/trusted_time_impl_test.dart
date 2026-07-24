@@ -1283,6 +1283,123 @@ void main() {
       expect(TrustedTime.getAssessment().time!.year, 2023);
     });
   });
+
+  group('bootstrap ordering: anchor restore precedes warm phase', () {
+    // Pins the reorder in _bootstrap(): the persisted-anchor restore
+    // check runs before any network-bound warm-up, so a warm start
+    // never pays handshake wall time. The warm still happens on that
+    // path — fired unawaited into the background for the scheduled
+    // refresh to benefit from.
+    final persistedUtc = DateTime.utc(2023, 1, 1).millisecondsSinceEpoch;
+    final persistedAnchorJson = jsonEncode(
+      TrustAnchor(
+        networkUtcMs: persistedUtc,
+        uptimeMs: 1000,
+        wallMs: persistedUtc,
+        uncertaintyMs: 10,
+        bootId: 'boot-A',
+      ).toJson(),
+    );
+
+    setUp(() {
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(storageChannel, (call) async {
+        if (call.method == 'read') {
+          final key = (call.arguments as Map)['key'] as String?;
+          if (key != null && key.startsWith('tt_anchor_')) {
+            return persistedAnchorJson;
+          }
+        }
+        return null;
+      });
+      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+        if (call.method == 'getUptimeMs') return 500000;
+        if (call.method == 'getBootId') return 'boot-A';
+        return null;
+      });
+    });
+
+    tearDown(() {
+      // Restore the file-level default handlers for sibling groups.
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(storageChannel, (call) async => null);
+      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+        if (call.method == 'getUptimeMs') return 1000;
+        return null;
+      });
+    });
+
+    test('warm restore completes without waiting on source warm-up', () {
+      fakeAsync((async) {
+        TrustedTimeImpl? impl;
+        unawaited(
+          TrustedTimeImpl.init(
+            TrustedTimeConfig(
+              ntpServers: const [],
+              ntsServers: const [],
+              additionalSources: [_HungWarmSource()],
+            ),
+          ).then((i) => impl = i),
+        );
+
+        // The restore path is storage/channel-bound only: a microtask
+        // flush resolves init with zero elapsed fake time even though
+        // the source's warm() never completes. Before the reorder this
+        // sat behind the awaited warm until warmBarrierCap.
+        async.flushMicrotasks();
+        expect(impl, isNotNull);
+        expect(impl!.getAssessment().isTrusted, isTrue);
+        expect(impl!.getAssessment().time!.year, 2023);
+
+        impl!.dispose();
+        async.flushMicrotasks();
+      });
+    });
+
+    test('immediate dispose after warm restore is safe with the '
+        'background warm still in flight', () {
+      fakeAsync((async) {
+        TrustedTimeImpl? impl;
+        unawaited(
+          TrustedTimeImpl.init(
+            TrustedTimeConfig(
+              ntpServers: const [],
+              ntsServers: const [],
+              additionalSources: [_SlowWarmSource()],
+            ),
+          ).then((i) => impl = i),
+        );
+        async.flushMicrotasks();
+        expect(impl, isNotNull);
+
+        // Dispose while the unawaited background warm is still in
+        // flight, then let it complete. warmAllSources() only touches
+        // source-internal state, so the late completion must neither
+        // throw (an uncaught error fails the fakeAsync zone) nor leave
+        // engine work scheduled.
+        impl!.dispose();
+        async.elapse(const Duration(seconds: 30));
+        expect(async.pendingTimers, isEmpty);
+      });
+    });
+  });
+}
+
+/// A [TimeSource] whose [warm] completes after a delay, to exercise a
+/// background warm that outlives the engine it was fired from.
+class _SlowWarmSource implements TimeSource, Warmable {
+  @override
+  final String id = 'nts:slow-warm';
+  @override
+  final String groupId = 'gslow';
+
+  @override
+  Future<void> warm() => Future<void>.delayed(const Duration(seconds: 5));
+
+  @override
+  Future<TimeSample> getTime() => Completer<TimeSample>().future;
 }
 
 /// Minimal [SyncObserver] that just counts onSyncStarted invocations,
