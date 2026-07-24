@@ -571,19 +571,22 @@ final class SyncEngine {
   /// break.
   ///
   /// Strong signal: [nts.NtsErrorKeProtocol] whose rustls diagnostic
-  /// names an expired / not-yet-valid peer certificate. Weak signal:
-  /// [nts.NtsErrorTimeout] in the TLS phase — some middleboxes kill
-  /// the handshake instead of surfacing an alert; accepted because the
-  /// rescue retry is cheap, one-shot, and can only fail again, never
-  /// weaken validation.
+  /// names an expired / not-yet-valid peer certificate. Other rustls
+  /// certificate rejections (UnknownIssuer, BadSignature, hostname
+  /// mismatch, ...) share the `invalid peer certificate` prefix but
+  /// are diagnostically specific non-skew failures — matching them
+  /// would burn the one-shot rescue latch on a problem the rescue
+  /// cannot fix. Weak signal: [nts.NtsErrorTimeout] in the TLS phase
+  /// — some middleboxes kill the handshake instead of surfacing an
+  /// alert; accepted because the rescue retry is cheap, one-shot, and
+  /// can only fail again, never weaken validation.
   @visibleForTesting
   static bool isCertValidityFailure(Object error) {
     if (error is nts.NtsErrorKeProtocol) {
       final message = error.message.toLowerCase();
       return message.contains('expired') ||
           message.contains('notvalidyet') ||
-          message.contains('not valid yet') ||
-          message.contains('invalid peer certificate');
+          message.contains('not valid yet');
     }
     if (error is nts.NtsErrorTimeout) {
       return error.phase == nts.TimeoutPhase.tls;

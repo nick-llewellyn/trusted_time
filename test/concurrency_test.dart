@@ -2252,6 +2252,12 @@ void main() {
 
     const negatives = <Object>[
       nts.NtsErrorKeProtocol(message: 'unexpected KE record type 42'),
+      // Shares rustls's generic `invalid peer certificate` prefix but
+      // is not a validity-window problem: must not arm the rescue.
+      nts.NtsErrorKeProtocol(
+        message: 'invalid peer certificate: UnknownIssuer',
+      ),
+      nts.NtsErrorKeProtocol(message: 'invalid peer certificate: BadSignature'),
       nts.NtsErrorTimeout(phase: nts.TimeoutPhase.connect),
       nts.NtsErrorTimeout(phase: nts.TimeoutPhase.dnsTimeout),
       nts.NtsErrorTimeout(phase: nts.TimeoutPhase.ntp),
