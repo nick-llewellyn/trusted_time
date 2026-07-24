@@ -200,8 +200,9 @@ Future<void> main() async {
 
   // Register telemetry after init so the recorder receives every
   // subsequent sync cycle (refreshes, Force Resync, integrity-triggered
-  // syncs). The very first bootstrap sync is missed because the engine
-  // instance does not exist until initialize() returns.
+  // syncs). The very first bootstrap sync's onSyncStarted is missed:
+  // initialize() resolves without waiting for the detached first
+  // cycle, whose start precedes this registration.
   //
   // The recorder is intentionally root-scoped and never disposed: its
   // SyncObserver registration is process-wide, so disposing it from a

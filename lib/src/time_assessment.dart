@@ -21,9 +21,9 @@ enum TrustStatusReason {
   degraded,
 
   /// Cold start: no usable persisted anchor was found and no sync
-  /// attempt has concluded yet (the first cycle may still be in
-  /// flight). A concluded-but-failed first cycle transitions to
-  /// [syncFailed].
+  /// attempt has concluded yet. Whether the first cycle is currently
+  /// in flight is queryable via [TimeAssessment.syncInProgress]. A
+  /// concluded-but-failed first cycle transitions to [syncFailed].
   neverSynced,
 
   /// A persisted anchor was found on warm start but discarded because
@@ -67,6 +67,7 @@ final class TimeAssessment {
     required this.reason,
     required this.authLevel,
     required this.confidence,
+    this.syncInProgress = false,
     this.time,
     this.uncertainty,
     this.anchorAge,
@@ -140,6 +141,34 @@ final class TimeAssessment {
   /// [time]) or when the engine has no prior state to extrapolate from.
   final TrustedTimeEstimate? estimate;
 
+  /// Whether a sync cycle is in flight at the moment of assessment.
+  ///
+  /// True unconditionally whenever the engine is actively syncing: the
+  /// first cycle after a cold start, a retry after failure, a scheduled
+  /// background refresh, or a `forceResync` rebuild. It is an activity
+  /// signal orthogonal to [reason]: it can be true while anchored (a
+  /// routine refresh) and is **not** by itself a "something is wrong"
+  /// indicator — do not wire UI (e.g. a spinner) directly to it in the
+  /// anchored state, or every background refresh will flicker it.
+  ///
+  /// Unanchored + `syncInProgress` means a definitive answer is
+  /// imminent — re-assess shortly rather than treating the posture as
+  /// settled:
+  ///
+  /// ```dart
+  /// final a = TrustedTime.getAssessment();
+  /// if (!a.isTrusted && a.syncInProgress) {
+  ///   // Resolution imminent — show a wait state, re-assess shortly
+  ///   // (or await TrustedTime.firstSyncSettled).
+  /// } else if (!a.isTrusted) {
+  ///   // Concluded without trust — switch on a.reason.
+  /// }
+  /// ```
+  ///
+  /// This is the most perishable field on the snapshot: re-assess at
+  /// meaningful boundaries, never cache.
+  final bool syncInProgress;
+
   /// Whether a live trust anchor backs this assessment.
   ///
   /// Equivalent to `time != null`. True for [TrustStatusReason.synchronized]
@@ -156,5 +185,6 @@ final class TimeAssessment {
   String toString() =>
       'TimeAssessment(reason: ${reason.name}, time: $time, '
       'authLevel: ${authLevel.name}, confidence: ${confidence.name}, '
-      'uncertainty: $uncertainty, anchorAge: $anchorAge)';
+      'uncertainty: $uncertainty, anchorAge: $anchorAge, '
+      'syncInProgress: $syncInProgress)';
 }

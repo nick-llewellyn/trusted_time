@@ -70,6 +70,29 @@ void main() {
       expect(assessment.confidence, ConfidenceLevel.none);
     });
 
+    test('setSyncInProgress scripts the activity flag orthogonally to '
+        'the trust posture', () {
+      // Defaults off, scriptable in both postures — mirroring the
+      // production flag's independence from reason.
+      expect(TrustedTime.getAssessment().syncInProgress, isFalse);
+
+      mock.setSyncInProgress(true);
+      expect(TrustedTime.getAssessment().syncInProgress, isTrue);
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
+
+      mock.setTrusted(false);
+      final waiting = TrustedTime.getAssessment();
+      expect(waiting.isTrusted, isFalse);
+      expect(waiting.syncInProgress, isTrue);
+
+      mock.setSyncInProgress(false);
+      expect(TrustedTime.getAssessment().syncInProgress, isFalse);
+    });
+
+    test('firstSyncSettled is immediate under a mock override', () async {
+      await TrustedTime.firstSyncSettled.timeout(const Duration(seconds: 1));
+    });
+
     test('Auth posture: verified anchors report synchronized, '
         'unauthenticated anchors report degraded', () {
       expect(TrustedTime.getAssessment().reason, TrustStatusReason.degraded);

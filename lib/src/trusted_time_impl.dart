@@ -47,12 +47,11 @@ final class TrustedTimeImpl {
       config: config,
       clock: clock,
       // Bind the proxy observer to *this* instance's _observers set
-      // rather than to the static _instance. _instance is not assigned
-      // until _bootstrap() completes (see init()), and _bootstrap's
-      // first sync cycle synchronously invokes onSyncStarted, which
-      // would dereference a null _instance on the very first init() —
-      // surfacing as 'Null check operator used on a null value' inside
-      // _performSync's catch and silently failing the bootstrap sync.
+      // rather than to the static _instance: during a re-initialize
+      // the previous engine's teardown and the new bootstrap must not
+      // observe each other through the shared static, and binding to
+      // the instance keeps the observer set correct regardless of
+      // when init() assigns _instance.
       observer: _ProxySyncObserver(() => _observers),
       cache:
           _cache, // Shared cache between impl and engine for state propagation
@@ -69,10 +68,6 @@ final class TrustedTimeImpl {
 
   /// Documented.
   static Future<TrustedTimeImpl> init(TrustedTimeConfig config) async {
-    // Clear the singleton before bootstrapping the replacement: if
-    // _bootstrap() throws (e.g. the requireSleepAwareProjection
-    // fail-fast gate), [instance] must report "not initialized"
-    // rather than hand out the disposed previous engine.
     _instance?.dispose();
     _instance = null;
     final impl = TrustedTimeImpl._(
@@ -80,15 +75,25 @@ final class TrustedTimeImpl {
       store: AnchorStore(),
       clock: PlatformMonotonicClock(),
     );
+    // Assign the singleton *before* bootstrapping: _bootstrap() fires
+    // the cold-start first sync detached, and that cycle is not
+    // ordered against init() resuming — any path it triggers that
+    // reads [instance] (observer callbacks, integrity events) must
+    // find the live engine, not a null. The pre-detachment ordering
+    // (assign after a fully-awaited bootstrap) would make those reads
+    // assert.
+    _instance = impl;
     try {
       await impl._bootstrap();
     } catch (_) {
-      // Release the partially-bootstrapped engine's resources (sync
-      // engine, timers) before propagating.
+      // Restore the "not initialized" posture before propagating: if
+      // _bootstrap() throws (a fail-fast config gate), [instance] must
+      // not hand out the disposed partial engine. dispose() also
+      // releases its resources (sync engine, timers).
+      _instance = null;
       impl.dispose();
       rethrow;
     }
-    _instance = impl;
     _bgChannel.setMethodCallHandler(impl._handleBackgroundMethodCall);
     return impl;
   }
@@ -121,6 +126,14 @@ final class TrustedTimeImpl {
   Timer? _retryTimer;
   Timer? _desktopBgTimer;
   Completer<void>? _syncInProgress;
+
+  /// Completes when the first sync cycle concludes (see
+  /// [firstSyncSettled]). Settled via [_settleFirstSync] from exactly
+  /// three sites: the warm-restore return in [_bootstrap] (no cycle
+  /// needed), the conclusion of the detached first cycle fired by the
+  /// cold path, and [dispose] (so a waiter never hangs on an engine
+  /// that was torn down before its first cycle concluded).
+  final Completer<void> _firstSyncSettled = Completer<void>();
 
   // Tiered-cadence auxiliaries (ADR 0006), live only under
   // [CadenceMode.tieredMobile]. Under the legacy
@@ -324,6 +337,7 @@ final class TrustedTimeImpl {
         time: time,
         uncertainty: Duration(milliseconds: anchor.uncertaintyMs + driftMs),
         anchorAge: Duration(milliseconds: elapsedMs),
+        syncInProgress: _syncActivity,
       );
     }
     return TimeAssessment(
@@ -331,8 +345,17 @@ final class TrustedTimeImpl {
       authLevel: NtsAuthLevel.none,
       confidence: ConfidenceLevel.none,
       estimate: nowEstimated(),
+      syncInProgress: _syncActivity,
     );
   }
+
+  /// Backs [TimeAssessment.syncInProgress]. A cycle guarded by
+  /// [_syncInProgress] counts, and so does the detached first-sync
+  /// chain before its cycle reaches _performSync (its warm phase):
+  /// a caller sampling right after initialize() must read the cold
+  /// start as "resolution imminent", not as a concluded posture.
+  bool get _syncActivity =>
+      _syncInProgress != null || !_firstSyncSettled.isCompleted;
 
   /// Best-effort wall-clock extrapolation backing
   /// [TimeAssessment.estimate]. Susceptible to wall-clock manipulation.
@@ -505,6 +528,17 @@ final class TrustedTimeImpl {
       );
     }
 
+    // Second fail-fast gate: trust-config validation. The getter
+    // throws ArgumentError on usePlatformTrust + customRootCerts.
+    // Before the first sync was detached, the cold path's *awaited*
+    // warm call surfaced this through the engine's lazy _sources
+    // initializer; with that cycle now backgrounded, nothing on the
+    // initialize() critical path would touch _sources at all. Evaluate
+    // eagerly so a misconfiguration throws synchronously from
+    // initialize() on every path — the error split the API documents:
+    // config errors throw, network outcomes never do.
+    final _ = _config.effectiveTrustMode;
+
     _startTieredSchedulingIfNeeded();
 
     if (_config.persistState) {
@@ -536,30 +570,30 @@ final class TrustedTimeImpl {
         if (_config.backgroundSyncInterval != null) {
           await enableBackgroundSync(_config.backgroundSyncInterval!);
         }
+        // No first cycle is needed on a warm restore: the engine is
+        // already anchored, so a firstSyncSettled waiter has its
+        // answer now.
+        _settleFirstSync();
         // Prime per-source warm state (e.g., NTS cookie jars) in the
         // background so the scheduled refresh cycle finds warmed
         // sources, without holding up the already-restored
         // initialize(). warmAllSources() swallows per-source warm()
-        // failures internally, but it can still complete with an
-        // error before reaching them: the engine's lazy _sources
-        // initializer runs on first access and throws ArgumentError
-        // on an invalid trust config (effectiveTrustMode). On the
-        // cold path below that throw propagates through the awaited
-        // call and fails initialize() fast — the right outcome for a
-        // misconfiguration. Here the future is unawaited, so the
-        // same throw would surface as an unhandled async exception
-        // after initialize() has already returned. Catch and log it
-        // instead: this warm-up is strictly best-effort, and the
-        // misconfiguration still surfaces deterministically at the
-        // next scheduled refresh through _performSync's catch. Warm
+        // failures internally; the eager effectiveTrustMode gate above
+        // has already ruled out the lazy _sources initializer's
+        // ArgumentError. The catchError stays as defence in depth —
+        // this warm-up is strictly best-effort and an unawaited future
+        // must never surface an unhandled async exception. Warm
         // futures are memoized, so the refresh cycle's warming
         // barrier re-joins (or has already joined) the same work.
         unawaited(
-          Future.sync(_syncEngine.warmAllSources).catchError((Object e) {
+          Future.sync(_syncEngine.warmAllSources).catchError((
+            Object e,
+            StackTrace s,
+          ) {
             if (TrustedTimeLog.enabled) {
               TrustedTimeLog.log(
                 TrustedTimeLogLevel.warning,
-                '[TrustedTime] Background bootstrap warm-up failed: $e',
+                '[TrustedTime] Background bootstrap warm-up failed: $e\n$s',
               );
             }
           }),
@@ -574,29 +608,71 @@ final class TrustedTimeImpl {
       _unanchoredReason = TrustStatusReason.rebootDetected;
     }
 
-    // Cold path (no restorable anchor): eagerly prime per-source warm
-    // state so the first sync cycle's RTT measurements are not
-    // contaminated by cold-start handshake latency. Sources without a
-    // warm phase are unaffected. This adds the slowest source's
-    // handshake time (typically ~hundreds of ms) to initialize() when
-    // NTS sources are configured. The await is bounded by
-    // warmBarrierCap, matching sync()'s warming barrier: warm futures
-    // are memoized and not cancellable, so on timeout the wait is
-    // abandoned (not the handshake) and the first cycle's Phase A JIT
-    // warm re-joins the same future under the maxLatency budget. Worst
-    // case is losing RTT decontamination for a pathologically slow
-    // source's first cycle — a hung handshake must not stall
-    // initialize() indefinitely.
-    await _syncEngine.warmAllSources().timeout(
-      SyncEngine.warmBarrierCap,
-      onTimeout: () {},
+    // Cold path (no restorable anchor): fire the first sync cycle
+    // detached so initialize() resolves after local work only — the
+    // caller observes the wait state through getAssessment()
+    // (unanchored + syncInProgress) or awaits [firstSyncSettled] for
+    // its conclusion. The warm-then-sync ordering inside the detached
+    // chain is preserved: eagerly priming per-source warm state keeps
+    // the first cycle's RTT measurements free of cold-start handshake
+    // latency, and the wait stays bounded by warmBarrierCap (warm
+    // futures are memoized and not cancellable, so on timeout the wait
+    // is abandoned — not the handshake — and the cycle's Phase A JIT
+    // warm re-joins the same future under the maxLatency budget).
+    //
+    // The chain cannot surface an unhandled async exception: the
+    // eager effectiveTrustMode gate in init() has already ruled out
+    // the lazy _sources initializer's ArgumentError, warmAllSources()
+    // swallows per-source warm() failures, and _performSync() catches
+    // every cycle failure internally (recordFailure + retry
+    // scheduling). The catchError is defence in depth for anything
+    // that slips past those layers, and _settleFirstSync() in the
+    // whenComplete resolves [firstSyncSettled] on success and failure
+    // alike — it reports conclusion, not outcome.
+    //
+    // The chain can outlive the engine: dispose() may run while the
+    // warm phase is still in flight. The _disposed checks before each
+    // phase stop a torn-down engine from starting network work or
+    // re-arming timers (dispose has already settled firstSyncSettled,
+    // so bailing out early cannot strand a waiter). A phase already
+    // past its check merely runs to completion against inert state —
+    // dispose cancels timers and _performSync's failure path re-checks
+    // _disposed before scheduling a retry.
+    unawaited(
+      Future.sync(() async {
+            if (_disposed) return;
+            await _syncEngine.warmAllSources().timeout(
+              SyncEngine.warmBarrierCap,
+              onTimeout: () {},
+            );
+            if (_disposed) return;
+            await _performSync();
+          })
+          .catchError((Object e, StackTrace s) {
+            if (TrustedTimeLog.enabled) {
+              TrustedTimeLog.log(
+                TrustedTimeLogLevel.warning,
+                '[TrustedTime] Detached first sync cycle failed: $e\n$s',
+              );
+            }
+          })
+          .whenComplete(_settleFirstSync),
     );
-
-    await _performSync();
     if (_config.backgroundSyncInterval != null) {
       await enableBackgroundSync(_config.backgroundSyncInterval!);
     }
   }
+
+  /// Resolves [firstSyncSettled] exactly once; later calls are no-ops
+  /// (e.g. dispose() racing the detached first cycle's whenComplete).
+  void _settleFirstSync() {
+    if (!_firstSyncSettled.isCompleted) _firstSyncSettled.complete();
+  }
+
+  /// Completes when the engine's first sync cycle has concluded —
+  /// success or failure alike. See [TrustedTime.firstSyncSettled] for
+  /// the full contract.
+  Future<void> get firstSyncSettled => _firstSyncSettled.future;
 
   /// Whether the host platform supports cryptographically secure time (NTS).
   bool get supportsSecureTime => _config.ntsServers.isNotEmpty;
@@ -736,6 +812,7 @@ final class TrustedTimeImpl {
     // diagnostics).
     _refreshTimer?.cancel();
     _refreshTimer = null;
+    if (_disposed) return;
     if (_automaticRefreshPaused) return;
     if (_activeRefreshInterval <= Duration.zero) return;
     _refreshTimer = Timer(_activeRefreshInterval, _performSync);
@@ -841,6 +918,7 @@ final class TrustedTimeImpl {
     // _scheduleValidate and keeping "_retryTimer == null" a reliable
     // "no retry armed" signal for diagnostics.
     _retryTimer = null;
+    if (_disposed) return;
     final delay = _syncEngine.getNextRetryDelay();
     if (delay > Duration.zero) {
       _retryTimer = Timer(delay, _performSync);
@@ -1132,6 +1210,11 @@ final class TrustedTimeImpl {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    // A firstSyncSettled waiter must never hang on an engine torn down
+    // before its first cycle concluded (the detached cycle's own
+    // whenComplete may still fire later; _settleFirstSync is
+    // idempotent).
+    _settleFirstSync();
     // Detach the static background-channel handler so platform
     // callbacks (onBackgroundSync) can never invoke a disposed
     // engine. Only the live engine ever reaches this line — stale
