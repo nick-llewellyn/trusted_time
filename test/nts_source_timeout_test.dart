@@ -36,6 +36,7 @@ typedef _FfiCall = ({
   int port,
   int timeoutMs,
   int dnsConcurrencyCap,
+  int? verificationTimeMs,
 });
 
 ffi.PhaseTimings _ffiTimings() => const ffi.PhaseTimings(
@@ -129,6 +130,7 @@ final class _RecordingNtsApi implements NtsRustLibApi {
       port: spec.port,
       timeoutMs: timeoutMs,
       dnsConcurrencyCap: dnsConcurrencyCap,
+      verificationTimeMs: verificationTimeMs,
     ));
     final query = onQuery;
     if (query == null) {
@@ -153,6 +155,7 @@ final class _RecordingNtsApi implements NtsRustLibApi {
       port: spec.port,
       timeoutMs: timeoutMs,
       dnsConcurrencyCap: dnsConcurrencyCap,
+      verificationTimeMs: verificationTimeMs,
     ));
     final warm = onWarm;
     return warm != null ? warm() : Future.value(_ffiWarmOutcome());
@@ -418,6 +421,92 @@ void main() {
       await source.warm();
       await source.getTime();
       expect(api.clientsMinted, 1);
+    });
+  });
+
+  group('NtsSource verificationTime forwarding (real client path)', () {
+    // The pre-sync rescue instant rides verificationTimeProvider down
+    // through nts.NtsClient to the FFI boundary as epoch milliseconds.
+    // This plumbing is security-sensitive (it pins the NTS-KE
+    // certificate validity-window check), so both directions are
+    // asserted here: an armed instant arrives intact, and the unarmed
+    // steady state arrives as null.
+    final rescueInstant = DateTime.utc(2026, 7, 20, 12);
+
+    test(
+      'armed provider instant reaches query as epoch milliseconds',
+      () async {
+        api.onQuery = (_) async => _ffiSample();
+        final source = NtsSource(
+          'time.example',
+          verificationTimeProvider: () => rescueInstant,
+        );
+
+        await source.getTime();
+        expect(
+          api.queryCalls.single.verificationTimeMs,
+          rescueInstant.millisecondsSinceEpoch,
+        );
+        // warm() ran before the query and must carry the same pin: a
+        // rescue whose warming handshake verified against the skewed
+        // system clock would deadlock before the query ever dispatched.
+        expect(
+          api.warmCalls.single.verificationTimeMs,
+          rescueInstant.millisecondsSinceEpoch,
+        );
+      },
+    );
+
+    test('null provider result forwards null (system-clock '
+        'verification)', () async {
+      api.onQuery = (_) async => _ffiSample();
+      final source = NtsSource(
+        'time.example',
+        verificationTimeProvider: () => null,
+      );
+
+      await source.getTime();
+      expect(api.queryCalls.single.verificationTimeMs, isNull);
+      expect(api.warmCalls.single.verificationTimeMs, isNull);
+    });
+
+    test('absent provider forwards null', () async {
+      api.onQuery = (_) async => _ffiSample();
+      final source = NtsSource('time.example');
+
+      await source.getTime();
+      expect(api.queryCalls.single.verificationTimeMs, isNull);
+    });
+
+    test('provider is consulted per dispatch, not captured once', () async {
+      // The engine arms and clears the rescue instant mid-lifecycle;
+      // the source must observe the live value at each attempt. Two
+      // burst attempts with the provider cleared in between must
+      // forward the armed instant then null.
+      DateTime? armed = rescueInstant;
+      api.onQuery = (attempt) async {
+        if (attempt == 0) {
+          armed = null;
+          throw const ffi.NtsError.timeout(
+            phase: ffi.TimeoutPhase.ntp,
+            trustBackend: ffi.TrustBackend.webpkiRoots,
+          );
+        }
+        return _ffiSample();
+      };
+      final source = NtsSource(
+        'time.example',
+        burstCount: 2,
+        verificationTimeProvider: () => armed,
+      );
+
+      await source.getTime();
+      expect(api.queryCalls, hasLength(2));
+      expect(
+        api.queryCalls.first.verificationTimeMs,
+        rescueInstant.millisecondsSinceEpoch,
+      );
+      expect(api.queryCalls.last.verificationTimeMs, isNull);
     });
   });
 }

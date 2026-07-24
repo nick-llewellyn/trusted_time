@@ -218,6 +218,22 @@ final class SyncEngine {
   /// null when no rescue is active (the steady state). Non-null only
   /// for the duration of the single rescue retry cycle; consulted by
   /// every [NtsSource] via its `verificationTimeProvider`.
+  ///
+  /// Deliberately engine-scoped, unlike [_CycleRescueState]: sources
+  /// are engine-lifetime objects whose [TimeSource.getTime] takes no
+  /// arguments, so the armed instant must be visible outside any one
+  /// cycle's scope. This is safe where engine-scoped *bookkeeping*
+  /// was not: the [_rescueAttempted] latch is checked and set with no
+  /// await in between, so under Dart's single-threaded execution
+  /// exactly one invocation per cold start can ever write here —
+  /// there is no arm/arm or clear-while-arming race. If an
+  /// overlapping cycle's NTS dispatch happens to read the armed
+  /// instant, its handshake verifies the certificate validity window
+  /// against the same floor-checked coarse instant the rescue retry
+  /// itself uses — an identical security posture for the same bounded
+  /// window. Conversely, a late dispatch that reads null after the
+  /// retry clears it reverts to system-clock verification, the
+  /// strictly more conservative pre-rescue behaviour.
   DateTime? _rescueVerificationTime;
 
   /// Whether the rescue has already been attempted this cold start.
@@ -438,16 +454,19 @@ final class SyncEngine {
           TrustedTimeLog.log(
             TrustedTimeLogLevel.warning,
             '[TrustedTime] pre-sync rescue unavailable: NTS cert-validity '
-            'failure detected but no coarse NTP estimate could be obtained '
-            '(ntpServers empty or all queries failed).',
+            'failure detected but no plausible coarse NTP estimate could '
+            'be obtained (ntpServers empty, all queries failed, or every '
+            'candidate fell below the plausibility floor).',
           );
         }
         rethrow;
       }
       if (coarse.isBefore(rescueFloorUtc)) {
-        // An unauthenticated reply steering the verification instant
-        // backwards past the release floor is either a badly broken
-        // server or an attacker replaying old time; refuse to arm.
+        // Backstop only: [_acquireCoarseRescueTime] already floor-
+        // filters every candidate, so this cannot fire today. Kept as
+        // defence in depth — the floor is a security invariant, and a
+        // future acquisition path must not be able to bypass it
+        // silently.
         if (TrustedTimeLog.enabled) {
           TrustedTimeLog.log(
             TrustedTimeLogLevel.warning,
@@ -510,13 +529,20 @@ final class SyncEngine {
   /// estimate for free), picking the sample with the smallest
   /// round-trip delay. Falls back to direct sequential NTP queries
   /// against [TrustedTimeConfig.ntpServers] until one succeeds.
-  /// Returns null when no estimate is obtainable (NTS-only config
-  /// with empty ntpServers, or every query failed).
+  ///
+  /// Every candidate is filtered against [rescueFloorUtc] here, so a
+  /// single backdated reply (broken server or attacker replaying old
+  /// time) is skipped rather than poisoning the whole rescue while
+  /// plausible siblings remain. Returns null when no plausible
+  /// estimate is obtainable (NTS-only config with empty ntpServers,
+  /// every query failed, or every candidate fell below the floor).
   Future<DateTime?> _acquireCoarseRescueTime(
     _CycleRescueState rescueState,
   ) async {
     TimeSample? best;
     for (final s in rescueState.ntpSamples) {
+      final candidate = _plausibleCoarseFrom(s);
+      if (candidate == null) continue;
       final delay = s.delayMs;
       final bestDelay = best?.delayMs;
       if (best == null ||
@@ -534,10 +560,7 @@ final class SyncEngine {
     if (override != null) {
       try {
         final sample = await override().timeout(_config.maxLatency);
-        return DateTime.fromMillisecondsSinceEpoch(
-          sample.interval.midpoint,
-          isUtc: true,
-        );
+        return _plausibleCoarseFrom(sample);
       } catch (_) {
         return null;
       }
@@ -547,10 +570,8 @@ final class SyncEngine {
         final sample = await _defaultRescueProbe(
           host,
         ).timeout(_config.maxLatency);
-        return DateTime.fromMillisecondsSinceEpoch(
-          sample.interval.midpoint,
-          isUtc: true,
-        );
+        final candidate = _plausibleCoarseFrom(sample);
+        if (candidate != null) return candidate;
       } catch (e) {
         if (TrustedTimeLog.enabled) {
           TrustedTimeLog.log(
@@ -562,6 +583,31 @@ final class SyncEngine {
       }
     }
     return null;
+  }
+
+  /// Converts [sample]'s interval midpoint to the coarse rescue
+  /// instant, or null (with a warning) when it falls below
+  /// [rescueFloorUtc] — the per-candidate arm of the plausibility
+  /// floor, letting acquisition skip a backdated reply and keep
+  /// searching instead of aborting the rescue on the first poison.
+  DateTime? _plausibleCoarseFrom(TimeSample sample) {
+    final candidate = DateTime.fromMillisecondsSinceEpoch(
+      sample.interval.midpoint,
+      isUtc: true,
+    );
+    if (candidate.isBefore(rescueFloorUtc)) {
+      if (TrustedTimeLog.enabled) {
+        TrustedTimeLog.log(
+          TrustedTimeLogLevel.warning,
+          '[TrustedTime] pre-sync rescue candidate from '
+          '${sample.sourceId} rejected: ${candidate.toIso8601String()} '
+          'predates plausibility floor '
+          '${rescueFloorUtc.toIso8601String()}.',
+        );
+      }
+      return null;
+    }
+    return candidate;
   }
 
   /// Production rescue probe: one plain NTP query against [host],

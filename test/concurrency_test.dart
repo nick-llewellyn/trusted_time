@@ -2438,6 +2438,63 @@ void main() {
       );
     });
 
+    test('a backdated cycle sample is skipped, not allowed to poison '
+        'the rescue while a plausible sibling exists', () async {
+      // Two NTP siblings succeed during the failing cycle: a backdated
+      // one (broken server / replayed old time) that completes first,
+      // and a plausible one. The plausibility floor must act as a
+      // per-candidate filter inside acquisition — skipping the poison
+      // and arming from the plausible sibling — rather than a single
+      // post-selection gate that would reject the whole rescue because
+      // best-candidate selection happened to pick the poison.
+      final backdatedMs = SyncEngine.rescueFloorUtc
+          .subtract(const Duration(days: 365))
+          .millisecondsSinceEpoch;
+      final ntsSource = RescuableNtsSource(
+        'nts:skewed.example',
+        utcMs: plausibleCoarse.millisecondsSinceEpoch,
+      );
+      final poisonedSibling = RaceConditionSource(
+        '${TimeSource.prefixNtp}poisoned.example',
+        const Duration(milliseconds: 5),
+        backdatedMs,
+        'g-ntp-poison',
+      );
+      final plausibleSibling = RaceConditionSource(
+        '${TimeSource.prefixNtp}plausible.example',
+        const Duration(milliseconds: 10),
+        plausibleCoarse.millisecondsSinceEpoch,
+        'g-ntp-ok',
+      );
+      // The two NTP intervals are disjoint, so the first cycle cannot
+      // reach quorum 2 without the (cert-failing) NTS source.
+      final engine = buildEngine([
+        ntsSource,
+        poisonedSibling,
+        plausibleSibling,
+      ], minimumQuorum: 2);
+      ntsSource.engine = engine;
+      var probeCalled = false;
+      engine.rescueProbeOverride = () async {
+        probeCalled = true;
+        throw StateError('probe must not run when cycle samples exist');
+      };
+
+      final anchor = await engine.sync();
+      expect(probeCalled, isFalse);
+      expect(
+        ntsSource.observedVerificationTimes.whereType<DateTime>().single,
+        plausibleCoarse,
+      );
+      expect(
+        anchor.networkUtcMs,
+        inInclusiveRange(
+          plausibleCoarse.millisecondsSinceEpoch - 20,
+          plausibleCoarse.millisecondsSinceEpoch + 20,
+        ),
+      );
+    });
+
     test('no rescue once an anchor exists (warm engine)', () async {
       // Both succeed on the first cycle (anchoring the engine), then
       // fail every subsequent cycle with a cert-validity signature.
