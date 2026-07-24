@@ -232,17 +232,6 @@ final class SyncEngine {
   /// mid-run re-skew is out of scope for the rescue.
   bool _hasAnchored = false;
 
-  /// NTS source ids whose failure this cycle carried a certificate
-  /// validity-window signature. Cleared at the top of each [sync]
-  /// cycle; populated by [_querySafe].
-  final _certValidityFailedIds = <String>{};
-
-  /// NTP samples collected during the current [sync] cycle, retained
-  /// so a rescue triggered by that cycle's failure can reuse them as
-  /// its coarse estimate without a second network round trip. Cleared
-  /// at the top of each [sync] cycle.
-  final _cycleNtpSamples = <TimeSample>[];
-
   /// Test seam replacing the direct-NTP fallback the rescue uses when
   /// the failed cycle collected no NTP samples. When non-null it is
   /// invoked instead of the sequential [TrustedTimeConfig.ntpServers]
@@ -424,16 +413,26 @@ final class SyncEngine {
   /// becomes an anchor by itself. One-shot per cold start; never armed
   /// once any anchor exists.
   Future<TrustAnchor> sync() async {
-    _certValidityFailedIds.clear();
-    _cycleNtpSamples.clear();
+    // Rescue bookkeeping is cycle-scoped, like [_CompletionGuard]: a
+    // fresh holder per invocation, threaded through [_runSyncCycle]
+    // into [_querySafe], instead of engine-scoped collections cleared
+    // at the top of this method. An engine-scoped reset would race
+    // under overlapping `sync()` invocations (which the public-API
+    // wrapper does not strictly rule out — see the note inside
+    // [_runSyncCycle]): one cycle could clear the collections while
+    // another is still populating them, skipping or mis-arming the
+    // rescue and consuming the one-shot latch unpredictably.
+    final rescueState = _CycleRescueState();
     try {
-      return await _runSyncCycle();
+      return await _runSyncCycle(rescueState);
     } catch (e) {
-      if (_hasAnchored || _rescueAttempted || _certValidityFailedIds.isEmpty) {
+      if (_hasAnchored ||
+          _rescueAttempted ||
+          rescueState.certValidityFailedIds.isEmpty) {
         rethrow;
       }
       _rescueAttempted = true;
-      final coarse = await _acquireCoarseRescueTime();
+      final coarse = await _acquireCoarseRescueTime(rescueState);
       if (coarse == null) {
         if (TrustedTimeLog.enabled) {
           TrustedTimeLog.log(
@@ -471,14 +470,18 @@ final class SyncEngine {
       // unhealthiness — lift the cooldown the failing cycle just armed
       // so the retry actually re-queries the NTS sources, and drop the
       // health score those failures accrued.
-      for (final id in _certValidityFailedIds) {
+      for (final id in rescueState.certValidityFailedIds) {
         _blacklistUntil.remove(id);
         _sourceHealth.remove(id);
         _sourceTransientStreak.remove(id);
       }
       _rescueVerificationTime = coarse;
       try {
-        return await _runSyncCycle();
+        // The retry gets its own fresh bookkeeping: it can only run
+        // once (the latch above is already set), so nothing reads it,
+        // but sharing the failed cycle's holder would conflate the two
+        // cycles' samples if this ever changes.
+        return await _runSyncCycle(_CycleRescueState());
       } finally {
         // One retry cycle only: subsequent handshakes verify against
         // the system clock again. On success the anchor keeps
@@ -502,15 +505,18 @@ final class SyncEngine {
   /// Acquires the coarse unauthenticated estimate used to pin the
   /// NTS-KE certificate validity check during the rescue retry.
   ///
-  /// Prefers NTP samples already collected by the failed cycle (mixed
-  /// NTP+NTS configs get the estimate for free), picking the sample
-  /// with the smallest round-trip delay. Falls back to direct
-  /// sequential NTP queries against [TrustedTimeConfig.ntpServers]
-  /// until one succeeds. Returns null when no estimate is obtainable
-  /// (NTS-only config with empty ntpServers, or every query failed).
-  Future<DateTime?> _acquireCoarseRescueTime() async {
+  /// Prefers NTP samples already collected by the failed cycle
+  /// (recorded in [rescueState]; mixed NTP+NTS configs get the
+  /// estimate for free), picking the sample with the smallest
+  /// round-trip delay. Falls back to direct sequential NTP queries
+  /// against [TrustedTimeConfig.ntpServers] until one succeeds.
+  /// Returns null when no estimate is obtainable (NTS-only config
+  /// with empty ntpServers, or every query failed).
+  Future<DateTime?> _acquireCoarseRescueTime(
+    _CycleRescueState rescueState,
+  ) async {
     TimeSample? best;
-    for (final s in _cycleNtpSamples) {
+    for (final s in rescueState.ntpSamples) {
       final delay = s.delayMs;
       final bestDelay = best?.delayMs;
       if (best == null ||
@@ -594,14 +600,15 @@ final class SyncEngine {
     return false;
   }
 
-  Future<TrustAnchor> _runSyncCycle() async {
+  Future<TrustAnchor> _runSyncCycle(_CycleRescueState rescueState) async {
     // Per-cycle synchronous re-entry guard for [_completeSync].
     // Allocated fresh on every [sync] call and captured by the sample
     // listener closure, so the guard's lifetime is exactly one sync
     // cycle. This is the deliberate alternative to an engine-instance
     // flag with a top-of-`sync()` reset: a per-cycle holder is robust
     // against overlapping `sync()` invocations (which would otherwise
-    // race on the engine-scoped reset).
+    // race on the engine-scoped reset). [rescueState] follows the
+    // same pattern for the pre-sync rescue's bookkeeping.
     //
     // [SyncEngine] itself does not gate against concurrent `sync()`
     // entries — that responsibility lives in the public-API wrapper
@@ -867,7 +874,7 @@ final class SyncEngine {
             }
           }
 
-          final sample = await _querySafe(source);
+          final sample = await _querySafe(source, rescueState);
           if (!streamClosed && !sampleController.isClosed) {
             sampleController.add(sample);
           }
@@ -1337,7 +1344,14 @@ final class SyncEngine {
   }
 
   /// Wraps a source query with timeout and health-tracking logic.
-  Future<TimeSample?> _querySafe(TimeSource source) async {
+  ///
+  /// [rescueState] is the invoking cycle's rescue bookkeeping holder;
+  /// NTP samples and cert-validity failure signatures observed here
+  /// are recorded into it, never into engine-scoped state.
+  Future<TimeSample?> _querySafe(
+    TimeSource source,
+    _CycleRescueState rescueState,
+  ) async {
     try {
       final sample = await source.getTime().timeout(_config.maxLatency);
       _sourceHealth[source.id] = 0; // Reset failure count on success
@@ -1347,7 +1361,7 @@ final class SyncEngine {
       // up failing on an NTS cert-validity deadlock, the rescue reuses
       // these as its coarse estimate without a second round trip.
       if (source.id.startsWith(TimeSource.prefixNtp)) {
-        _cycleNtpSamples.add(sample);
+        rescueState.ntpSamples.add(sample);
       }
       _logSample(sample);
       return sample;
@@ -1397,7 +1411,7 @@ final class SyncEngine {
       // a cold start.
       if (source.id.startsWith(TimeSource.prefixNts) &&
           isCertValidityFailure(e)) {
-        _certValidityFailedIds.add(source.id);
+        rescueState.certValidityFailedIds.add(source.id);
       }
       // Record the failure against the quality score *before*
       // arming the cooldown so the tracker sees the failed
@@ -1477,4 +1491,27 @@ final class SyncEngine {
 /// own a distinct guard and cannot reset each other's state.
 class _CompletionGuard {
   bool inFlight = false;
+}
+
+/// Per-cycle bookkeeping for the pre-sync rescue.
+///
+/// Allocated fresh at the top of each [SyncEngine.sync] call and
+/// threaded through `_runSyncCycle` into `_querySafe`, following the
+/// same cycle-scoped pattern as [_CompletionGuard]: overlapping
+/// `sync()` invocations each own a distinct holder, so one cycle
+/// cannot clear or pollute another's rescue evidence. (Engine-scoped
+/// collections with a top-of-`sync()` reset would race exactly that
+/// way — one cycle clearing while another populates — skipping or
+/// mis-arming the rescue and consuming the one-shot latch
+/// unpredictably.)
+class _CycleRescueState {
+  /// NTS source ids whose failure this cycle carried a certificate
+  /// validity-window signature. Populated by `_querySafe`; consulted
+  /// by [SyncEngine.sync] only after the cycle fails.
+  final certValidityFailedIds = <String>{};
+
+  /// NTP samples collected during this cycle, retained so a rescue
+  /// triggered by the cycle's failure can reuse them as its coarse
+  /// estimate without a second network round trip.
+  final ntpSamples = <TimeSample>[];
 }
