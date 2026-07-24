@@ -230,8 +230,9 @@ abstract final class TrustedTime {
   /// gate.
   ///
   /// Under a [TrustedTimeMock] override this returns an
-  /// already-completed future (mock time needs no sync). Like the
-  /// other accessors, [initialize] must have completed first.
+  /// already-completed future (mock time needs no sync), whether or
+  /// not [initialize] was ever called. When not overridden,
+  /// [initialize] must have completed first.
   static Future<void> get firstSyncSettled {
     if (_override != null) return Future.value();
     return TrustedTimeImpl.instance.firstSyncSettled;

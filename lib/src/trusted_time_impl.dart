@@ -586,11 +586,14 @@ final class TrustedTimeImpl {
         // futures are memoized, so the refresh cycle's warming
         // barrier re-joins (or has already joined) the same work.
         unawaited(
-          Future.sync(_syncEngine.warmAllSources).catchError((Object e) {
+          Future.sync(_syncEngine.warmAllSources).catchError((
+            Object e,
+            StackTrace s,
+          ) {
             if (TrustedTimeLog.enabled) {
               TrustedTimeLog.log(
                 TrustedTimeLogLevel.warning,
-                '[TrustedTime] Background bootstrap warm-up failed: $e',
+                '[TrustedTime] Background bootstrap warm-up failed: $e\n$s',
               );
             }
           }),
@@ -634,11 +637,11 @@ final class TrustedTimeImpl {
             );
             await _performSync();
           })
-          .catchError((Object e) {
+          .catchError((Object e, StackTrace s) {
             if (TrustedTimeLog.enabled) {
               TrustedTimeLog.log(
                 TrustedTimeLogLevel.warning,
-                '[TrustedTime] Detached first sync cycle failed: $e',
+                '[TrustedTime] Detached first sync cycle failed: $e\n$s',
               );
             }
           })
