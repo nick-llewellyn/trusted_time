@@ -143,10 +143,16 @@ Future<void> stampEvent(Event event) async {
       // No trusted time. assessment.time is null; assessment.estimate
       // carries a best-effort extrapolation when one exists.
       if (assessment.syncInProgress) {
-        // Resolution imminent — a sync cycle is in flight. Show a
-        // wait state and re-assess (or await firstSyncSettled)
-        // instead of triggering another cycle.
-        await TrustedTime.firstSyncSettled;
+        // A sync cycle is already in flight — show a wait state and
+        // re-assess when it concludes instead of triggering another
+        // cycle. On a cold start (neverSynced) the in-flight cycle is
+        // the first one, so firstSyncSettled is the rendezvous for
+        // its conclusion. Later cycles (a retry after syncFailed, a
+        // scheduled refresh) settle no dedicated future: re-assess
+        // after a short delay or on the next meaningful boundary.
+        if (assessment.reason == TrustStatusReason.neverSynced) {
+          await TrustedTime.firstSyncSettled;
+        }
       } else {
         await TrustedTime.forceResync();
       }

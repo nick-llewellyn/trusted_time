@@ -1560,6 +1560,37 @@ void main() {
       gate.complete();
     });
 
+    test('dispose during the cold-start warm phase stops the detached '
+        'chain before the first sync starts', () {
+      // The detached chain re-checks _disposed between its warm and
+      // sync phases: a dispose() landing while the warm is still in
+      // flight must prevent _performSync from ever querying a source
+      // or arming timers on the torn-down engine.
+      fakeAsync((async) {
+        final counter = _ProbeCounter();
+        TrustedTimeImpl? impl;
+        unawaited(
+          TrustedTimeImpl.init(
+            config.copyWith(
+              additionalSources: [
+                _SlowWarmCountingSource(counter, id: 'nts:a', groupId: 'g1'),
+                _SlowWarmCountingSource(counter, id: 'nts:b', groupId: 'g2'),
+              ],
+            ),
+          ).then((i) => impl = i),
+        );
+        async.flushMicrotasks();
+        expect(impl, isNotNull);
+        expect(impl!.getAssessment().syncInProgress, isTrue);
+
+        impl!.dispose();
+        async.elapse(const Duration(seconds: 30));
+
+        expect(counter.count, 0);
+        expect(async.pendingTimers, isEmpty);
+      });
+    });
+
     test('forceResync reports syncInProgress while its cycle is in '
         'flight', () async {
       // The flag is an activity signal beyond the first cycle: a
@@ -1619,6 +1650,37 @@ class _SlowWarmSource implements TimeSource, Warmable {
 
   @override
   Future<TimeSample> getTime() => Completer<TimeSample>().future;
+}
+
+/// A [_SlowWarmSource] variant that tallies every getTime() call, used
+/// to prove a dispose() landing during the cold-start warm phase stops
+/// the detached chain before its sync phase ever queries a source.
+class _SlowWarmCountingSource implements TimeSource, Warmable {
+  _SlowWarmCountingSource(
+    this.counter, {
+    required this.id,
+    required this.groupId,
+  });
+
+  final _ProbeCounter counter;
+  @override
+  final String id;
+  @override
+  final String groupId;
+
+  @override
+  Future<void> warm() => Future<void>.delayed(const Duration(seconds: 5));
+
+  @override
+  Future<TimeSample> getTime() async {
+    counter.count++;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    return TimeSample(
+      interval: TimeInterval(startMs: nowMs - 10, endMs: nowMs + 10),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
 }
 
 /// Minimal [SyncObserver] that just counts onSyncStarted invocations,

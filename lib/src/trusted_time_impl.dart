@@ -629,12 +629,23 @@ final class TrustedTimeImpl {
     // that slips past those layers, and _settleFirstSync() in the
     // whenComplete resolves [firstSyncSettled] on success and failure
     // alike — it reports conclusion, not outcome.
+    //
+    // The chain can outlive the engine: dispose() may run while the
+    // warm phase is still in flight. The _disposed checks before each
+    // phase stop a torn-down engine from starting network work or
+    // re-arming timers (dispose has already settled firstSyncSettled,
+    // so bailing out early cannot strand a waiter). A phase already
+    // past its check merely runs to completion against inert state —
+    // dispose cancels timers and _performSync's failure path re-checks
+    // _disposed before scheduling a retry.
     unawaited(
       Future.sync(() async {
+            if (_disposed) return;
             await _syncEngine.warmAllSources().timeout(
               SyncEngine.warmBarrierCap,
               onTimeout: () {},
             );
+            if (_disposed) return;
             await _performSync();
           })
           .catchError((Object e, StackTrace s) {
@@ -801,6 +812,7 @@ final class TrustedTimeImpl {
     // diagnostics).
     _refreshTimer?.cancel();
     _refreshTimer = null;
+    if (_disposed) return;
     if (_automaticRefreshPaused) return;
     if (_activeRefreshInterval <= Duration.zero) return;
     _refreshTimer = Timer(_activeRefreshInterval, _performSync);
@@ -906,6 +918,7 @@ final class TrustedTimeImpl {
     // _scheduleValidate and keeping "_retryTimer == null" a reliable
     // "no retry armed" signal for diagnostics.
     _retryTimer = null;
+    if (_disposed) return;
     final delay = _syncEngine.getNextRetryDelay();
     if (delay > Duration.zero) {
       _retryTimer = Timer(delay, _performSync);
