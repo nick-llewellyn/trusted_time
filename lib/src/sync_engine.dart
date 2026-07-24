@@ -34,15 +34,15 @@ import 'infra/trusted_time_log.dart';
 /// 3. **Mathematical Outlier Filtering**: Uses median-based guards to neutralize
 ///    malicious or jittery time authorities.
 final class SyncEngine {
-  /// Upper bound on any await of [Warmable.warm] inside this engine.
+  /// Upper bound on any await of [Warmable.warm].
   ///
   /// warm() futures are memoized and not cancellable, so a timed-out
   /// await abandons the wait without aborting the handshake — the same
   /// future is re-joined by getTime()'s JIT warm, where the per-query
-  /// maxLatency bound applies. Used by [sync]'s global warming barrier
-  /// and [validate]'s Phase A, so a hung handshake can never stall a
-  /// cycle (or a headless OS budget) beyond this cap.
-  @visibleForTesting
+  /// maxLatency bound applies. Used by [sync]'s global warming barrier,
+  /// [validate]'s Phase A, and the bootstrap's eager [warmAllSources]
+  /// call, so a hung handshake can never stall a cycle (or a headless
+  /// OS budget, or initialize()) beyond this cap.
   static const warmBarrierCap = Duration(seconds: 10);
 
   /// Documented.
@@ -1017,9 +1017,17 @@ final class SyncEngine {
       rethrow;
     } finally {
       streamClosed = true;
-      // Cancel subscription first to prevent hanging when controller closes
-      await streamSub?.cancel();
-      await sampleController.close();
+      // Cancel the subscription before closing the controller so
+      // close() cannot hang waiting on undelivered events. Neither
+      // future is awaited: cancellation of a plain listener (no
+      // onCancel handler) is synchronous, and the futures returned by
+      // cancel()/close() resolve through the shared root-zone
+      // `Future._nullFuture` (dart-lang/sdk#40131) — awaiting them
+      // schedules root-zone microtasks that fakeAsync can never
+      // flush, wedging every sync() cycle under fake-clock tests.
+      // The [streamClosed] flag above already guards late adds.
+      unawaited(streamSub?.cancel());
+      unawaited(sampleController.close());
     }
   }
 

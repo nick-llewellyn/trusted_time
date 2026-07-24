@@ -520,8 +520,18 @@ final class TrustedTimeImpl {
     // contaminated by cold-start handshake latency. Sources without a
     // warm phase are unaffected. This adds the slowest source's
     // handshake time (typically ~hundreds of ms) to initialize() when
-    // NTS sources are configured.
-    await _syncEngine.warmAllSources();
+    // NTS sources are configured. The await is bounded by
+    // warmBarrierCap, matching sync()'s warming barrier: warm futures
+    // are memoized and not cancellable, so on timeout the wait is
+    // abandoned (not the handshake) and the first cycle's Phase A JIT
+    // warm re-joins the same future under the maxLatency budget. Worst
+    // case is losing RTT decontamination for a pathologically slow
+    // source's first cycle — a hung handshake must not stall
+    // initialize() indefinitely.
+    await _syncEngine.warmAllSources().timeout(
+      SyncEngine.warmBarrierCap,
+      onTimeout: () {},
+    );
 
     final persisted = _config.persistState ? await _store.load() : null;
     if (persisted != null) {

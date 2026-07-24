@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/sync_engine.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
 
@@ -402,6 +405,62 @@ void main() {
       );
 
       expect(await backgroundHandlerBound(), isFalse);
+    });
+  });
+
+  group('bootstrap warm-barrier cap', () {
+    test('a hung warm() cannot stall initialize() past warmBarrierCap', () {
+      // Pins the bootstrap warm await's bound: _bootstrap()'s explicit
+      // warmAllSources() call must carry the same warmBarrierCap as
+      // sync()'s warming barrier, so a blackholed NTS-KE handshake
+      // cannot hang initialize() indefinitely. On timeout the wait is
+      // abandoned (warm futures are memoized, not cancellable) and the
+      // first sync cycle proceeds under its own bounds.
+      fakeAsync((async) {
+        TrustedTimeImpl? impl;
+        Object? initError;
+        unawaited(
+          TrustedTimeImpl.init(
+            TrustedTimeConfig(
+              ntpServers: const [],
+              ntsServers: const [],
+              persistState: false,
+              // Shrink the first cycle's outer safety timeout
+              // (maxLatency + 6s) so the post-cap window this test
+              // must elapse stays small and explicit.
+              maxLatency: const Duration(seconds: 1),
+              additionalSources: [_HungWarmSource()],
+            ),
+          ).then((i) => impl = i, onError: (Object e) => initError = e),
+        );
+
+        // Just before the cap: still blocked on the hung warm.
+        async.elapse(SyncEngine.warmBarrierCap - const Duration(seconds: 1));
+        expect(impl, isNull);
+        expect(initError, isNull);
+
+        // Past the cap, bootstrap abandons the warm wait and runs the
+        // first sync cycle, which is bounded by its own warming-barrier
+        // cap (the memoized warm future is still hung) plus the outer
+        // safety timeout (maxLatency + 6s). Elapse the remaining budget
+        // with a second of slack: the cycle fails quorum (the hung
+        // source never samples), _performSync swallows the failure, and
+        // init completes untrusted.
+        async.elapse(
+          const Duration(seconds: 1) + // remainder of the bootstrap cap
+              SyncEngine.warmBarrierCap + // sync()'s own barrier cap
+              const Duration(seconds: 7) + // outer timeout (1s + 6s)
+              const Duration(seconds: 1), // slack
+        );
+        expect(initError, isNull);
+        expect(impl, isNotNull);
+        expect(impl!.getAssessment().isTrusted, isFalse);
+
+        // Cancel the retry timer armed by the failed (transient)
+        // bootstrap cycle so no work leaks out of the fakeAsync zone.
+        impl!.dispose();
+        async.flushMicrotasks();
+      });
     });
   });
 
@@ -1340,6 +1399,22 @@ class _AuthBoxedSource implements TimeSource {
     groupId: groupId,
     authLevel: authLevel,
   );
+}
+
+/// A [TimeSource] whose [warm] never completes, to exercise the
+/// bootstrap warm-await bound: a hung handshake must not stall
+/// initialize() past [SyncEngine.warmBarrierCap].
+class _HungWarmSource implements TimeSource, Warmable {
+  @override
+  final String id = 'nts:hung-warm';
+  @override
+  final String groupId = 'ghung';
+
+  @override
+  Future<void> warm() => Completer<void>().future;
+
+  @override
+  Future<TimeSample> getTime() => Completer<TimeSample>().future;
 }
 
 /// A [TimeSource] that reports an interval centred on a [_MidpointBox]
