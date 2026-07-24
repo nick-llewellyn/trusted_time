@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/sync_engine.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
 
@@ -402,6 +405,62 @@ void main() {
       );
 
       expect(await backgroundHandlerBound(), isFalse);
+    });
+  });
+
+  group('bootstrap warm-barrier cap', () {
+    test('a hung warm() cannot stall initialize() past warmBarrierCap', () {
+      // Pins the bootstrap warm await's bound: _bootstrap()'s explicit
+      // warmAllSources() call must carry the same warmBarrierCap as
+      // sync()'s warming barrier, so a blackholed NTS-KE handshake
+      // cannot hang initialize() indefinitely. On timeout the wait is
+      // abandoned (warm futures are memoized, not cancellable) and the
+      // first sync cycle proceeds under its own bounds.
+      fakeAsync((async) {
+        TrustedTimeImpl? impl;
+        Object? initError;
+        unawaited(
+          TrustedTimeImpl.init(
+            TrustedTimeConfig(
+              ntpServers: const [],
+              ntsServers: const [],
+              persistState: false,
+              // Shrink the first cycle's outer safety timeout
+              // (maxLatency + 6s) so the post-cap window this test
+              // must elapse stays small and explicit.
+              maxLatency: const Duration(seconds: 1),
+              additionalSources: [_HungWarmSource()],
+            ),
+          ).then((i) => impl = i, onError: (Object e) => initError = e),
+        );
+
+        // Just before the cap: still blocked on the hung warm.
+        async.elapse(SyncEngine.warmBarrierCap - const Duration(seconds: 1));
+        expect(impl, isNull);
+        expect(initError, isNull);
+
+        // Past the cap, bootstrap abandons the warm wait and runs the
+        // first sync cycle, which is bounded by its own warming-barrier
+        // cap (the memoized warm future is still hung) plus the outer
+        // safety timeout (maxLatency + 6s). Elapse the remaining budget
+        // with a second of slack: the cycle fails quorum (the hung
+        // source never samples), _performSync swallows the failure, and
+        // init completes untrusted.
+        async.elapse(
+          const Duration(seconds: 1) + // remainder of the bootstrap cap
+              SyncEngine.warmBarrierCap + // sync()'s own barrier cap
+              const Duration(seconds: 7) + // outer timeout (1s + 6s)
+              const Duration(seconds: 1), // slack
+        );
+        expect(initError, isNull);
+        expect(impl, isNotNull);
+        expect(impl!.getAssessment().isTrusted, isFalse);
+
+        // Cancel the retry timer armed by the failed (transient)
+        // bootstrap cycle so no work leaks out of the fakeAsync zone.
+        impl!.dispose();
+        async.flushMicrotasks();
+      });
     });
   });
 
@@ -1224,6 +1283,158 @@ void main() {
       expect(TrustedTime.getAssessment().time!.year, 2023);
     });
   });
+
+  group('bootstrap ordering: anchor restore precedes warm phase', () {
+    // Pins the reorder in _bootstrap(): the persisted-anchor restore
+    // check runs before any network-bound warm-up, so a warm start
+    // never pays handshake wall time. The warm still happens on that
+    // path — fired unawaited into the background for the scheduled
+    // refresh to benefit from.
+    final persistedUtc = DateTime.utc(2023, 1, 1).millisecondsSinceEpoch;
+    final persistedAnchorJson = jsonEncode(
+      TrustAnchor(
+        networkUtcMs: persistedUtc,
+        uptimeMs: 1000,
+        wallMs: persistedUtc,
+        uncertaintyMs: 10,
+        bootId: 'boot-A',
+      ).toJson(),
+    );
+
+    setUp(() {
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(storageChannel, (call) async {
+        if (call.method == 'read') {
+          final key = (call.arguments as Map)['key'] as String?;
+          if (key != null && key.startsWith('tt_anchor_')) {
+            return persistedAnchorJson;
+          }
+        }
+        return null;
+      });
+      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+        if (call.method == 'getUptimeMs') return 500000;
+        if (call.method == 'getBootId') return 'boot-A';
+        return null;
+      });
+    });
+
+    tearDown(() {
+      // Restore the file-level default handlers for sibling groups.
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(storageChannel, (call) async => null);
+      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+        if (call.method == 'getUptimeMs') return 1000;
+        return null;
+      });
+    });
+
+    test('warm restore completes without waiting on source warm-up', () {
+      fakeAsync((async) {
+        TrustedTimeImpl? impl;
+        unawaited(
+          TrustedTimeImpl.init(
+            TrustedTimeConfig(
+              ntpServers: const [],
+              ntsServers: const [],
+              additionalSources: [_HungWarmSource()],
+            ),
+          ).then((i) => impl = i),
+        );
+
+        // The restore path is storage/channel-bound only: a microtask
+        // flush resolves init with zero elapsed fake time even though
+        // the source's warm() never completes. Before the reorder this
+        // sat behind the awaited warm until warmBarrierCap.
+        async.flushMicrotasks();
+        expect(impl, isNotNull);
+        expect(impl!.getAssessment().isTrusted, isTrue);
+        expect(impl!.getAssessment().time!.year, 2023);
+
+        impl!.dispose();
+        async.flushMicrotasks();
+      });
+    });
+
+    test('an invalid trust config cannot crash the zone from the '
+        'unawaited background warm-up', () {
+      // The warm-start restore never touches SyncEngine._sources, so
+      // the first access happens inside the backgrounded
+      // warmAllSources() — where the lazy initializer's ArgumentError
+      // (usePlatformTrust + customRootCerts, via effectiveTrustMode)
+      // would surface as an unhandled async exception after
+      // initialize() has returned. _bootstrap must catch it: an
+      // uncaught error here fails the fakeAsync zone and this test.
+      // (The cold path keeps propagating the same error through its
+      // awaited warm call — fail-fast on misconfiguration.)
+      fakeAsync((async) {
+        TrustedTimeImpl? impl;
+        unawaited(
+          TrustedTimeImpl.init(
+            const TrustedTimeConfig(
+              ntpServers: [],
+              ntsServers: [],
+              usePlatformTrust: true,
+              customRootCerts: [1, 2, 3],
+            ),
+          ).then((i) => impl = i),
+        );
+        async.flushMicrotasks();
+
+        // The restore itself is unaffected: initialize() completed
+        // and the persisted anchor is live.
+        expect(impl, isNotNull);
+        expect(impl!.getAssessment().isTrusted, isTrue);
+
+        impl!.dispose();
+        async.flushMicrotasks();
+      });
+    });
+
+    test('immediate dispose after warm restore is safe with the '
+        'background warm still in flight', () {
+      fakeAsync((async) {
+        TrustedTimeImpl? impl;
+        unawaited(
+          TrustedTimeImpl.init(
+            TrustedTimeConfig(
+              ntpServers: const [],
+              ntsServers: const [],
+              additionalSources: [_SlowWarmSource()],
+            ),
+          ).then((i) => impl = i),
+        );
+        async.flushMicrotasks();
+        expect(impl, isNotNull);
+
+        // Dispose while the unawaited background warm is still in
+        // flight, then let it complete. warmAllSources() only touches
+        // source-internal state, so the late completion must neither
+        // throw (an uncaught error fails the fakeAsync zone) nor leave
+        // engine work scheduled.
+        impl!.dispose();
+        async.elapse(const Duration(seconds: 30));
+        expect(async.pendingTimers, isEmpty);
+      });
+    });
+  });
+}
+
+/// A [TimeSource] whose [warm] completes after a delay, to exercise a
+/// background warm that outlives the engine it was fired from.
+class _SlowWarmSource implements TimeSource, Warmable {
+  @override
+  final String id = 'nts:slow-warm';
+  @override
+  final String groupId = 'gslow';
+
+  @override
+  Future<void> warm() => Future<void>.delayed(const Duration(seconds: 5));
+
+  @override
+  Future<TimeSample> getTime() => Completer<TimeSample>().future;
 }
 
 /// Minimal [SyncObserver] that just counts onSyncStarted invocations,
@@ -1340,6 +1551,22 @@ class _AuthBoxedSource implements TimeSource {
     groupId: groupId,
     authLevel: authLevel,
   );
+}
+
+/// A [TimeSource] whose [warm] never completes, to exercise the
+/// bootstrap warm-await bound: a hung handshake must not stall
+/// initialize() past [SyncEngine.warmBarrierCap].
+class _HungWarmSource implements TimeSource, Warmable {
+  @override
+  final String id = 'nts:hung-warm';
+  @override
+  final String groupId = 'ghung';
+
+  @override
+  Future<void> warm() => Completer<void>().future;
+
+  @override
+  Future<TimeSample> getTime() => Completer<TimeSample>().future;
 }
 
 /// A [TimeSource] that reports an interval centred on a [_MidpointBox]

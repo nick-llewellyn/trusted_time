@@ -515,14 +515,12 @@ final class TrustedTimeImpl {
       }
     }
 
-    // Eagerly prime per-source warm state (e.g., NTS cookie jars) so
-    // that the first sync cycle's RTT measurements are not
-    // contaminated by cold-start handshake latency. Sources without a
-    // warm phase are unaffected. This adds the slowest source's
-    // handshake time (typically ~hundreds of ms) to initialize() when
-    // NTS sources are configured.
-    await _syncEngine.warmAllSources();
-
+    // The persisted-anchor restore check runs before any network-bound
+    // work: on the most common startup path — warm start with a valid
+    // anchor and no reboot — nothing below needs warm source state, so
+    // initialize() stays storage-read-bound instead of paying NTS-KE
+    // handshake wall time for warmth only the next refresh (minutes
+    // away) would use.
     final persisted = _config.persistState ? await _store.load() : null;
     if (persisted != null) {
       final check = await _monitor.checkRebootOnWarmStart(persisted);
@@ -538,6 +536,34 @@ final class TrustedTimeImpl {
         if (_config.backgroundSyncInterval != null) {
           await enableBackgroundSync(_config.backgroundSyncInterval!);
         }
+        // Prime per-source warm state (e.g., NTS cookie jars) in the
+        // background so the scheduled refresh cycle finds warmed
+        // sources, without holding up the already-restored
+        // initialize(). warmAllSources() swallows per-source warm()
+        // failures internally, but it can still complete with an
+        // error before reaching them: the engine's lazy _sources
+        // initializer runs on first access and throws ArgumentError
+        // on an invalid trust config (effectiveTrustMode). On the
+        // cold path below that throw propagates through the awaited
+        // call and fails initialize() fast — the right outcome for a
+        // misconfiguration. Here the future is unawaited, so the
+        // same throw would surface as an unhandled async exception
+        // after initialize() has already returned. Catch and log it
+        // instead: this warm-up is strictly best-effort, and the
+        // misconfiguration still surfaces deterministically at the
+        // next scheduled refresh through _performSync's catch. Warm
+        // futures are memoized, so the refresh cycle's warming
+        // barrier re-joins (or has already joined) the same work.
+        unawaited(
+          Future.sync(_syncEngine.warmAllSources).catchError((Object e) {
+            if (TrustedTimeLog.enabled) {
+              TrustedTimeLog.log(
+                TrustedTimeLogLevel.warning,
+                '[TrustedTime] Background bootstrap warm-up failed: $e',
+              );
+            }
+          }),
+        );
         return;
       }
       // R5: the persisted anchor was discarded because the device
@@ -547,6 +573,24 @@ final class TrustedTimeImpl {
       // until a sync succeeds).
       _unanchoredReason = TrustStatusReason.rebootDetected;
     }
+
+    // Cold path (no restorable anchor): eagerly prime per-source warm
+    // state so the first sync cycle's RTT measurements are not
+    // contaminated by cold-start handshake latency. Sources without a
+    // warm phase are unaffected. This adds the slowest source's
+    // handshake time (typically ~hundreds of ms) to initialize() when
+    // NTS sources are configured. The await is bounded by
+    // warmBarrierCap, matching sync()'s warming barrier: warm futures
+    // are memoized and not cancellable, so on timeout the wait is
+    // abandoned (not the handshake) and the first cycle's Phase A JIT
+    // warm re-joins the same future under the maxLatency budget. Worst
+    // case is losing RTT decontamination for a pathologically slow
+    // source's first cycle — a hung handshake must not stall
+    // initialize() indefinitely.
+    await _syncEngine.warmAllSources().timeout(
+      SyncEngine.warmBarrierCap,
+      onTimeout: () {},
+    );
 
     await _performSync();
     if (_config.backgroundSyncInterval != null) {
