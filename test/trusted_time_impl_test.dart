@@ -796,8 +796,10 @@ void main() {
 
   group('TrustedTime resume anchor-age check', () {
     // Live-engine tests; clear any override left by earlier groups so the
-    // static surface drops into the real TrustedTimeImpl singleton.
-    tearDown(TrustedTime.resetOverride);
+    // static surface drops into the real TrustedTimeImpl singleton. This
+    // must run in setUp, not tearDown: a leftover override has to be gone
+    // before the first test in this group executes.
+    setUp(TrustedTime.resetOverride);
 
     _MidpointBox freshBox() =>
         _MidpointBox(DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch);
