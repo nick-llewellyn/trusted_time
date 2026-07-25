@@ -866,6 +866,17 @@ final class TrustedTimeImpl {
   /// backward clock jump can neither hide staleness nor fabricate it.
   /// Other lifecycle states need no bookkeeping: staleness is a property
   /// of the anchor's age, not of how long the app was backgrounded.
+  ///
+  /// A non-positive [activeRefreshInterval] (only reachable via a
+  /// non-positive [TrustedTimeConfig.refreshInterval] at init —
+  /// [setRefreshInterval] routes non-positive values to
+  /// [pauseAutomaticRefresh] without touching the interval) means the
+  /// integrator opted out of anchor-age-driven cadence, so an anchored
+  /// engine never resyncs on resume, matching [_scheduleRefresh]'s
+  /// disabled-timer semantics. The unanchored branch is unaffected: a
+  /// resume with no anchor is an *establish* attempt (the resume
+  /// analogue of the bootstrap cycle, which also runs regardless of
+  /// the interval), not a staleness refresh.
   void _handleAppLifecycleState(AppLifecycleState state) {
     if (_disposed) return;
     if (state != AppLifecycleState.resumed) return;
@@ -873,6 +884,10 @@ final class TrustedTimeImpl {
     // _performSync would only converge on the same in-flight future.
     if (_syncInProgress != null) return;
     if (_trusted && _anchor != null) {
+      // Staleness is disabled outright when the interval is
+      // non-positive; without this, `age < interval` below would never
+      // hold and every resume would resync.
+      if (_activeRefreshInterval <= Duration.zero) return;
       final age = Duration(milliseconds: _syncClock.elapsedSinceAnchorMs());
       if (age < _activeRefreshInterval) return;
     }

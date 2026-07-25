@@ -908,6 +908,61 @@ void main() {
       expect(probe.startCount, 1);
     });
 
+    test('a non-positive refreshInterval disables the anchored resume '
+        'staleness check', () async {
+      // Opting out of automatic refresh (non-positive interval at
+      // init) must silence the resume trigger too for an anchored
+      // engine; otherwise `age < interval` could never hold and every
+      // resume would resync. The unanchored establish path is pinned
+      // separately below.
+      final box = freshBox();
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          ntsServers: const [],
+          persistState: false,
+          earlyExit: false,
+          refreshInterval: Duration.zero,
+          additionalSources: [
+            _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
+            _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      await TrustedTime.firstSyncSettled;
+      final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
+      final probe = registerProbe();
+
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 0);
+    });
+
+    test('a non-positive refreshInterval still allows the unanchored '
+        'establish attempt on resume', () async {
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          ntsServers: [],
+          persistState: false,
+          refreshInterval: Duration.zero,
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      await TrustedTime.firstSyncSettled;
+      final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
+      final probe = registerProbe();
+
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 1);
+    });
+
     test('non-resumed lifecycle states never sync', () async {
       await initWithAnchor(freshBox());
       final impl = TrustedTimeImpl.instance;
