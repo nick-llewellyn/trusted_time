@@ -30,8 +30,9 @@ typedef NtsBurstReducer = TimeSample Function(List<TimeSample> samples);
 ///
 /// The minimum measured delay is the tightest, least path-asymmetric
 /// estimate in the burst — the burst-and-pick-min strategy
-/// `package:nts` documents, and the reduction the validate tier
-/// relies on via `SyncEngine.validate()`'s single `getTime()` call.
+/// `package:nts` documents. Every sync cycle relies on this reduction:
+/// each [NtsSource.getTime] call collapses its burst through it before
+/// the sample reaches the consensus.
 /// The comparison key is [TimeSample.delayMs] when measured, else
 /// `2 × uncertaintyMs` (the interval half-width is ≈ δ/2, so doubling
 /// keeps the key in delay units). For NTS samples carrying the 7.1
