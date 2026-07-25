@@ -62,7 +62,7 @@ class _FailingNtsSource implements TimeSource {
   final String groupId = 'gfail';
 
   @override
-  Future<TimeSample> getTime() async => throw StateError('probe boom');
+  Future<TimeSample> getTime() async => throw StateError('source boom');
 }
 
 class _RecordingObserver implements SyncObserver {
