@@ -908,6 +908,7 @@ void main() {
     test('a resume during an in-flight sync does not start a second '
         'cycle', () async {
       final gate = Completer<void>();
+      final entered = Completer<void>();
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
@@ -915,7 +916,7 @@ void main() {
           persistState: false,
           earlyExit: false,
           additionalSources: [
-            _GatedSource(gate, id: 'nts:a', groupId: 'g1'),
+            _GatedSource(gate, id: 'nts:a', groupId: 'g1', entered: entered),
             _GatedSource(gate, id: 'nts:b', groupId: 'g2'),
           ],
         ),
@@ -923,9 +924,12 @@ void main() {
       addTearDown(() => TrustedTimeImpl.instance.dispose());
       final impl = TrustedTimeImpl.instance;
 
-      // The bootstrap cycle is still blocked on the gate; its
-      // onSyncStarted predates the probe registration, so any count
-      // observed below can only come from a second cycle.
+      // The detached bootstrap cycle is scheduled by initialize() but
+      // not ordered against it; await the gated source's entry signal
+      // so the cycle has provably emitted onSyncStarted and armed the
+      // in-flight guard before the probe is registered. From here any
+      // count observed below can only come from a second cycle.
+      await entered.future;
       expect(TrustedTime.getAssessment().syncInProgress, isTrue);
       final probe = registerProbe();
 
@@ -1769,10 +1773,21 @@ class _HungWarmSource implements TimeSource, Warmable {
 
 /// A [TimeSource] blocked on an external gate, letting a test hold the
 /// first sync cycle in flight and release it deterministically.
+///
+/// [entered] (optional) resolves when [getTime] is first invoked. In a
+/// cycle, `onSyncStarted` strictly precedes the source queries and the
+/// impl's in-flight guard is armed before the engine's `sync()` is
+/// awaited — so a test awaiting [entered] knows both have happened.
 class _GatedSource implements TimeSource {
-  _GatedSource(this._gate, {required this.id, required this.groupId});
+  _GatedSource(
+    this._gate, {
+    required this.id,
+    required this.groupId,
+    this.entered,
+  });
 
   final Completer<void> _gate;
+  final Completer<void>? entered;
   @override
   final String id;
   @override
@@ -1781,6 +1796,7 @@ class _GatedSource implements TimeSource {
 
   @override
   Future<TimeSample> getTime() async {
+    if (entered != null && !entered!.isCompleted) entered!.complete();
     await _gate.future;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     return TimeSample(
