@@ -9,8 +9,7 @@ void setTestOverride(TrustedTimeMock? mock) => testOverride = mock;
 /// High-fidelity test double for deterministic temporal testing.
 ///
 /// Provides a fully controllable virtual clock that simulates the
-/// TrustedTime assessment API — trust posture, time advancement, and
-/// offline estimation.
+/// TrustedTime assessment API — trust posture and time advancement.
 ///
 /// ```dart
 /// final mock = TrustedTimeMock(initial: DateTime.utc(2024, 1, 1));
@@ -34,7 +33,6 @@ final class TrustedTimeMock {
   NtsAuthLevel _authLevel = NtsAuthLevel.none;
   ConfidenceLevel _confidence = ConfidenceLevel.high;
   TrustStatusReason _unanchoredReason = TrustStatusReason.syncFailed;
-  DateTime? _rebootTime;
   bool _syncInProgress = false;
 
   /// The scripted current time of the mock.
@@ -81,10 +79,16 @@ final class TrustedTimeMock {
   /// background refresh in flight.
   void setSyncInProgress(bool inProgress) => _syncInProgress = inProgress;
 
-  /// Restores the mock to a trusted state and clears reboot history.
+  /// Restores the mock to a trusted state, simulating a successful
+  /// re-sync.
+  ///
+  /// Also resets the scripted unanchored reason to
+  /// [TrustStatusReason.syncFailed], ending a
+  /// [TrustStatusReason.rebootDetected] posture set by
+  /// [simulateReboot] — mirroring production, where only a successful
+  /// sync clears a detected reboot.
   void restoreTrust() {
     _trusted = true;
-    _rebootTime = null;
     _unanchoredReason = TrustStatusReason.syncFailed;
   }
 
@@ -95,7 +99,6 @@ final class TrustedTimeMock {
   /// [restoreTrust] simulates a successful re-sync.
   void simulateReboot() {
     _trusted = false;
-    _rebootTime = _now;
     _unanchoredReason = TrustStatusReason.rebootDetected;
   }
 
@@ -118,20 +121,7 @@ final class TrustedTimeMock {
       reason: _unanchoredReason,
       authLevel: NtsAuthLevel.none,
       confidence: ConfidenceLevel.none,
-      estimate: _estimate(),
       syncInProgress: _syncInProgress,
-    );
-  }
-
-  TrustedTimeEstimate? _estimate() {
-    if (_rebootTime == null) return null;
-    final wallElapsed = _now.difference(_rebootTime!).abs();
-    final confidence = (1.0 - wallElapsed.inMinutes / 4320.0).clamp(0.0, 1.0);
-    final errorMs = (wallElapsed.inMilliseconds * 0.00005).round();
-    return TrustedTimeEstimate(
-      estimatedTime: _now,
-      confidence: confidence,
-      estimatedError: Duration(milliseconds: errorMs),
     );
   }
 }

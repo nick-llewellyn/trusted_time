@@ -176,6 +176,15 @@ String _formatBackgroundResult(TrustedTimeBackgroundResult result) {
   }
 }
 
+/// Renders a signed drift rate as parts-per-million, e.g. `+12.3 ppm`
+/// or `-4.2 ppm`. Only the plus needs adding: toStringAsFixed already
+/// renders the minus for negative values.
+String _formatPpm(double rate) {
+  final ppm = rate * 1e6;
+  final sign = ppm >= 0 ? '+' : '';
+  return '$sign${ppm.toStringAsFixed(1)} ppm';
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -254,7 +263,6 @@ class _HomePageState extends State<HomePage> {
   // first build; getAssessment() is total (no not-ready throw).
   TimeAssessment _assessment = TrustedTime.getAssessment();
   Timer? _ticker;
-  TrustedTimeEstimate? _estimate;
   bool _bgSyncEnabled = false;
 
   // Section 7 — Benchmarking Configuration state.
@@ -506,12 +514,6 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _forceSync() async {
     await TrustedTime.forceResync();
-  }
-
-  void _getEstimate() {
-    setState(() {
-      _estimate = TrustedTime.getAssessment().estimate;
-    });
   }
 
   void _convertTimezone() {
@@ -767,29 +769,20 @@ class _HomePageState extends State<HomePage> {
                     'Anchor Age: '
                     '${assessment.anchorAge?.inSeconds ?? 'N/A'} s',
                   ),
-                ],
-              ),
-            ),
-            _sectionHeader('Section 3 — Offline Estimate (F2)'),
-            _card(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (_estimate != null) ...[
-                    Text('Est. Time: ${_estimate!.estimatedTime}'),
+                  if (assessment.driftRate != null) ...[
                     Text(
-                      'Confidence: ${(_estimate!.confidence * 100).toStringAsFixed(1)}%',
+                      'Drift Rate: '
+                      '${_formatPpm(assessment.driftRate!)}',
                     ),
-                    Text('Error: ±${_estimate!.estimatedError.inSeconds}s'),
+                    Text(
+                      'Drift-Corrected Time: '
+                      '${assessment.driftCorrectedTime!.toIso8601String()}',
+                    ),
                   ] else
-                    const Text('No anchor persisted yet or currently trusted'),
-                  const SizedBox(height: 8),
-                  Center(
-                    child: ElevatedButton(
-                      onPressed: _getEstimate,
-                      child: const Text('Get Estimate'),
+                    const Text(
+                      'No drift rate yet '
+                      '(needs ≥1h observed span this boot)',
                     ),
-                  ),
                 ],
               ),
             ),

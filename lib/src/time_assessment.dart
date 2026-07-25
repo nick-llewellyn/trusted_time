@@ -1,13 +1,12 @@
 import 'models.dart';
 import 'sources/nts_auth_level.dart';
-import 'trusted_time_estimate.dart';
 
 /// Why the engine reports its current trust posture.
 ///
 /// Exactly one reason is active at any moment. The first two values are
 /// the *anchored* postures ([TimeAssessment.time] is non-null); the rest
-/// are *unanchored* postures (no usable trust anchor, [TimeAssessment.time]
-/// is null and only [TimeAssessment.estimate] may be available).
+/// are *unanchored* postures (no usable trust anchor,
+/// [TimeAssessment.time] is null).
 enum TrustStatusReason {
   /// A live trust anchor exists, established from Tier 1 verified
   /// consensus or warm-restored intact within the same boot session.
@@ -58,11 +57,12 @@ final class TimeAssessment {
   ///
   /// Asserts enforce the documented invariants so an internally
   /// inconsistent snapshot cannot be constructed in checked mode:
-  /// anchored postures carry [time], [uncertainty] and [anchorAge] but
-  /// never [estimate]; unanchored postures carry none of those and
-  /// report [NtsAuthLevel.none] / [ConfidenceLevel.none]; and
-  /// [authLevel] is verified exactly when [reason] is
-  /// [TrustStatusReason.synchronized].
+  /// anchored postures carry [time], [uncertainty] and [anchorAge];
+  /// unanchored postures carry none of those and report
+  /// [NtsAuthLevel.none] / [ConfidenceLevel.none]; [authLevel] is
+  /// verified exactly when [reason] is
+  /// [TrustStatusReason.synchronized]; and [driftRate] /
+  /// [driftCorrectedTime] come as a pair, only on anchored postures.
   const TimeAssessment({
     required this.reason,
     required this.authLevel,
@@ -71,7 +71,8 @@ final class TimeAssessment {
     this.time,
     this.uncertainty,
     this.anchorAge,
-    this.estimate,
+    this.driftRate,
+    this.driftCorrectedTime,
   }) : assert(
          (time != null) ==
              (reason == TrustStatusReason.synchronized ||
@@ -95,9 +96,14 @@ final class TimeAssessment {
          'anchorAge must be present exactly when time is',
        ),
        assert(
-         estimate == null || time == null,
-         'estimate is a fallback for unanchored postures only; it must '
-         'be null whenever time is available',
+         (driftCorrectedTime != null) == (driftRate != null),
+         'driftRate and driftCorrectedTime must be present together',
+       ),
+       assert(
+         driftRate == null || time != null,
+         'a drift rate can only exist on anchored postures (the '
+         'reverse is not required: an anchored posture without a '
+         'usable rate has both drift fields null)',
        ),
        assert(
          time != null || confidence == ConfidenceLevel.none,
@@ -106,7 +112,7 @@ final class TimeAssessment {
 
   /// The trusted current UTC time, projected from the live anchor on
   /// the monotonic timeline — or `null` when no anchor exists (see
-  /// [reason] for why, and [estimate] for a best-effort fallback).
+  /// [reason] for why).
   final DateTime? time;
 
   /// Why the assessment reports this posture.
@@ -124,9 +130,10 @@ final class TimeAssessment {
   /// [ConfidenceLevel.none] when no anchor exists.
   final ConfidenceLevel confidence;
 
-  /// Half-width error bound on [time]: the anchor's consensus
-  /// uncertainty plus modeled oscillator drift accumulated over
-  /// [anchorAge]. `null` when [time] is null.
+  /// Half-width error bound on [time]: the anchor's measured consensus
+  /// uncertainty. It does not grow with [anchorAge] — apply your own
+  /// staleness policy against [anchorAge] where that matters. `null`
+  /// when [time] is null.
   final Duration? uncertainty;
 
   /// How long ago the live anchor was captured, measured on the same
@@ -134,12 +141,35 @@ final class TimeAssessment {
   /// `null` when no anchor exists.
   final Duration? anchorAge;
 
-  /// Best-effort wall-clock extrapolation for unanchored postures.
+  /// The signed oscillator drift rate applied to [driftCorrectedTime].
   ///
-  /// **Susceptible to wall-clock manipulation** — suitable only for
-  /// non-critical UI hints. `null` when [time] is available (use
-  /// [time]) or when the engine has no prior state to extrapolate from.
-  final TrustedTimeEstimate? estimate;
+  /// Observed passively within the **current boot session**: the drift
+  /// of the device's uptime clock relative to network-consensus UTC,
+  /// as `(dUptime - dNetworkUtc) / dNetworkUtc`. Positive means the
+  /// device clock runs fast relative to network UTC; negative means it
+  /// runs slow.
+  ///
+  /// `null` unless the current boot has accumulated at least one hour
+  /// of observed span between its first and latest anchor — shorter
+  /// windows are dominated by anchor noise. Prior boots' observations
+  /// are never used for correction (they remain diagnostics via
+  /// `TrustedTime.getDriftHistory()`). Always `null` on unanchored
+  /// postures.
+  final double? driftRate;
+
+  /// [time] de-skewed by [driftRate]: `anchor + elapsed / (1 + rate)`.
+  ///
+  /// Experimental / diagnostic — [time] remains the primary answer.
+  /// Derived from the same single monotonic read as [time], so both
+  /// describe one instant. `null` exactly when [driftRate] is.
+  ///
+  /// Caveat: the rate is derived from kernel uptime, but the
+  /// projection's elapsed reading rides the engine's SyncClock reader —
+  /// the same kernel timeline when the sleep-aware bridge clock is
+  /// available, but a suspend-frozen Stopwatch under the fallback,
+  /// where applying a kernel-derived rate to process-relative elapsed
+  /// time is slightly mismatched.
+  final DateTime? driftCorrectedTime;
 
   /// Whether a sync cycle is in flight at the moment of assessment.
   ///
@@ -186,5 +216,6 @@ final class TimeAssessment {
       'TimeAssessment(reason: ${reason.name}, time: $time, '
       'authLevel: ${authLevel.name}, confidence: ${confidence.name}, '
       'uncertainty: $uncertainty, anchorAge: $anchorAge, '
+      'driftRate: $driftRate, driftCorrectedTime: $driftCorrectedTime, '
       'syncInProgress: $syncInProgress)';
 }

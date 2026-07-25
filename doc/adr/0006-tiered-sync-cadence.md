@@ -244,3 +244,26 @@ nor changes any of the open questions enumerated above. The
 implementation ticket (`trusted_time-az9`) remains unchanged in
 scope; the tracker will be consulted from the existing query
 loop, not from the new cadence scheduler.
+
+## Postscript: `oscillatorDriftFactor` removed entirely (2026-07-25)
+
+Open question 2 resolved itself in a direction this ADR did not
+anticipate: rather than recalibrating the constant per platform, the
+constant was removed. Both the 50 ppm global default and the 15 ppm
+`mobileDefaults()` value were unvalidated guesses feeding a modeled
+error band that no measurement had ever confirmed, and the offline
+estimation surface it fed (`nowEstimated()` / `estimatedError`) was
+removed at the same time as wall-clock-dependent and manipulable.
+
+`getAssessment().uncertainty` now reports the anchor's measured
+consensus uncertainty alone and no longer grows with anchor age;
+callers apply their own staleness policy against `anchorAge`. In
+place of the speculative constant, the engine passively records
+observed per-boot drift (first/latest anchor pairs keyed by
+`bootId`, persisted for the last 10 boots, surfaced via
+`TrustedTime.getDriftHistory()` and — for the current boot after ≥1h
+of observed span — `TimeAssessment.driftRate`). Any future
+calibration policy, including the decay-curve revisit in open
+question 3, is deferred until that history yields real-hardware data
+on the device classes named by `trusted_time-wy3`. The ADR body
+above is left unedited as a historical record.

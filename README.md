@@ -140,8 +140,7 @@ Future<void> stampEvent(Event event) async {
     case TrustStatusReason.neverSynced:
     case TrustStatusReason.rebootDetected:
     case TrustStatusReason.syncFailed:
-      // No trusted time. assessment.time is null; assessment.estimate
-      // carries a best-effort extrapolation when one exists.
+      // No trusted time. assessment.time is null; reason says why.
       if (assessment.syncInProgress) {
         // A sync cycle is already in flight — show a wait state and
         // re-assess when it concludes instead of triggering another
@@ -173,9 +172,11 @@ final a = TrustedTime.getAssessment();
 a.isTrusted;       // time != null
 a.isSecure;        // authLevel == NtsAuthLevel.verified
 a.confidence;      // ConfidenceLevel.none / low / medium / high
-a.uncertainty;     // ± error bound (consensus interval + modeled drift)
+a.uncertainty;     // ± error bound (the anchor's measured consensus interval)
 a.anchorAge;       // elapsed monotonic time since the anchor was minted
 a.syncInProgress;  // a sync cycle is in flight right now
+a.driftRate;       // observed oscillator drift this boot (≥1h span), or null
+a.driftCorrectedTime; // time de-skewed by driftRate — experimental
 ```
 
 ### Enforce security requirements
@@ -337,7 +338,6 @@ void main() {
 | `maxAllowedUncertaintyMs` | `int` | `5000` | Sources above this uncertainty are excluded |
 | `persistState` | `bool` | `true` | Persist anchor to secure storage across launches |
 | `earlyExit` | `bool` | `true` | Return as soon as a stable quorum is reached |
-| `oscillatorDriftFactor` | `double` | `0.00005` | Used for offline time estimation error calculation |
 | `cadenceMode` | `CadenceMode` | `singleTier30m` | Sync schedule: the legacy single uniform loop, or the tiered establish/validate model (mobile) — see [Tiered sync cadence](#tiered-sync-cadence-mobile) |
 | `validateInterval` | `Duration` | `1h` | Tiered mode only: how often the lightweight validate probe runs in the foreground |
 | `foregroundValidateThreshold` | `Duration` | `15m` | Tiered mode only: minimum time backgrounded before a foreground resume triggers a validate probe |
@@ -353,7 +353,7 @@ void main() {
 | Single rogue NTP server | ✅ Mitigated | Marzullo consensus + quorum floor |
 | Correlated provider failure | ✅ Mitigated | Group diversity requirement |
 | On-path NTP spoofing (MITM) | ✅ Mitigated | RFC 8915 NTS (AES-SIV-CMAC-256 AEAD) when enabled; `verified` for bundled/custom-root chains |
-| Offline drift | ⚠️ Estimated | Monotonic projection with drift factor |
+| Offline drift | ⚠️ Observed | Passive per-boot drift history (`getDriftHistory()`); ≥1h observations surface as `driftRate` |
 
 ---
 

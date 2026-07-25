@@ -1,9 +1,10 @@
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'drift_history.dart';
 import 'models.dart';
 
-/// Persistence contract for the engine's trust anchor and offline-estimation
-/// timestamps.
+/// Persistence contract for the engine's trust anchor and per-boot drift
+/// history.
 ///
 /// Production uses [AnchorStore] (encrypted secure storage). Unit tests
 /// inject [InMemoryAnchorStorage] to exercise persistence-dependent paths
@@ -12,12 +13,18 @@ abstract interface class AnchorStorage {
   /// Loads the persisted [TrustAnchor], or `null` if none is stored.
   Future<TrustAnchor?> load();
 
-  /// Persists [anchor] alongside last-known timestamps for offline use.
+  /// Persists [anchor].
   Future<void> save(TrustAnchor anchor);
 
-  /// Loads the last-known UTC + wall-clock timestamps for offline
-  /// estimation, independent of the full anchor payload.
-  Future<({int trustedUtcMs, int wallMs})?> loadLastKnown();
+  /// Loads the persisted per-boot drift history, oldest → newest.
+  ///
+  /// Returns an empty list when nothing is stored or the stored data is
+  /// corrupt (corruption is treated as absence — history is pure
+  /// diagnostics, never worth failing a bootstrap over).
+  Future<List<DriftBootRecord>> loadDriftHistory();
+
+  /// Persists the full per-boot drift history, replacing any prior value.
+  Future<void> saveDriftHistory(List<DriftBootRecord> records);
 
   /// Wipes all persisted temporal data.
   Future<void> clear();
@@ -30,10 +37,9 @@ abstract interface class AnchorStorage {
 /// the engine to resume trusted time without a network sync after a non-reboot
 /// restart.
 ///
-/// Three values are stored:
+/// Two values are stored:
 /// - The full anchor JSON (for warm-start restoration)
-/// - The last trusted UTC timestamp (for offline estimation)
-/// - The last wall-clock timestamp (for offline estimation)
+/// - The per-boot drift history JSON (diagnostics across boots)
 final class AnchorStore implements AnchorStorage {
   /// Hardware-backed secure storage with platform-appropriate configuration.
   static const _storage = FlutterSecureStorage(
@@ -43,8 +49,13 @@ final class AnchorStore implements AnchorStorage {
   );
 
   static const _keyAnchor = 'tt_anchor_v2';
-  static const _keyLastTrustedUtcMs = 'tt_last_trusted_utc_ms';
-  static const _keyLastAnchorWallMs = 'tt_last_anchor_wall_ms';
+  static const _keyDriftHistory = 'tt_drift_history_v1';
+
+  // Legacy offline-estimation keys (removed feature). Never written or
+  // read anymore; still deleted by [clear] so installs upgrading from
+  // older versions don't strand stale ciphertext in secure storage.
+  static const _keyLegacyLastTrustedUtcMs = 'tt_last_trusted_utc_ms';
+  static const _keyLegacyLastAnchorWallMs = 'tt_last_anchor_wall_ms';
 
   /// Loads and decodes the persisted trust anchor, if available.
   ///
@@ -59,51 +70,59 @@ final class AnchorStore implements AnchorStorage {
       final json = jsonDecode(raw) as Map<String, dynamic>;
       return TrustAnchor.fromJson(json);
     } catch (_) {
-      await _storage.delete(key: _keyAnchor);
+      await _bestEffortDelete(_keyAnchor);
       return null;
     }
   }
 
-  /// Persists the anchor and its tracking timestamps.
-  ///
-  /// All three writes are issued concurrently for speed. Note: these are
-  /// not truly atomic — a crash mid-write could leave stale timestamps,
-  /// but [load] and [loadLastKnown] handle missing/corrupt data gracefully.
+  /// Persists the anchor JSON for warm-start restoration.
   @override
   Future<void> save(TrustAnchor anchor) async {
     final raw = jsonEncode(anchor.toJson());
-    await Future.wait([
-      _storage.write(key: _keyAnchor, value: raw),
-      _storage.write(
-        key: _keyLastTrustedUtcMs,
-        value: anchor.networkUtcMs.toString(),
-      ),
-      _storage.write(
-        key: _keyLastAnchorWallMs,
-        value: anchor.wallMs.toString(),
-      ),
-    ]);
+    await _storage.write(key: _keyAnchor, value: raw);
   }
 
-  /// Loads the raw millisecond timestamps for offline time estimation.
+  /// Loads and decodes the persisted drift history, if available.
   ///
-  /// Returns a record of `(trustedUtcMs, wallMs)` or `null` if either
-  /// value is missing or corrupt.
+  /// Corruption is treated as absence: the corrupt entry is deleted and
+  /// an empty list is returned, so a bad payload can never fail a
+  /// bootstrap over pure diagnostics.
   @override
-  Future<({int trustedUtcMs, int wallMs})?> loadLastKnown() async {
+  Future<List<DriftBootRecord>> loadDriftHistory() async {
     try {
-      final results = await Future.wait([
-        _storage.read(key: _keyLastTrustedUtcMs),
-        _storage.read(key: _keyLastAnchorWallMs),
-      ]);
-      if (results[0] == null || results[1] == null) return null;
-      return (
-        trustedUtcMs: int.parse(results[0]!),
-        wallMs: int.parse(results[1]!),
-      );
+      final raw = await _storage.read(key: _keyDriftHistory);
+      if (raw == null) return const [];
+      final json = jsonDecode(raw) as List<dynamic>;
+      return json
+          .map((e) => DriftBootRecord.fromJson(e as Map<String, dynamic>))
+          .toList();
     } catch (_) {
-      return null;
+      await _bestEffortDelete(_keyDriftHistory);
+      return const [];
     }
+  }
+
+  /// Deletes [key], swallowing any failure.
+  ///
+  /// Used to clear corrupt entries from the load paths, where corruption
+  /// is treated as absence: if the cleanup delete itself throws (e.g. a
+  /// [PlatformException] from secure storage), the corrupt payload just
+  /// stays put until the next successful write or delete — that must not
+  /// escalate into a bootstrap failure.
+  static Future<void> _bestEffortDelete(String key) async {
+    try {
+      await _storage.delete(key: key);
+    } catch (_) {
+      // Best-effort cleanup only; the caller already treats the entry
+      // as absent.
+    }
+  }
+
+  /// Persists the drift history as a JSON array, replacing prior data.
+  @override
+  Future<void> saveDriftHistory(List<DriftBootRecord> records) async {
+    final raw = jsonEncode([for (final r in records) r.toJson()]);
+    await _storage.write(key: _keyDriftHistory, value: raw);
   }
 
   /// Wipes all persisted temporal data from secure storage.
@@ -111,20 +130,22 @@ final class AnchorStore implements AnchorStorage {
   Future<void> clear() async {
     await Future.wait([
       _storage.delete(key: _keyAnchor),
-      _storage.delete(key: _keyLastTrustedUtcMs),
-      _storage.delete(key: _keyLastAnchorWallMs),
+      _storage.delete(key: _keyDriftHistory),
+      _storage.delete(key: _keyLegacyLastTrustedUtcMs),
+      _storage.delete(key: _keyLegacyLastAnchorWallMs),
     ]);
   }
 }
 
 /// In-memory [AnchorStorage] for tests.
 ///
-/// Holds the anchor and offline-estimation timestamps in plain fields so
-/// unit tests can exercise persistence-dependent paths (warm restore,
-/// background sync) without platform channels or secure storage.
+/// Holds the anchor and drift history in plain fields so unit tests can
+/// exercise persistence-dependent paths (warm restore, background sync,
+/// drift-history round-trips) without platform channels or secure
+/// storage.
 final class InMemoryAnchorStorage implements AnchorStorage {
   TrustAnchor? _anchor;
-  ({int trustedUtcMs, int wallMs})? _lastKnown;
+  List<DriftBootRecord> _driftHistory = const [];
 
   @override
   Future<TrustAnchor?> load() async => _anchor;
@@ -132,15 +153,20 @@ final class InMemoryAnchorStorage implements AnchorStorage {
   @override
   Future<void> save(TrustAnchor anchor) async {
     _anchor = anchor;
-    _lastKnown = (trustedUtcMs: anchor.networkUtcMs, wallMs: anchor.wallMs);
   }
 
   @override
-  Future<({int trustedUtcMs, int wallMs})?> loadLastKnown() async => _lastKnown;
+  Future<List<DriftBootRecord>> loadDriftHistory() async =>
+      List.unmodifiable(_driftHistory);
+
+  @override
+  Future<void> saveDriftHistory(List<DriftBootRecord> records) async {
+    _driftHistory = List.of(records);
+  }
 
   @override
   Future<void> clear() async {
     _anchor = null;
-    _lastKnown = null;
+    _driftHistory = const [];
   }
 }
