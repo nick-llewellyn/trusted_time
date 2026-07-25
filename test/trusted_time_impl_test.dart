@@ -828,6 +828,23 @@ void main() {
       return probe;
     }
 
+    // Settles a fire-and-forget resume dispatch deterministically. The
+    // dispatch starts its cycle synchronously (onSyncStarted is emitted
+    // before _performSync's first await), so after one event-queue
+    // drain the probe count reflects whether a cycle began; the loop
+    // then drains until any in-flight cycle concludes (syncInProgress
+    // is cleared in _performSync's finally, after the trust posture is
+    // written). No fixed real-time delay is assumed — a slow or loaded
+    // runner simply loops longer. Not usable while a deliberately
+    // gated cycle is in flight (it would spin until the test times
+    // out); those tests drain the queue once instead.
+    Future<void> settleSyncActivity() async {
+      await pumpEventQueue();
+      while (TrustedTime.getAssessment().syncInProgress) {
+        await pumpEventQueue();
+      }
+    }
+
     test('the lifecycle observer is installed at bootstrap', () async {
       await initWithAnchor(freshBox());
       expect(TrustedTimeImpl.instance.debugLifecycleObserverInstalled, isTrue);
@@ -840,9 +857,11 @@ void main() {
       final probe = registerProbe();
 
       // The anchor was just established, so its age (milliseconds) is
-      // far below the default 48h refresh interval.
+      // far below the default 48h refresh interval. A resume-triggered
+      // cycle would emit onSyncStarted synchronously inside the
+      // dispatch; the settle just rules out any deferred start too.
       impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
-      await Future.delayed(const Duration(milliseconds: 20));
+      await settleSyncActivity();
 
       expect(probe.startCount, 0);
     });
@@ -863,7 +882,7 @@ void main() {
       await Future.delayed(const Duration(milliseconds: 10));
 
       impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
-      await Future.delayed(const Duration(milliseconds: 30));
+      await settleSyncActivity();
 
       expect(probe.startCount, 1);
       expect(TrustedTime.getAssessment().isTrusted, isTrue);
@@ -884,7 +903,7 @@ void main() {
       final probe = registerProbe();
 
       impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
-      await Future.delayed(const Duration(milliseconds: 30));
+      await settleSyncActivity();
 
       expect(probe.startCount, 1);
     });
@@ -900,7 +919,7 @@ void main() {
       impl.debugHandleAppLifecycleState(AppLifecycleState.inactive);
       impl.debugHandleAppLifecycleState(AppLifecycleState.paused);
       impl.debugHandleAppLifecycleState(AppLifecycleState.hidden);
-      await Future.delayed(const Duration(milliseconds: 20));
+      await settleSyncActivity();
 
       expect(probe.startCount, 0);
     });
@@ -933,8 +952,13 @@ void main() {
       expect(TrustedTime.getAssessment().syncInProgress, isTrue);
       final probe = registerProbe();
 
+      // A second cycle would emit onSyncStarted synchronously inside
+      // this dispatch (nothing yields before it in _performSync →
+      // sync()); settleSyncActivity cannot be used here — the gated
+      // bootstrap cycle is deliberately still in flight — so a single
+      // event-queue drain covers any deferred start.
       impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
-      await Future.delayed(const Duration(milliseconds: 20));
+      await pumpEventQueue();
       expect(probe.startCount, 0);
 
       gate.complete();
@@ -952,7 +976,7 @@ void main() {
 
       expect(impl.debugLifecycleObserverInstalled, isFalse);
       impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
-      await Future.delayed(const Duration(milliseconds: 20));
+      await settleSyncActivity();
       expect(probe.startCount, 0);
     });
   });
