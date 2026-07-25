@@ -76,12 +76,7 @@ export 'src/background_sync.dart'
         TrustedTimeBackgroundResult;
 export 'src/exceptions.dart';
 export 'src/models.dart'
-    show
-        TrustedTimeConfig,
-        TrustAnchor,
-        ConfidenceLevel,
-        SyncMetrics,
-        CadenceMode;
+    show TrustedTimeConfig, TrustAnchor, ConfidenceLevel, SyncMetrics;
 // TrustMode, TrustBackend, and NtsTrustStatus are part of
 // `package:nts`'s public surface and are exposed by this package's
 // API:
@@ -451,44 +446,6 @@ abstract final class TrustedTime {
   static Future<void> forceResync() {
     if (_override != null) return Future.value();
     return TrustedTimeImpl.instance.forceResync();
-  }
-
-  /// Confirms the active trust anchor is still fresh with a short burst
-  /// of lightweight, authenticated NTS queries — the validate tier of
-  /// the tiered sync cadence (ADR 0006).
-  ///
-  /// This is far cheaper than [forceResync]: it bursts a few NTS queries
-  /// against a single source (typically ~50–200 ms in total), keeps the
-  /// lowest round-trip sample, and compares that against the existing
-  /// anchor instead of tearing the anchor down and rebuilding consensus
-  /// from every source. The wire-level burst happens inside the source
-  /// itself (up to [TrustedTimeConfig.ntsBurstCount] queries per
-  /// `getTime()` call); the probe makes exactly one such call. Use it
-  /// on a frequent cadence (or when the app returns to the foreground)
-  /// to catch drift between the infrequent full establish
-  /// ([forceResync]) cycles.
-  ///
-  /// Returns:
-  ///  * `true` — the probe agrees with the anchor within
-  ///    [TrustedTimeConfig.maxAllowedUncertaintyMs];
-  ///  * `false` — the probe ran but the anchor disagrees; consider
-  ///    calling [forceResync]. The anchor is *not* invalidated by a
-  ///    `false` result on its own.
-  ///
-  /// Throws [TrustedTimeFreshnessProbeException] when the probe cannot
-  /// run at all — no anchor established yet, no NTS source configured
-  /// (the validate tier requires NTS), all NTS sources in cooldown, or
-  /// the probe's `getTime()` call failed (threw or timed out). This
-  /// "freshness unknown" outcome is deliberately distinct from the
-  /// `false` "anchor drifted" observation.
-  ///
-  /// Under a test override this returns the mock's trusted state
-  /// without touching the engine, so a mock placed in an untrusted
-  /// state (e.g. via [TrustedTimeMock.setTrusted]) reports a failed
-  /// freshness check consistently with its assessments.
-  static Future<bool> validateFreshness() {
-    if (_override != null) return Future.value(_override!.isTrusted);
-    return TrustedTimeImpl.instance.validateFreshness();
   }
 
   /// Schedules OS-level background tasks to keep the trust anchor fresh.
@@ -873,8 +830,12 @@ abstract final class TrustedTime {
   /// [setRefreshInterval] also arm a fresh refresh timer from the
   /// time of the call independent of cycle completion.
   ///
-  /// Sync cycles triggered by [forceResync], integrity events, or
-  /// background platform schedulers still run while this is `false`.
+  /// `false` guarantees the engine initiates no anchor-age-driven
+  /// syncs: both the automatic refresh timer and the resume-time
+  /// staleness check are suppressed. Sync cycles triggered by
+  /// [forceResync], integrity events, the failed-sync retry timer,
+  /// background platform schedulers, or an unanchored resume
+  /// *establish* attempt still run while this is `false`.
   static bool get automaticRefreshActive {
     if (_override != null) return false;
     return TrustedTimeImpl.instance.automaticRefreshActive;
@@ -889,11 +850,17 @@ abstract final class TrustedTime {
   /// timer (benchmarking harnesses, deterministic test harnesses,
   /// battery-sensitive consumers that schedule their own checks).
   ///
-  /// Pause only suppresses the *automatic refresh* timer. The
-  /// following continue to operate while paused:
+  /// Pause suppresses both anchor-age-driven sync mechanisms: the
+  /// *automatic refresh* timer and the resume-time anchor staleness
+  /// check (an anchored engine no longer resyncs on foreground
+  /// resume, however stale the anchor). The following continue to
+  /// operate while paused:
   ///  * the retry timer scheduled by a failed sync (recovery from a
   ///    failed bootstrap or a failed refresh still proceeds);
   ///  * sync cycles triggered by [forceResync];
+  ///  * the unanchored resume *establish* attempt (a resume with no
+  ///    trusted anchor is a bootstrap analogue, not a staleness
+  ///    refresh);
   ///  * platform background sync if it was enabled.
   /// Consumers that want to fully suppress all engine-driven syncs
   /// should pause this timer *and* either avoid configuring

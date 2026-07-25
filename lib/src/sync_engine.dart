@@ -6,11 +6,7 @@ import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
 import 'domain/time_interval.dart';
-import 'exceptions.dart'
-    show
-        TransientSourceError,
-        TrustedTimeFreshnessProbeException,
-        TrustedTimeSyncException;
+import 'exceptions.dart' show TransientSourceError, TrustedTimeSyncException;
 import 'models.dart';
 import 'monotonic_clock.dart';
 import 'source_quality_tracker.dart';
@@ -39,10 +35,10 @@ final class SyncEngine {
   /// warm() futures are memoized and not cancellable, so a timed-out
   /// await abandons the wait without aborting the handshake — the same
   /// future is re-joined by getTime()'s JIT warm, where the per-query
-  /// maxLatency bound applies. Used by [sync]'s global warming barrier,
-  /// [validate]'s Phase A, and the bootstrap's eager [warmAllSources]
-  /// call, so a hung handshake can never stall a cycle (or a headless
-  /// OS budget, or initialize()) beyond this cap.
+  /// maxLatency bound applies. Used by [sync]'s global warming barrier
+  /// and the bootstrap's eager [warmAllSources] call, so a hung
+  /// handshake can never stall a cycle (or a headless OS budget, or
+  /// initialize()) beyond this cap.
   static const warmBarrierCap = Duration(seconds: 10);
 
   /// Documented.
@@ -286,123 +282,6 @@ final class SyncEngine {
         }
       }),
     );
-  }
-
-  /// Performs a single-source freshness probe for the validate tier
-  /// (ADR 0006) and returns the resulting [TimeSample].
-  ///
-  /// Unlike [sync], this runs no Marzullo consensus and builds no truth
-  /// box: it makes a single `getTime()` call against the
-  /// highest-quality healthy NTS source. The wire-level sampling lives
-  /// inside the source itself — a built-in `NtsSource` bursts up to
-  /// [TrustedTimeConfig.ntsBurstCount] sequential authenticated
-  /// queries within that one call and returns the sample with the
-  /// smallest measured delay ([TimeSample.delayMs] — the network-only
-  /// peer delay δ for samples carrying the nts 7.1 clock-filter
-  /// fields, else the whole RTT): the burst-and-pick-min strategy
-  /// package:nts documents. The caller
-  /// (`TrustedTimeImpl.validateFreshness`) compares that sample against
-  /// the live anchor to decide whether the anchor is still fresh.
-  ///
-  /// Source selection mirrors [sync]'s cooldown + quality-ranking
-  /// composition, restricted to NTS sources — those whose id carries
-  /// the [TimeSource.prefixNts] prefix, so fakes injected via
-  /// [TrustedTimeConfig.additionalSources] remain eligible in tests.
-  /// The probe is read-only with respect to cooldown and quality state:
-  /// a single lightweight freshness check must not blacklist an
-  /// establish-pool source or perturb its ranking.
-  ///
-  /// Throws [TrustedTimeFreshnessProbeException] when no NTS source is
-  /// configured, every NTS source is in cooldown, or the probe query
-  /// fails or times out.
-  Future<TimeSample> validate() async {
-    final now = DateTime.now();
-    final ntsSources = _sources
-        .where((s) => s.id.startsWith(TimeSource.prefixNts))
-        .toList(growable: false);
-    if (ntsSources.isEmpty) {
-      throw const TrustedTimeFreshnessProbeException(
-        'The validate tier requires an NTS source, but none is '
-        'configured (ntsServers is empty and no nts: additionalSources '
-        'were supplied). Configure NTS to use validateFreshness().',
-      );
-    }
-
-    final healthy = ntsSources
-        .where((s) {
-          final until = _blacklistUntil[s.id];
-          return until == null || now.isAfter(until);
-        })
-        .toList(growable: false);
-    if (healthy.isEmpty) {
-      throw const TrustedTimeFreshnessProbeException(
-        'All configured NTS sources are currently in exponential '
-        'cooldown due to persistent failures; cannot run a freshness '
-        'probe this cycle.',
-      );
-    }
-
-    // Reuse sync()'s quality ordering (read-only): index the healthy
-    // pool by id, rank the ids, and pick the top survivor. putIfAbsent
-    // keeps the first-seen source for a colliding id, matching
-    // ranked()'s first-seen dedup.
-    final healthyById = <String, TimeSource>{};
-    for (final s in healthy) {
-      healthyById.putIfAbsent(s.id, () => s);
-    }
-    final rankedIds = _qualityTracker.ranked(healthy.map((s) => s.id));
-    final source = rankedIds.isNotEmpty
-        ? (healthyById[rankedIds.first] ?? healthy.first)
-        : healthy.first;
-
-    // Phase A (warm) runs outside the query budget, exactly as in
-    // sync(); a warm failure is non-fatal and the cold getTime() still
-    // runs under the maxLatency budget in Phase B. Unlike sync(), no
-    // outer safety timeout wraps this method, so the warm await must
-    // carry its own bound — without it, a hung handshake would stall
-    // validateFreshness() indefinitely. The cap matches sync()'s
-    // warming-barrier cap; on timeout the probe proceeds and Phase B's
-    // maxLatency bound covers the still-cold source (getTime's JIT
-    // warm await re-joins the same memoized warm future inside that
-    // budget).
-    if (source is Warmable) {
-      try {
-        await Future.sync(
-          () => (source as Warmable).warm(),
-        ).timeout(warmBarrierCap);
-      } catch (e) {
-        // Best-effort, mirroring sync()'s warm-phase handling: surface
-        // the failure to the observer so a Warmable that violates the
-        // "must not throw" contract is diagnosable, then proceed to the
-        // cold getTime() regardless.
-        _observer?.onSourceFailed(source.id, 'warm: $e');
-      }
-    }
-
-    // Phase B (query): a single getTime() call under the maxLatency
-    // budget. The burst-and-pick-min sampling lives inside the source:
-    // a built-in NtsSource issues up to ntsBurstCount sequential
-    // queries within this one call (sharing the same maxLatency as a
-    // shrinking deadline) and returns the lowest-RTT sample, so no
-    // engine-level loop or reduction is needed. A throw here means the
-    // source's entire internal burst failed.
-    try {
-      return await source.getTime().timeout(_config.maxLatency);
-    } catch (e, st) {
-      // Mirror sync()'s _querySafe and hand the observer the raw error
-      // object (not a pre-stringified message) so consumers can inspect
-      // the error type — e.g. TimeoutException vs other failures.
-      _observer?.onSourceFailed(source.id, e);
-      // Wrap the outcome as "freshness unknown", but preserve the
-      // originating stack trace so callers retain debugging context for
-      // the underlying error.
-      Error.throwWithStackTrace(
-        TrustedTimeFreshnessProbeException(
-          'Freshness probe against ${source.id} failed: $e',
-        ),
-        st,
-      );
-    }
   }
 
   /// Executes a full synchronization cycle across all healthy sources.

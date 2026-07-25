@@ -4,6 +4,35 @@
 
 ### Breaking Changes
 
+- **Removed the tiered validate cadence in favour of a 48h anchor-age
+  policy.** `CadenceMode`, `TrustedTimeConfig.validateInterval`,
+  `TrustedTimeConfig.foregroundValidateThreshold`,
+  `TrustedTime.validateFreshness()`, and
+  `TrustedTimeFreshnessProbeException` are gone, along with the
+  periodic validate timer and the desktop sleep/wake divergence probe.
+  A validate probe that agreed told you nothing `anchorAge` /
+  `uncertainty` didn't already report, and one that disagreed escalated
+  to a full sync anyway — so the engine now just syncs when the anchor
+  is stale. The default `refreshInterval` changes from 30 minutes to
+  48 hours, and a lifecycle observer (now installed in every mode)
+  runs a full sync on app resume iff no trusted anchor exists or the
+  anchor is at least one refresh interval old, measured on the same
+  monotonic timeline `TimeAssessment.anchorAge` reports. The anchored
+  staleness check honours `pauseAutomaticRefresh()`: while
+  `automaticRefreshActive` is `false`, the engine initiates no
+  anchor-age-driven syncs at all (timer and resume trigger alike);
+  the unanchored resume *establish* attempt still proceeds.
+  `TrustedTimeConfig.mobileDefaults()` pairs the 48h staleness bound
+  with a 24h `backgroundSyncInterval`, giving the best-effort OS
+  scheduler (iOS `BGTaskScheduler`, Android `WorkManager`) a full day
+  of slack to land the daily job before a foreground resume forces a
+  sync. Migration: delete any `cadenceMode:` / `validateInterval:` /
+  `foregroundValidateThreshold:` arguments; pass an explicit
+  `refreshInterval` if you relied on the old 30m foreground loop;
+  replace `validateFreshness()` calls with a
+  `getAssessment().anchorAge` check (staleness) or `forceResync()`
+  (re-establish on demand).
+
 - **Removed the offline estimation surface and speculative drift
   modelling in favour of observed per-boot drift history.**
   `TrustedTimeEstimate`, `TimeAssessment.estimate`, and

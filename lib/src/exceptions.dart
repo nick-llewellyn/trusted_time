@@ -115,33 +115,3 @@ final class TransientSourceError implements Exception {
   @override
   String toString() => 'TransientSourceError: $cause';
 }
-
-/// Thrown when [TrustedTime.validateFreshness] cannot perform its
-/// lightweight freshness probe at all — as distinct from a probe that
-/// ran and found the anchor has drifted (which returns `false`).
-///
-/// The validate tier (ADR 0006) confirms an already-established anchor
-/// with a short burst of authenticated NTS queries. This exception means
-/// that probe could not be made or evaluated, which happens when:
-///
-///  * no anchor has been established yet (await [TrustedTime.initialize]
-///    or [TrustedTime.forceResync] first);
-///  * no NTS source is configured — the validate tier requires NTS for
-///    cryptographic authenticity, so NTP sources are not eligible;
-///  * every configured NTS source is currently in exponential cooldown;
-///    or
-///  * every query in the probe burst failed or timed out.
-///
-/// Treat it as "freshness unknown" and keep it distinct from a `false`
-/// return, which is a positive observation that the anchor disagrees
-/// with network time and a [TrustedTime.forceResync] may be warranted.
-final class TrustedTimeFreshnessProbeException implements Exception {
-  /// Creates a [TrustedTimeFreshnessProbeException] with a [message].
-  const TrustedTimeFreshnessProbeException(this.message);
-
-  /// Human-readable description of why the freshness probe could not run.
-  final String message;
-
-  @override
-  String toString() => 'TrustedTimeFreshnessProbeException: $message';
-}

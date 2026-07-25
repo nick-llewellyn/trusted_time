@@ -1,12 +1,8 @@
-import 'dart:async';
-
-import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nts/nts.dart' as nts;
 import 'package:trusted_time/src/domain/marzullo_engine.dart';
 import 'package:trusted_time/src/domain/time_interval.dart';
 import 'package:trusted_time/src/domain/time_sample.dart';
-import 'package:trusted_time/src/exceptions.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
 import 'package:trusted_time/src/infra/sync_observer.dart';
 import 'package:trusted_time/src/infra/trusted_time_log.dart';
@@ -58,7 +54,7 @@ class _TierSource implements TimeSource {
 }
 
 /// A [TimeSource] whose [getTime] always throws, to exercise the
-/// freshness-probe query-failure path.
+/// per-source failure logging path.
 class _FailingNtsSource implements TimeSource {
   @override
   final String id = 'nts:fail';
@@ -66,62 +62,7 @@ class _FailingNtsSource implements TimeSource {
   final String groupId = 'gfail';
 
   @override
-  Future<TimeSample> getTime() async => throw StateError('probe boom');
-}
-
-/// An NTS [TimeSource] that returns a scripted sequence of round-trip
-/// delays across successive [getTime] calls and counts those calls, so
-/// the validate tier's "one probe = one getTime()" contract can be
-/// pinned deterministically. A `null` entry makes that call throw.
-class _BurstNtsSource implements TimeSource {
-  _BurstNtsSource(this._delaysMs);
-
-  final List<int?> _delaysMs;
-  static const int midpointMs = 1000;
-  int calls = 0;
-
-  @override
-  final String id = 'nts:burst';
-  @override
-  final String groupId = 'gburst';
-
-  @override
-  Future<TimeSample> getTime() async {
-    final i = calls++;
-    final d = i < _delaysMs.length ? _delaysMs[i] : _delaysMs.last;
-    if (d == null) throw StateError('burst attempt $i failed');
-    final half = d ~/ 2;
-    return TimeSample(
-      interval: TimeInterval(
-        startMs: midpointMs - half,
-        endMs: midpointMs + half,
-      ),
-      sourceId: id,
-      groupId: groupId,
-      delayMs: d,
-    );
-  }
-}
-
-/// An NTS [TimeSource] whose [warm] never completes, to exercise the
-/// warm-await bound on the validate path: a hung handshake must not
-/// stall the freshness probe past [SyncEngine.warmBarrierCap].
-class _HungWarmNtsSource implements TimeSource, Warmable {
-  @override
-  final String id = 'nts:hung-warm';
-  @override
-  final String groupId = 'ghung';
-
-  @override
-  Future<void> warm() => Completer<void>().future;
-
-  @override
-  Future<TimeSample> getTime() async => TimeSample(
-    interval: TimeInterval(startMs: 990, endMs: 1010),
-    sourceId: id,
-    groupId: groupId,
-    delayMs: 20,
-  );
+  Future<TimeSample> getTime() async => throw StateError('source boom');
 }
 
 class _RecordingObserver implements SyncObserver {
@@ -469,99 +410,6 @@ void main() {
       final anchor = await engine.sync();
 
       expect(anchor.bootId, isNull);
-    });
-  });
-
-  group('SyncEngine.validate() freshness probe (ADR 0006)', () {
-    test('returns the sample from the top-ranked NTS source', () async {
-      final observer = _RecordingObserver();
-      final engine = _engineFor([
-        _TierSource(
-          id: 'nts:probe',
-          groupId: 'g1',
-          startMs: 1000,
-          endMs: 1020,
-          authLevel: NtsAuthLevel.verified,
-          trustBackend: nts.TrustBackend.webpkiRoots,
-        ),
-      ], observer: observer);
-
-      final sample = await engine.validate();
-
-      expect(sample.sourceId, 'nts:probe');
-      expect(sample.interval.midpoint, 1010);
-    });
-
-    test('throws TrustedTimeFreshnessProbeException when no NTS source '
-        'is configured', () async {
-      final observer = _RecordingObserver();
-      final engine = _engineFor([
-        _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
-        _TierSource(id: 'https:b', groupId: 'g2', startMs: 1000, endMs: 1020),
-      ], observer: observer);
-
-      await expectLater(
-        engine.validate(),
-        throwsA(isA<TrustedTimeFreshnessProbeException>()),
-      );
-    });
-
-    test('throws TrustedTimeFreshnessProbeException when the probe query '
-        'fails', () async {
-      final observer = _RecordingObserver();
-      final engine = _engineFor([_FailingNtsSource()], observer: observer);
-
-      await expectLater(
-        engine.validate(),
-        throwsA(isA<TrustedTimeFreshnessProbeException>()),
-      );
-      expect(observer.failures.any((f) => f.sourceId == 'nts:fail'), isTrue);
-    });
-
-    test('makes exactly one getTime() call per probe', () async {
-      final observer = _RecordingObserver();
-      // The wire-level burst lives inside the source's own getTime();
-      // the probe makes exactly one call rather than multiplying the
-      // source burst by an engine-level loop.
-      final source = _BurstNtsSource([80, 20, 50]);
-      final engine = _engineFor([source], observer: observer);
-
-      final sample = await engine.validate();
-
-      expect(source.calls, 1);
-      expect(sample.delayMs, 80);
-    });
-
-    test('a hung warm() cannot stall the probe past warmBarrierCap', () {
-      // Pins the Phase A warm-await bound: validate() has no outer
-      // safety timeout (unlike sync()), so without the cap a warm()
-      // that never completes would hang the probe — and any headless
-      // OS budget above it — indefinitely.
-      fakeAsync((async) {
-        final observer = _RecordingObserver();
-        final engine = _engineFor([_HungWarmNtsSource()], observer: observer);
-
-        TimeSample? sample;
-        unawaited(engine.validate().then((s) => sample = s));
-
-        // Just before the cap: still blocked on the hung warm.
-        async.elapse(SyncEngine.warmBarrierCap - const Duration(seconds: 1));
-        expect(sample, isNull);
-
-        // Past the cap: the probe abandons the warm await, runs the
-        // burst, and completes. The timed-out warm is reported to the
-        // observer as a warm-phase failure.
-        async.elapse(const Duration(seconds: 2));
-        expect(sample, isNotNull);
-        expect(sample!.sourceId, 'nts:hung-warm');
-        expect(
-          observer.failures.any(
-            (f) =>
-                f.sourceId == 'nts:hung-warm' && '${f.error}'.contains('warm'),
-          ),
-          isTrue,
-        );
-      });
     });
   });
 }

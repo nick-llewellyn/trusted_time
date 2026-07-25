@@ -267,3 +267,42 @@ calibration policy, including the decay-curve revisit in open
 question 3, is deferred until that history yields real-hardware data
 on the device classes named by `trusted_time-wy3`. The ADR body
 above is left unedited as a historical record.
+
+## Postscript: validate tier removed — 48h anchor-age policy (2026-07-25)
+
+The two-tier model is superseded in part (`trusted_time-gr3`): the
+**validate tier and its machinery are removed**, while the establish
+cadence decisions above survive unchanged.
+
+What was removed: `CadenceMode`, `validateInterval`,
+`foregroundValidateThreshold`, the public `validateFreshness()` API and
+`TrustedTimeFreshnessProbeException`, `SyncEngine.validate()`, the
+periodic validate timer, the desktop sleep/wake divergence probe, and
+the `SyncEngine.validate()` probe tests in `sync_engine_tier_test.dart`
+(the file itself survives — it retains the tier-admission,
+observability-logging, and boot-ID-stamping tests). In practice the
+validate tier's cost
+never justified its surface: a probe that agrees tells the caller
+nothing `anchorAge`/`uncertainty` did not already report, and a probe
+that disagrees escalated to a full establish cycle anyway — so the
+probe was an indirection in front of "sync if stale".
+
+What replaces it: a **48h anchor-age policy**. The staleness bound is
+`refreshInterval` (48h by default, and via `mobileDefaults()`), and an
+anchor is kept fresh by (a) the existing foreground refresh timer,
+(b) the OS background job (24h via `mobileDefaults()`, so the
+best-effort scheduler gets a full day of slack before the staleness
+bound bites), and (c) a resume-time anchor-age check — a
+`WidgetsBindingObserver` (now installed in every mode, not gated on a
+cadence enum) that runs a full sync on `AppLifecycleState.resumed` iff
+no trusted anchor exists or the anchor is at least one refresh interval
+old, measured on the same monotonic timeline `TimeAssessment.anchorAge`
+reports.
+
+What survives from this ADR: the daily establish cadence and its
+platform-throttling rationale (open question 1), the
+`mobileDefaults()` factory (now selecting only interval knobs), and
+the `sync()` WCET hardening from the establish path. Open question 4
+(validate-source rotation) is moot. The migration-flag decision (open
+question 5) is retired without ever flipping a default: `CadenceMode`
+was removed before any consumer other than `axiom x` depended on it.

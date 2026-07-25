@@ -218,56 +218,19 @@ void main() {
     });
   });
 
-  group('TrustedTimeConfig cadence mode (ADR 0006)', () {
-    test('defaults to singleTier30m with legacy timing untouched', () {
-      // The migration contract: existing 1.x integrators who never name
-      // cadenceMode keep the single uniform refresh loop bit-for-bit.
-      // Assert both the mode and the legacy timing constants the
-      // single-tier scheduler reads, so a future accidental flip of any
-      // default surfaces here.
+  group('TrustedTimeConfig sync cadence', () {
+    test('defaults use the 48h anchor-age staleness bound', () {
       const config = TrustedTimeConfig();
-      expect(config.cadenceMode, CadenceMode.singleTier30m);
-      expect(config.refreshInterval, const Duration(minutes: 30));
+      expect(config.refreshInterval, const Duration(hours: 48));
     });
 
-    test('mobileDefaults() selects tieredMobile with platform-tuned knobs', () {
-      // Pins every value ADR 0006 fixes for the factory: the mode and
-      // the 24h establish cadence on both the foreground refresh and
-      // background maintenance timers.
+    test('mobileDefaults() pins the 48h anchor-age policy knobs', () {
+      // One background refresh attempt per day, with a 48h staleness
+      // bound so the best-effort OS scheduler gets a full day of
+      // slack before a foreground resume forces a sync.
       final config = TrustedTimeConfig.mobileDefaults();
-      expect(config.cadenceMode, CadenceMode.tieredMobile);
-      expect(config.refreshInterval, const Duration(hours: 24));
+      expect(config.refreshInterval, const Duration(hours: 48));
       expect(config.backgroundSyncInterval, const Duration(hours: 24));
-    });
-
-    test('round-trips cadenceMode through copyWith', () {
-      const original = TrustedTimeConfig();
-      final tiered = original.copyWith(cadenceMode: CadenceMode.tieredMobile);
-      expect(tiered.cadenceMode, CadenceMode.tieredMobile);
-      // Purely additive: an omitted cadenceMode preserves the existing
-      // value, and untouched fields keep their defaults.
-      final untouched = tiered.copyWith(maxLatency: const Duration(seconds: 7));
-      expect(untouched.cadenceMode, CadenceMode.tieredMobile);
-      expect(untouched.refreshInterval, original.refreshInterval);
-    });
-
-    test('cadenceMode participates in equality and hashCode', () {
-      const base = TrustedTimeConfig();
-      const tiered = TrustedTimeConfig(cadenceMode: CadenceMode.tieredMobile);
-      expect(base == tiered, isFalse);
-
-      const a = TrustedTimeConfig(cadenceMode: CadenceMode.tieredMobile);
-      const b = TrustedTimeConfig(cadenceMode: CadenceMode.tieredMobile);
-      expect(a, equals(b));
-      expect(a.hashCode, equals(b.hashCode));
-    });
-
-    test('cadenceMode appears in toString output', () {
-      const config = TrustedTimeConfig(cadenceMode: CadenceMode.tieredMobile);
-      expect(
-        config.toString(),
-        contains('cadenceMode: CadenceMode.tieredMobile'),
-      );
     });
   });
 
@@ -386,78 +349,6 @@ void main() {
         () => legacy.effectiveMaxConcurrentDnsLookups,
         throwsArgumentError,
       );
-    });
-  });
-
-  group('TrustedTimeConfig validate cadence knobs (ADR 0006)', () {
-    test('default to a 1h validate interval and 15m foreground threshold', () {
-      const config = TrustedTimeConfig();
-      expect(config.validateInterval, const Duration(hours: 1));
-      expect(config.foregroundValidateThreshold, const Duration(minutes: 15));
-    });
-
-    test('mobileDefaults() pins the ADR 0006 validate cadence', () {
-      final config = TrustedTimeConfig.mobileDefaults();
-      expect(config.validateInterval, const Duration(hours: 1));
-      expect(config.foregroundValidateThreshold, const Duration(minutes: 15));
-    });
-
-    test('round-trip through copyWith', () {
-      const original = TrustedTimeConfig();
-      final updated = original.copyWith(
-        validateInterval: const Duration(minutes: 30),
-        foregroundValidateThreshold: const Duration(minutes: 5),
-      );
-      expect(updated.validateInterval, const Duration(minutes: 30));
-      expect(updated.foregroundValidateThreshold, const Duration(minutes: 5));
-      // Purely additive: omitted values preserve the existing ones.
-      final untouched = updated.copyWith(
-        maxLatency: const Duration(seconds: 7),
-      );
-      expect(untouched.validateInterval, const Duration(minutes: 30));
-      expect(untouched.foregroundValidateThreshold, const Duration(minutes: 5));
-    });
-
-    test('participate in equality and hashCode', () {
-      const base = TrustedTimeConfig();
-      const slowValidate = TrustedTimeConfig(
-        validateInterval: Duration(hours: 2),
-      );
-      const eagerForeground = TrustedTimeConfig(
-        foregroundValidateThreshold: Duration(minutes: 1),
-      );
-      expect(base == slowValidate, isFalse);
-      expect(base == eagerForeground, isFalse);
-
-      const a = TrustedTimeConfig(validateInterval: Duration(hours: 2));
-      const b = TrustedTimeConfig(validateInterval: Duration(hours: 2));
-      expect(a, equals(b));
-      expect(a.hashCode, equals(b.hashCode));
-    });
-
-    test('appear in toString output', () {
-      const config = TrustedTimeConfig(
-        validateInterval: Duration(minutes: 45),
-        foregroundValidateThreshold: Duration(minutes: 3),
-      );
-      final dump = config.toString();
-      expect(dump, contains('validateInterval: 0:45:00.000000'));
-      expect(dump, contains('foregroundValidateThreshold: 0:03:00.000000'));
-    });
-
-    test('allows a zero foreground threshold (probe on every resume)', () {
-      const config = TrustedTimeConfig(
-        foregroundValidateThreshold: Duration.zero,
-      );
-      expect(config.foregroundValidateThreshold, Duration.zero);
-    });
-
-    test('const-constructs a negative foreground threshold (normalized to '
-        'zero at the point of use, not by the const constructor)', () {
-      const config = TrustedTimeConfig(
-        foregroundValidateThreshold: Duration(minutes: -1),
-      );
-      expect(config.foregroundValidateThreshold, const Duration(minutes: -1));
     });
   });
 

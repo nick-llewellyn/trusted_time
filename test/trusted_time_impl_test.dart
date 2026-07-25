@@ -794,367 +794,202 @@ void main() {
     });
   });
 
-  group('TrustedTime.validateFreshness (ADR 0006)', () {
-    tearDown(TrustedTime.resetOverride);
-
-    test('under a test override reflects the mock trust state', () async {
-      final mock = TrustedTimeMock(initial: DateTime.utc(2024, 6, 15, 12));
-      TrustedTime.overrideForTesting(mock);
-
-      expect(await TrustedTime.validateFreshness(), isTrue);
-
-      mock.setTrusted(false);
-      expect(TrustedTime.getAssessment().isTrusted, isFalse);
-      expect(await TrustedTime.validateFreshness(), isFalse);
-    });
-
-    test('throws TrustedTimeFreshnessProbeException when no anchor is '
-        'established', () async {
-      await TrustedTime.initialize(
-        config: const TrustedTimeConfig(
-          ntpServers: [],
-          ntsServers: [],
-          persistState: false,
-        ),
-      );
-      addTearDown(TrustedTimeImpl.instance.dispose);
-      await TrustedTime.firstSyncSettled;
-
-      expect(TrustedTime.getAssessment().isTrusted, isFalse);
-      await expectLater(
-        TrustedTime.validateFreshness(),
-        throwsA(isA<TrustedTimeFreshnessProbeException>()),
-      );
-    });
-
-    test(
-      'throws when an anchor exists but no NTS source is configured',
-      () async {
-        final box = _MidpointBox(
-          DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
-        );
-        await TrustedTime.initialize(
-          config: TrustedTimeConfig(
-            ntpServers: const [],
-            ntsServers: const [],
-            persistState: false,
-            earlyExit: false,
-            additionalSources: [
-              _BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
-              _BoxedSource(box, id: 'https:b', groupId: 'g2'),
-            ],
-          ),
-        );
-        addTearDown(TrustedTimeImpl.instance.dispose);
-        await TrustedTime.firstSyncSettled;
-
-        expect(TrustedTime.getAssessment().isTrusted, isTrue);
-        await expectLater(
-          TrustedTime.validateFreshness(),
-          throwsA(isA<TrustedTimeFreshnessProbeException>()),
-        );
-      },
-    );
-
-    test(
-      'returns true when a fresh NTS probe agrees with the anchor',
-      () async {
-        final box = _MidpointBox(
-          DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
-        );
-        await TrustedTime.initialize(
-          config: TrustedTimeConfig(
-            ntpServers: const [],
-            ntsServers: const [],
-            persistState: false,
-            earlyExit: false,
-            additionalSources: [
-              _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
-              _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
-            ],
-          ),
-        );
-        addTearDown(TrustedTimeImpl.instance.dispose);
-        await TrustedTime.firstSyncSettled;
-
-        expect(TrustedTime.getAssessment().isTrusted, isTrue);
-        expect(await TrustedTime.validateFreshness(), isTrue);
-      },
-    );
-
-    test(
-      'is authLevel-agnostic: a none probe re-validates a verified anchor',
-      () async {
-        // Pins the deliberate posture for trusted_time-wba: freshness is
-        // an *operational* claim (the clock has not drifted), not an
-        // *authentication* claim — the anchor's integrity guarantees come
-        // entirely from the establish cycle, so validateFreshness() does
-        // not compare the probe sample's authLevel against the anchor's.
-        //
-        // As shipped, the mixed case cannot arise: bundledOnly cannot
-        // produce `none` samples and platformOnly cannot produce
-        // `verified` anchors. This test constructs the mix directly so
-        // that if a future trust mode (or a probe-side authLevel guard)
-        // changes the posture, it fails and forces the decision to be
-        // re-asked rather than drifting silently.
-        final box = _MidpointBox(
-          DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
-        );
-        final a = _AuthBoxedSource(
-          box,
-          id: 'nts:a',
-          groupId: 'g1',
-          authLevel: NtsAuthLevel.verified,
-        );
-        final b = _AuthBoxedSource(
-          box,
-          id: 'nts:b',
-          groupId: 'g2',
-          authLevel: NtsAuthLevel.verified,
-        );
-        await TrustedTime.initialize(
-          config: TrustedTimeConfig(
-            ntpServers: const [],
-            ntsServers: const [],
-            persistState: false,
-            earlyExit: false,
-            additionalSources: [a, b],
-          ),
-        );
-        addTearDown(TrustedTimeImpl.instance.dispose);
-        await TrustedTime.firstSyncSettled;
-
-        // The establish cycle built a Tier 1 (verified) anchor.
-        expect(TrustedTime.getAssessment().isTrusted, isTrue);
-        expect(TrustedTime.getAssessment().authLevel, NtsAuthLevel.verified);
-
-        // Downgrade both sources so the probe sample reports `none`,
-        // then confirm the probe still re-validates the verified anchor.
-        a.authLevel = NtsAuthLevel.none;
-        b.authLevel = NtsAuthLevel.none;
-        expect(await TrustedTime.validateFreshness(), isTrue);
-        expect(TrustedTime.getAssessment().authLevel, NtsAuthLevel.verified);
-      },
-    );
-
-    test('returns false when the NTS probe disagrees beyond the '
-        'uncertainty window', () async {
-      final box = _MidpointBox(
-        DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
-      );
-      await TrustedTime.initialize(
-        config: TrustedTimeConfig(
-          ntpServers: const [],
-          ntsServers: const [],
-          persistState: false,
-          earlyExit: false,
-          // Pin the uncertainty window so this test's pass/fail boundary
-          // does not depend on the library default staying at 5s.
-          maxAllowedUncertaintyMs: 5000,
-          additionalSources: [
-            _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
-            _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
-          ],
-        ),
-      );
-      addTearDown(TrustedTimeImpl.instance.dispose);
-      await TrustedTime.firstSyncSettled;
-      expect(TrustedTime.getAssessment().isTrusted, isTrue);
-
-      // Move the probe (10s) far outside the configured 5s uncertainty
-      // window; the anchor stays at the establish-time midpoint.
-      box.midpointMs += 10000;
-      expect(await TrustedTime.validateFreshness(), isFalse);
-    });
-  });
-
-  group('TrustedTime tiered cadence scheduler (ADR 0006)', () {
+  group('TrustedTime resume anchor-age check', () {
     // Live-engine tests; clear any override left by earlier groups so the
-    // static surface drops into the real TrustedTimeImpl singleton.
-    tearDown(TrustedTime.resetOverride);
-
-    Future<void> initTiered(
-      _MidpointBox box, {
-      Duration foregroundValidateThreshold = const Duration(minutes: 15),
-    }) async {
-      await TrustedTime.initialize(
-        config: TrustedTimeConfig(
-          ntpServers: const [],
-          ntsServers: const [],
-          persistState: false,
-          earlyExit: false,
-          cadenceMode: CadenceMode.tieredMobile,
-          foregroundValidateThreshold: foregroundValidateThreshold,
-          additionalSources: [
-            _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
-            _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
-          ],
-        ),
-      );
-      // These tests assert on the establish cycle's concluded anchor
-      // and the timers it arms; wait for the detached cycle to settle.
-      await TrustedTime.firstSyncSettled;
-      addTearDown(() => TrustedTimeImpl.instance.dispose());
-    }
-
-    Future<void> initSingleTier() async {
-      await TrustedTime.initialize(
-        config: const TrustedTimeConfig(
-          ntpServers: [],
-          ntsServers: [],
-          persistState: false,
-        ),
-      );
-      addTearDown(() => TrustedTimeImpl.instance.dispose());
-    }
+    // static surface drops into the real TrustedTimeImpl singleton. This
+    // must run in setUp, not tearDown: a leftover override has to be gone
+    // before the first test in this group executes.
+    setUp(TrustedTime.resetOverride);
 
     _MidpointBox freshBox() =>
         _MidpointBox(DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch);
 
-    test('singleTier30m arms neither the validate timer nor the '
-        'lifecycle observer', () async {
-      await initSingleTier();
-      final impl = TrustedTimeImpl.instance;
-      expect(impl.debugValidateTimerActive, isFalse);
-      expect(impl.debugLifecycleObserverInstalled, isFalse);
+    Future<void> initWithAnchor(_MidpointBox box) async {
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          ntsServers: const [],
+          persistState: false,
+          earlyExit: false,
+          additionalSources: [
+            _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
+            _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
+          ],
+        ),
+      );
+      // Resolving the singleton at teardown time is deliberate: if a
+      // test re-initializes, init() itself disposes the prior instance
+      // and dispose() is idempotent, so this closure always tears down
+      // whichever engine is live. A captured reference would instead
+      // leak the replacement.
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      // These tests assert on the bootstrap cycle's concluded anchor;
+      // wait for the detached cycle to settle.
+      await TrustedTime.firstSyncSettled;
+    }
+
+    _SyncStartedProbe registerProbe() {
+      final probe = _SyncStartedProbe();
+      TrustedTime.registerObserver(probe);
+      addTearDown(() => TrustedTime.unregisterObserver(probe));
+      return probe;
+    }
+
+    // Settles a fire-and-forget resume dispatch deterministically. The
+    // dispatch starts its cycle synchronously (onSyncStarted is emitted
+    // before _performSync's first await), so after one event-queue
+    // drain the probe count reflects whether a cycle began; the loop
+    // then drains until any in-flight cycle concludes (syncInProgress
+    // is cleared in _performSync's finally, after the trust posture is
+    // written). No fixed real-time delay is assumed — a slow or loaded
+    // runner simply loops longer. Not usable while a deliberately
+    // gated cycle is in flight (it would spin until the test times
+    // out); those tests drain the queue once instead.
+    Future<void> settleSyncActivity() async {
+      await pumpEventQueue();
+      while (TrustedTime.getAssessment().syncInProgress) {
+        await pumpEventQueue();
+      }
+    }
+
+    test('the lifecycle observer is installed at bootstrap', () async {
+      await initWithAnchor(freshBox());
+      expect(TrustedTimeImpl.instance.debugLifecycleObserverInstalled, isTrue);
     });
 
-    test('tieredMobile arms the validate timer and installs the '
-        'lifecycle observer', () async {
-      await initTiered(freshBox());
+    test('a resume with a fresh anchor does not sync', () async {
+      await initWithAnchor(freshBox());
       final impl = TrustedTimeImpl.instance;
       expect(TrustedTime.getAssessment().isTrusted, isTrue);
-      expect(impl.debugValidateTimerActive, isTrue);
-      expect(impl.debugLifecycleObserverInstalled, isTrue);
+      final probe = registerProbe();
+
+      // The anchor was just established, so its age (milliseconds) is
+      // far below the default 48h refresh interval. A resume-triggered
+      // cycle would emit onSyncStarted synchronously inside the
+      // dispatch; the settle just rules out any deferred start too.
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 0);
     });
 
-    test(
-      'a foreground resume after the threshold runs a validate cycle',
-      () async {
-        await initTiered(freshBox());
-        final impl = TrustedTimeImpl.instance;
-        expect(impl.debugValidateCycleCount, 0);
-
-        const bg = Duration(hours: 5);
-        impl.debugHandleAppLifecycleState(
-          AppLifecycleState.paused,
-          elapsed: bg,
-        );
-        impl.debugHandleAppLifecycleState(
-          AppLifecycleState.resumed,
-          elapsed: bg + const Duration(minutes: 20),
-        );
-        // The cycle is fire-and-forget; let its probe settle.
-        await Future.delayed(const Duration(milliseconds: 20));
-
-        expect(impl.debugValidateCycleCount, 1);
-        // The probe agreed with the anchor, so trust is intact.
-        expect(TrustedTime.getAssessment().isTrusted, isTrue);
-      },
-    );
-
-    test('a brief background excursion below the threshold does not '
-        'run a validate cycle', () async {
-      await initTiered(freshBox());
+    test('a resume with a stale anchor runs a full sync', () async {
+      await initWithAnchor(freshBox());
       final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
 
-      const bg = Duration(hours: 5);
-      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
-      impl.debugHandleAppLifecycleState(
-        AppLifecycleState.resumed,
-        elapsed: bg + const Duration(minutes: 5),
+      // Shrink the staleness bound to 1ms instead of faking the
+      // monotonic clock, then let real time carry the anchor past it
+      // (age is measured in whole milliseconds). Cancel the refresh
+      // timer the setter arms — without pausing the schedule, since
+      // pause suppresses the resume trigger too — so the sync we
+      // observe can only come from the resume trigger.
+      impl.setRefreshInterval(const Duration(milliseconds: 1));
+      impl.debugCancelRefreshTimer();
+      final probe = registerProbe();
+      await Future.delayed(const Duration(milliseconds: 10));
+
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      // The dispatch has already evaluated staleness against the 1ms
+      // bound and synchronously begun its cycle. Widen the interval
+      // before settling: the success path re-arms the refresh timer
+      // from _activeRefreshInterval, and a still-live 1ms schedule
+      // would let that timer fire mid-drain on a slow runner and
+      // cascade extra cycles into the probe count.
+      impl.setRefreshInterval(const Duration(days: 1));
+      await settleSyncActivity();
+
+      expect(probe.startCount, 1);
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
+    });
+
+    test('pauseAutomaticRefresh suppresses the anchored resume '
+        'staleness check', () async {
+      // automaticRefreshActive == false must mean *no* anchor-age-
+      // driven syncs — timer and resume trigger alike. Same stale-
+      // anchor setup as the positive test above, but paused: the
+      // resume must not start a cycle.
+      await initWithAnchor(freshBox());
+      final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
+
+      impl.setRefreshInterval(const Duration(milliseconds: 1));
+      impl.pauseAutomaticRefresh();
+      expect(impl.automaticRefreshActive, isFalse);
+      final probe = registerProbe();
+      await Future.delayed(const Duration(milliseconds: 10));
+
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 0);
+
+      // Resuming the schedule restores the trigger: the anchor is
+      // still stale against the 1ms bound, so the same dispatch now
+      // starts a cycle.
+      impl.resumeAutomaticRefresh();
+      impl.debugCancelRefreshTimer();
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      // Same re-arm hazard as the positive test above: the cycle is
+      // already in flight, so widen the interval before settling to
+      // keep the success path's re-armed timer from cascading.
+      impl.setRefreshInterval(const Duration(days: 1));
+      await settleSyncActivity();
+
+      expect(probe.startCount, 1);
+    });
+
+    test('pauseAutomaticRefresh still allows the unanchored establish '
+        'attempt on resume', () async {
+      // Pause only opts out of anchor-age-driven cadence; a resume
+      // with no anchor is an establish attempt and must proceed.
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          ntsServers: [],
+          persistState: false,
+        ),
       );
-      await Future.delayed(const Duration(milliseconds: 20));
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      await TrustedTime.firstSyncSettled;
+      final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
+      impl.pauseAutomaticRefresh();
+      final probe = registerProbe();
 
-      expect(impl.debugValidateCycleCount, 0);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 1);
     });
 
-    test('a resume with no prior background transition is a no-op', () async {
-      await initTiered(freshBox());
-      final impl = TrustedTimeImpl.instance;
-
-      impl.debugHandleAppLifecycleState(
-        AppLifecycleState.resumed,
-        elapsed: const Duration(hours: 5),
+    test('a resume with no anchor at all runs a full sync', () async {
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          ntsServers: [],
+          persistState: false,
+        ),
       );
-      await Future.delayed(const Duration(milliseconds: 20));
-
-      expect(impl.debugValidateCycleCount, 0);
-    });
-
-    test('a negative foreground threshold is normalized to zero and probes '
-        'on every resume', () async {
-      await initTiered(
-        freshBox(),
-        foregroundValidateThreshold: const Duration(minutes: -1),
-      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      await TrustedTime.firstSyncSettled;
       final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
+      final probe = registerProbe();
 
-      // Same monotonic reading on background and resume: a zero-length
-      // excursion. With the negative threshold normalized to zero, the
-      // delta (0) still meets the bound, so a cycle runs.
-      const bg = Duration(hours: 5);
-      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
-      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed, elapsed: bg);
-      await Future.delayed(const Duration(milliseconds: 20));
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
 
-      expect(impl.debugValidateCycleCount, 1);
+      expect(probe.startCount, 1);
     });
 
-    test('a non-advancing monotonic reading on resume does not run a '
-        'cycle (guards the wall-clock-regression case)', () async {
-      await initTiered(freshBox());
-      final impl = TrustedTimeImpl.instance;
-
-      const bg = Duration(hours: 5);
-      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
-      // Under wall-clock time a backward jump while backgrounded would
-      // make the delta negative and silently skip the probe. A monotonic
-      // source can never regress, so a non-advancing reading is simply a
-      // sub-threshold (here zero) duration and runs no cycle.
-      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed, elapsed: bg);
-      await Future.delayed(const Duration(milliseconds: 20));
-
-      expect(impl.debugValidateCycleCount, 0);
-    });
-
-    test('singleTier30m ignores lifecycle transitions entirely', () async {
-      await initSingleTier();
-      final impl = TrustedTimeImpl.instance;
-
-      const bg = Duration(hours: 5);
-      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg);
-      impl.debugHandleAppLifecycleState(
-        AppLifecycleState.resumed,
-        elapsed: bg + const Duration(hours: 1),
-      );
-      await Future.delayed(const Duration(milliseconds: 20));
-
-      expect(impl.debugValidateCycleCount, 0);
-    });
-
-    test(
-      'dispose cancels the validate timer and detaches the observer',
-      () async {
-        await initTiered(freshBox());
-        final impl = TrustedTimeImpl.instance;
-        expect(impl.debugValidateTimerActive, isTrue);
-        expect(impl.debugLifecycleObserverInstalled, isTrue);
-
-        impl.dispose();
-
-        expect(impl.debugValidateTimerActive, isFalse);
-        expect(impl.debugLifecycleObserverInstalled, isFalse);
-      },
-    );
-
-    test('a foreground resume does not start a probe that overlaps an '
-        'in-flight validate cycle (shared in-flight guard)', () async {
-      // A probe is a single getTime() call, so the counter tallies
-      // exactly "one probe == one getTime() call"; the two sources
-      // share one counter so the assertion holds regardless of which
-      // ranked source the validate tier selects.
-      final counter = _ProbeCounter();
+    test('a non-positive refreshInterval disables the anchored resume '
+        'staleness check', () async {
+      // Opting out of automatic refresh (non-positive interval at
+      // init) must silence the resume trigger too for an anchored
+      // engine; otherwise `age < interval` could never hold and every
+      // resume would resync. The unanchored establish path is pinned
+      // separately below.
       final box = freshBox();
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
@@ -1162,46 +997,117 @@ void main() {
           ntsServers: const [],
           persistState: false,
           earlyExit: false,
-          cadenceMode: CadenceMode.tieredMobile,
+          refreshInterval: Duration.zero,
           additionalSources: [
-            _CountingSource(box, id: 'nts:a', groupId: 'g1', counter: counter),
-            _CountingSource(box, id: 'nts:b', groupId: 'g2', counter: counter),
+            _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
+            _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
           ],
         ),
       );
       addTearDown(() => TrustedTimeImpl.instance.dispose());
       await TrustedTime.firstSyncSettled;
       final impl = TrustedTimeImpl.instance;
-
-      // The bootstrap establish cycle queried the sources; only
-      // post-init probe getTime() calls are relevant to the guard.
-      counter.count = 0;
-
-      // Two foreground resumes dispatched in the same synchronous turn.
-      // The first drives _runValidateCycle to its first await — setting
-      // the in-flight flag before yielding — so the second must observe
-      // the flag and return before issuing any probe getTime() call.
-      const bg1 = Duration(hours: 5);
-      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg1);
-      impl.debugHandleAppLifecycleState(
-        AppLifecycleState.resumed,
-        elapsed: bg1 + const Duration(minutes: 20),
-      );
-      const bg2 = Duration(hours: 10);
-      impl.debugHandleAppLifecycleState(AppLifecycleState.paused, elapsed: bg2);
-      impl.debugHandleAppLifecycleState(
-        AppLifecycleState.resumed,
-        elapsed: bg2 + const Duration(minutes: 20),
-      );
-
-      await Future.delayed(const Duration(milliseconds: 30));
-
-      // Both resumes register as attempts, but the guard let only one
-      // probe reach a source: a single getTime() call, not two
-      // overlapping probes contending on shared per-source state.
-      expect(impl.debugValidateCycleCount, 2);
-      expect(counter.count, 1);
       expect(TrustedTime.getAssessment().isTrusted, isTrue);
+      final probe = registerProbe();
+
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 0);
+    });
+
+    test('a non-positive refreshInterval still allows the unanchored '
+        'establish attempt on resume', () async {
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          ntsServers: [],
+          persistState: false,
+          refreshInterval: Duration.zero,
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      await TrustedTime.firstSyncSettled;
+      final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
+      final probe = registerProbe();
+
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 1);
+    });
+
+    test('non-resumed lifecycle states never sync', () async {
+      await initWithAnchor(freshBox());
+      final impl = TrustedTimeImpl.instance;
+      impl.setRefreshInterval(const Duration(microseconds: 1));
+      impl.debugCancelRefreshTimer();
+      final probe = registerProbe();
+
+      // Even with a stale anchor, only `resumed` triggers the check.
+      impl.debugHandleAppLifecycleState(AppLifecycleState.inactive);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.paused);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.hidden);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 0);
+    });
+
+    test('a resume during an in-flight sync does not start a second '
+        'cycle', () async {
+      final gate = Completer<void>();
+      final entered = Completer<void>();
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          ntsServers: const [],
+          persistState: false,
+          earlyExit: false,
+          additionalSources: [
+            _GatedSource(gate, id: 'nts:a', groupId: 'g1', entered: entered),
+            _GatedSource(gate, id: 'nts:b', groupId: 'g2'),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      final impl = TrustedTimeImpl.instance;
+
+      // The detached bootstrap cycle is scheduled by initialize() but
+      // not ordered against it; await the gated source's entry signal
+      // so the cycle has provably emitted onSyncStarted and armed the
+      // in-flight guard before the probe is registered. From here any
+      // count observed below can only come from a second cycle.
+      await entered.future;
+      expect(TrustedTime.getAssessment().syncInProgress, isTrue);
+      final probe = registerProbe();
+
+      // A second cycle would emit onSyncStarted synchronously inside
+      // this dispatch (nothing yields before it in _performSync →
+      // sync()); settleSyncActivity cannot be used here — the gated
+      // bootstrap cycle is deliberately still in flight — so a single
+      // event-queue drain covers any deferred start.
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await pumpEventQueue();
+      expect(probe.startCount, 0);
+
+      gate.complete();
+      await TrustedTime.firstSyncSettled;
+    });
+
+    test('dispose detaches the observer and a late resume dispatch is '
+        'a no-op', () async {
+      await initWithAnchor(freshBox());
+      final impl = TrustedTimeImpl.instance;
+      expect(impl.debugLifecycleObserverInstalled, isTrue);
+      final probe = registerProbe();
+
+      impl.dispose();
+
+      expect(impl.debugLifecycleObserverInstalled, isFalse);
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+      expect(probe.startCount, 0);
     });
   });
 
@@ -1944,23 +1850,21 @@ class _SyncStartedProbe implements SyncObserver {
   void onSyncFailed(Object error) {}
 }
 
-/// Mutable midpoint shared by establish and probe queries so a test can
-/// move "network time" between the two phases.
+/// Mutable midpoint shared across sync cycles so a test can move
+/// "network time" between cycles.
 class _MidpointBox {
   _MidpointBox(this.midpointMs);
   int midpointMs;
 }
 
-/// Shared getTime() tally so an overlap test can count how many probe
-/// queries actually executed independently of which ranked source the
-/// validate tier selected.
+/// Shared getTime() tally so a test can count how many queries actually
+/// executed independently of which ranked source the engine selected.
 class _ProbeCounter {
   int count = 0;
 }
 
 /// A [_BoxedSource] variant that tallies every getTime() call into a
-/// shared [_ProbeCounter], used to prove the validate-in-flight guard
-/// stops a second overlapping probe burst from reaching a source.
+/// shared [_ProbeCounter].
 class _CountingSource implements TimeSource {
   _CountingSource(
     this._box, {
@@ -2005,37 +1909,6 @@ class _FailingSource implements TimeSource {
   Future<TimeSample> getTime() async => throw Exception('unreachable host');
 }
 
-/// A [_BoxedSource] variant with a mutable [authLevel], so a test can
-/// establish a verified anchor and then downgrade the same sources for
-/// the freshness probe (the trusted_time-wba posture test).
-class _AuthBoxedSource implements TimeSource {
-  _AuthBoxedSource(
-    this._box, {
-    required this.id,
-    required this.groupId,
-    required this.authLevel,
-  });
-
-  final _MidpointBox _box;
-  @override
-  final String id;
-  @override
-  final String groupId;
-  NtsAuthLevel authLevel;
-  static const int halfWidthMs = 10;
-
-  @override
-  Future<TimeSample> getTime() async => TimeSample(
-    interval: TimeInterval(
-      startMs: _box.midpointMs - halfWidthMs,
-      endMs: _box.midpointMs + halfWidthMs,
-    ),
-    sourceId: id,
-    groupId: groupId,
-    authLevel: authLevel,
-  );
-}
-
 /// A [TimeSource] whose [warm] never completes, to exercise the
 /// bootstrap warm-await bound: a hung handshake must not stall
 /// initialize() past [SyncEngine.warmBarrierCap].
@@ -2054,10 +1927,21 @@ class _HungWarmSource implements TimeSource, Warmable {
 
 /// A [TimeSource] blocked on an external gate, letting a test hold the
 /// first sync cycle in flight and release it deterministically.
+///
+/// [entered] (optional) resolves when [getTime] is first invoked. In a
+/// cycle, `onSyncStarted` strictly precedes the source queries and the
+/// impl's in-flight guard is armed before the engine's `sync()` is
+/// awaited — so a test awaiting [entered] knows both have happened.
 class _GatedSource implements TimeSource {
-  _GatedSource(this._gate, {required this.id, required this.groupId});
+  _GatedSource(
+    this._gate, {
+    required this.id,
+    required this.groupId,
+    this.entered,
+  });
 
   final Completer<void> _gate;
+  final Completer<void>? entered;
   @override
   final String id;
   @override
@@ -2066,6 +1950,7 @@ class _GatedSource implements TimeSource {
 
   @override
   Future<TimeSample> getTime() async {
+    if (entered != null && !entered!.isCompleted) entered!.complete();
     await _gate.future;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     return TimeSample(
@@ -2114,8 +1999,7 @@ class _GatedThenBoxedSource implements TimeSource {
 }
 
 /// A [TimeSource] that reports an interval centred on a [_MidpointBox]
-/// so the validate-tier offset comparison can be driven
-/// deterministically.
+/// so consensus can be driven deterministically.
 class _BoxedSource implements TimeSource {
   _BoxedSource(this._box, {required this.id, required this.groupId});
 

@@ -26,34 +26,6 @@ enum ConfidenceLevel {
   high,
 }
 
-/// Selects the engine's refresh-scheduling strategy.
-///
-/// See ADR 0006 (Mobile-optimized sync cadence) for the full rationale.
-/// The default ([CadenceMode.singleTier30m]) preserves the upstream
-/// desktop/server behaviour bit-for-bit; [CadenceMode.tieredMobile] is
-/// the opt-in mobile model and is what [TrustedTimeConfig.mobileDefaults]
-/// selects.
-enum CadenceMode {
-  /// Legacy single-tier model: one uniform refresh loop driven by
-  /// [TrustedTimeConfig.refreshInterval] (default 30 minutes).
-  ///
-  /// This is the default. Existing 1.x integrators keep exactly the
-  /// behaviour they have today; nothing in the scheduler changes unless
-  /// a caller explicitly opts into [CadenceMode.tieredMobile].
-  singleTier30m,
-
-  /// Mobile-optimized two-tier model that separates establishing a fresh
-  /// truth anchor from validating that the existing anchor is still good.
-  ///
-  /// An infrequent *establish* cycle (full Marzullo consensus across the
-  /// whole pool, ~24h) builds the high-confidence anchor, while a
-  /// frequent *validate* cycle (a single cookie-warm NTS query, ~1h, and
-  /// on app foreground after a long background) cheaply confirms the
-  /// anchor has not drifted without paying for a full consensus pass.
-  /// Selected by [TrustedTimeConfig.mobileDefaults].
-  tieredMobile,
-}
-
 @immutable
 /// Configuration parameters for the [TrustedTime] engine.
 ///
@@ -91,15 +63,12 @@ final class TrustedTimeConfig {
     this.minimumQuorum = 2,
     this.minGroupCount = 2,
     this.maxLatency = const Duration(seconds: 4),
-    this.refreshInterval = const Duration(minutes: 30),
+    this.refreshInterval = const Duration(hours: 48),
     this.maxAllowedUncertaintyMs = 5000,
     this.persistState = true,
     this.earlyExit = true,
     this.backgroundSyncInterval,
     this.transientStreakThreshold = 5,
-    this.cadenceMode = CadenceMode.singleTier30m,
-    this.validateInterval = const Duration(hours: 1),
-    this.foregroundValidateThreshold = const Duration(minutes: 15),
     this.ntsBurstCount = 8,
     this.ntpBurstCount = 8,
     this.requireSleepAwareProjection = false,
@@ -116,31 +85,28 @@ final class TrustedTimeConfig {
          'both source kinds share one worst-case wall-time model.',
        );
 
-  /// Creates a mobile-tuned configuration implementing the tiered
-  /// establish/validate sync cadence (ADR 0006).
+  /// Creates a mobile-tuned configuration implementing the 48h
+  /// anchor-age policy.
   ///
-  /// Selects platform-tuned defaults
-  /// explicitly rather than changing any global default:
+  /// * [backgroundSyncInterval] is 24h — one background refresh
+  ///   attempt per day, the cadence iOS `BGTaskScheduler` and Android
+  ///   `WorkManager` will actually honour on battery-conscious
+  ///   devices.
+  /// * [refreshInterval] is 48h (the global default, named explicitly)
+  ///   — the staleness bound for the foreground timer and the
+  ///   on-resume anchor-age check. Twice the background cadence, so
+  ///   the best-effort OS scheduler gets a full day of slack to land
+  ///   the daily job before a foreground resume forces a sync.
   ///
-  /// * [cadenceMode] is [CadenceMode.tieredMobile], so the engine runs
-  ///   an infrequent full *establish* cycle plus a cheap *validate*
-  ///   cycle instead of a single uniform refresh loop.
-  /// * [refreshInterval] is 24h — the establish cadence, the value iOS
-  ///   `BGTaskScheduler` and Android `WorkManager` will actually honour
-  ///   on battery-conscious devices.
-  /// * [backgroundSyncInterval] is 24h, aligning the background
-  ///   maintenance cadence with the establish tier.
-  ///
-  /// The cheap ~1h validate cadence is owned by the tiered scheduler
-  /// rather than this factory; this factory selects the mode and the
-  /// platform-tuned constants the scheduler reads.
+  /// The policy is completed by the engine's on-resume anchor-age
+  /// check (active in every mode, not just this one): returning to
+  /// the foreground with an anchor older than [refreshInterval]
+  /// triggers a full sync immediately rather than waiting for the
+  /// next timer tick.
   factory TrustedTimeConfig.mobileDefaults() {
     return const TrustedTimeConfig(
-      cadenceMode: CadenceMode.tieredMobile,
-      refreshInterval: Duration(hours: 24),
+      refreshInterval: Duration(hours: 48),
       backgroundSyncInterval: Duration(hours: 24),
-      validateInterval: Duration(hours: 1),
-      foregroundValidateThreshold: Duration(minutes: 15),
     );
   }
 
@@ -304,7 +270,8 @@ final class TrustedTimeConfig {
   final Duration maxLatency;
 
   /// The frequency at which the engine enters a proactive synchronization cycle
-  /// while the app is in the foreground.
+  /// while the app is in the foreground, and the staleness bound for the
+  /// on-resume anchor-age check. Defaults to 48 hours.
   final Duration refreshInterval;
 
   /// The hard threshold for precision. If a consensus result has an uncertainty
@@ -381,30 +348,19 @@ final class TrustedTimeConfig {
   /// produce. The streak counter resets on a successful query, on a
   /// regular (non-transient) failure, and on each escalation.
   ///
-  /// Default: `5`. With the default [refreshInterval] of 30 minutes
-  /// this corresponds to ~2.5 hours of sustained transients before
-  /// escalation, long enough that a real DNS-pool burst clears
-  /// naturally and short enough that a stuck host eventually
-  /// surfaces as unhealthy.
+  /// Default: `5` — five consecutive sync cycles of sustained
+  /// transients before escalation, long enough that a real DNS-pool
+  /// burst clears naturally and short enough that a stuck host
+  /// eventually surfaces as unhealthy.
   ///
   /// Set to `0` (or any non-positive value) to disable escalation
   /// entirely and preserve the pre-streak-guard behaviour where
   /// transient failures retry indefinitely.
   final int transientStreakThreshold;
 
-  /// Selects the engine's refresh-scheduling strategy.
-  ///
-  /// Defaults to [CadenceMode.singleTier30m], preserving the legacy
-  /// single uniform refresh loop bit-for-bit. [CadenceMode.tieredMobile]
-  /// opts into the establish/validate two-tier model (ADR 0006);
-  /// [TrustedTimeConfig.mobileDefaults] selects it alongside the
-  /// platform-tuned drift and interval constants.
-  final CadenceMode cadenceMode;
-
   /// The maximum number of sequential authenticated queries each
-  /// [NtsSource] issues per `getTime()` call — one call per
-  /// establish-tier sync cycle, and one per validate-tier freshness
-  /// probe (ADR 0006).
+  /// [NtsSource] issues per `getTime()` call — one call per sync
+  /// cycle.
   ///
   /// Every query in the burst produces an independent measurement; the
   /// source reduces them to the single lowest-RTT sample — the
@@ -447,39 +403,6 @@ final class TrustedTimeConfig {
   /// Defaults to `8`. `1` reproduces the pre-burst single-query
   /// behaviour exactly.
   final int ntpBurstCount;
-
-  /// How often the validate tier runs its cheap freshness probe while
-  /// the app is foregrounded (ADR 0006).
-  ///
-  /// Only consulted when [cadenceMode] is [CadenceMode.tieredMobile]; the
-  /// legacy [CadenceMode.singleTier30m] schedule ignores it entirely.
-  /// In tiered mode the engine runs an infrequent full *establish* cycle
-  /// on [refreshInterval] (24h via [mobileDefaults]) plus this frequent
-  /// *validate* cycle, which confirms the existing anchor with a single
-  /// cookie-warm NTS burst rather than a full Marzullo pass. Defaults to
-  /// one hour. A non-positive value disables the periodic validate timer;
-  /// the foreground-resume trigger is independent of this value, but it
-  /// is itself only active where a [WidgetsBindingObserver] can be
-  /// installed (a live binding), so disabling the timer does not
-  /// guarantee a foreground trigger in every environment — e.g. in a
-  /// headless background isolate neither fires.
-  final Duration validateInterval;
-
-  /// Minimum time the app must have spent backgrounded before a return
-  /// to the foreground triggers a validate-tier freshness probe (ADR
-  /// 0006).
-  ///
-  /// Only consulted when [cadenceMode] is [CadenceMode.tieredMobile].
-  /// A brief background excursion (switching apps, pulling down a
-  /// notification) is below this threshold and does not spend a probe;
-  /// returning after a longer absence — where the anchor is most likely
-  /// to have drifted — does. Defaults to fifteen minutes.
-  ///
-  /// Expected to be non-negative. The constructor is `const`, so this is
-  /// not enforced by assertion (`Duration` comparison is not a constant
-  /// expression); instead a negative value is normalized to
-  /// [Duration.zero] at the point of use, i.e. it probes on every resume.
-  final Duration foregroundValidateThreshold;
 
   /// The [nts.TrustMode] the engine applies to every per-source
   /// [nts.NtsClient], derived from [usePlatformTrust] and
@@ -540,9 +463,6 @@ final class TrustedTimeConfig {
     bool? earlyExit,
     Duration? backgroundSyncInterval,
     int? transientStreakThreshold,
-    CadenceMode? cadenceMode,
-    Duration? validateInterval,
-    Duration? foregroundValidateThreshold,
     int? ntsBurstCount,
     int? ntpBurstCount,
     bool? requireSleepAwareProjection,
@@ -571,10 +491,6 @@ final class TrustedTimeConfig {
           backgroundSyncInterval ?? this.backgroundSyncInterval,
       transientStreakThreshold:
           transientStreakThreshold ?? this.transientStreakThreshold,
-      cadenceMode: cadenceMode ?? this.cadenceMode,
-      validateInterval: validateInterval ?? this.validateInterval,
-      foregroundValidateThreshold:
-          foregroundValidateThreshold ?? this.foregroundValidateThreshold,
       ntsBurstCount: ntsBurstCount ?? this.ntsBurstCount,
       ntpBurstCount: ntpBurstCount ?? this.ntpBurstCount,
       requireSleepAwareProjection:
@@ -605,9 +521,6 @@ final class TrustedTimeConfig {
         other.earlyExit == earlyExit &&
         other.backgroundSyncInterval == backgroundSyncInterval &&
         other.transientStreakThreshold == transientStreakThreshold &&
-        other.cadenceMode == cadenceMode &&
-        other.validateInterval == validateInterval &&
-        other.foregroundValidateThreshold == foregroundValidateThreshold &&
         other.ntsBurstCount == ntsBurstCount &&
         other.ntpBurstCount == ntpBurstCount &&
         other.requireSleepAwareProjection == requireSleepAwareProjection;
@@ -634,9 +547,6 @@ final class TrustedTimeConfig {
     earlyExit,
     backgroundSyncInterval,
     transientStreakThreshold,
-    cadenceMode,
-    validateInterval,
-    foregroundValidateThreshold,
     ntsBurstCount,
     ntpBurstCount,
     requireSleepAwareProjection,
@@ -675,9 +585,6 @@ final class TrustedTimeConfig {
         '  earlyExit: $earlyExit,\n'
         '  backgroundSyncInterval: $backgroundSyncInterval,\n'
         '  transientStreakThreshold: $transientStreakThreshold,\n'
-        '  cadenceMode: $cadenceMode,\n'
-        '  validateInterval: $validateInterval,\n'
-        '  foregroundValidateThreshold: $foregroundValidateThreshold,\n'
         '  ntsBurstCount: $ntsBurstCount,\n'
         '  ntpBurstCount: $ntpBurstCount,\n'
         '  requireSleepAwareProjection: $requireSleepAwareProjection,\n'
