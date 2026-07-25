@@ -15,19 +15,38 @@ void main() {
   const storageChannel = MethodChannel(
     'plugins.it_nomads.com/flutter_secure_storage',
   );
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(storageChannel, (call) async => null);
-
   const monotonicChannel = MethodChannel('trusted_time/monotonic');
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(monotonicChannel, (call) async {
-        if (call.method == 'getUptimeMs') return 1000;
-        return null;
-      });
-
   const backgroundChannel = MethodChannel('trusted_time/background');
-  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-      .setMockMethodCallHandler(backgroundChannel, (call) async => null);
+
+  // File-level default handlers: null storage (persistence-free) and a
+  // fixed 1000ms uptime. Groups that need richer behaviour install their
+  // own handlers and restore these defaults at teardown.
+  //
+  // Flutter tests share one process, so install the defaults in setUpAll
+  // and clear them (set to null) in tearDownAll. Leaving them installed
+  // past this file would leak into — and race with — other test files
+  // that set handlers on the same channels, causing order-dependent
+  // flakiness.
+  void installDefaultChannelHandlers() {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(storageChannel, (call) async => null);
+    messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+      if (call.method == 'getUptimeMs') return 1000;
+      return null;
+    });
+    messenger.setMockMethodCallHandler(backgroundChannel, (call) async => null);
+  }
+
+  setUpAll(installDefaultChannelHandlers);
+
+  tearDownAll(() {
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(storageChannel, null);
+    messenger.setMockMethodCallHandler(monotonicChannel, null);
+    messenger.setMockMethodCallHandler(backgroundChannel, null);
+  });
 
   group('TrustedTimeImpl via mock', () {
     late TrustedTimeMock mock;
@@ -686,12 +705,9 @@ void main() {
             }
             return null;
           });
-      addTearDown(() {
-        // Restore the file-level null-returning storage mock so sibling
-        // tests keep their persistence-free behaviour.
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(storageChannel, (call) async => null);
-      });
+      // Restore the file-level default handlers so sibling tests keep
+      // their persistence-free behaviour.
+      addTearDown(installDefaultChannelHandlers);
 
       final box = _MidpointBox(
         DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
@@ -1244,18 +1260,10 @@ void main() {
       });
     }
 
-    tearDown(() {
-      // Restore the file-level default handlers so sibling groups keep
-      // the null-storage / fixed-uptime behaviour they were written
-      // against.
-      final messenger =
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(storageChannel, (call) async => null);
-      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
-        if (call.method == 'getUptimeMs') return 1000;
-        return null;
-      });
-    });
+    // Restore the file-level default handlers so sibling groups keep
+    // the null-storage / fixed-uptime behaviour they were written
+    // against.
+    tearDown(installDefaultChannelHandlers);
 
     Future<_ProbeCounter> initWithPersistedAnchor() async {
       final counter = _ProbeCounter();
@@ -1355,16 +1363,8 @@ void main() {
       });
     }
 
-    tearDown(() {
-      // Restore the file-level default handlers for sibling groups.
-      final messenger =
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(storageChannel, (call) async => null);
-      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
-        if (call.method == 'getUptimeMs') return 1000;
-        return null;
-      });
-    });
+    // Restore the file-level default handlers for sibling groups.
+    tearDown(installDefaultChannelHandlers);
 
     Future<void> initWarmRestored() async {
       final box = _MidpointBox(
@@ -1551,16 +1551,8 @@ void main() {
       });
     });
 
-    tearDown(() {
-      // Restore the file-level default handlers for sibling groups.
-      final messenger =
-          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-      messenger.setMockMethodCallHandler(storageChannel, (call) async => null);
-      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
-        if (call.method == 'getUptimeMs') return 1000;
-        return null;
-      });
-    });
+    // Restore the file-level default handlers for sibling groups.
+    tearDown(installDefaultChannelHandlers);
 
     test('warm restore completes without waiting on source warm-up', () {
       fakeAsync((async) {
