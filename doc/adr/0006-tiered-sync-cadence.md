@@ -278,7 +278,10 @@ What was removed: `CadenceMode`, `validateInterval`,
 `foregroundValidateThreshold`, the public `validateFreshness()` API and
 `TrustedTimeFreshnessProbeException`, `SyncEngine.validate()`, the
 periodic validate timer, the desktop sleep/wake divergence probe, and
-`sync_engine_tier_test.dart`. In practice the validate tier's cost
+the `SyncEngine.validate()` probe tests in `sync_engine_tier_test.dart`
+(the file itself survives — it retains the tier-admission,
+observability-logging, and boot-ID-stamping tests). In practice the
+validate tier's cost
 never justified its surface: a probe that agrees tells the caller
 nothing `anchorAge`/`uncertainty` did not already report, and a probe
 that disagrees escalated to a full establish cycle anyway — so the
