@@ -58,17 +58,17 @@ void main() {
 
     test('fromJson throws FormatException on malformed input', () {
       expect(
-        () => DriftBootRecord.fromJson(const {'b': 'boot-A'}),
+        () => DriftBootRecord.fromJson(const {'bootId': 'boot-A'}),
         throwsFormatException,
       );
       expect(
         () => DriftBootRecord.fromJson(const {
-          'b': 'boot-A',
-          'fu': 'not-an-int',
-          'fn': 2,
-          'lu': 3,
-          'ln': 4,
-          'c': 5,
+          'bootId': 'boot-A',
+          'firstUptimeMs': 'not-an-int',
+          'firstNetworkUtcMs': 2,
+          'lastUptimeMs': 3,
+          'lastNetworkUtcMs': 4,
+          'anchorCount': 5,
         }),
         throwsFormatException,
       );

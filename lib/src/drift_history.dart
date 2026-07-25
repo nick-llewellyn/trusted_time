@@ -21,17 +21,17 @@ final class DriftBootRecord {
     required this.anchorCount,
   });
 
-  /// Deserializes a record from its compact JSON map (see [toJson]).
+  /// Deserializes a record from its JSON map (see [toJson]).
   ///
   /// Throws [FormatException] on missing or mistyped fields; callers
   /// that read persisted data treat that as corruption (discard).
   factory DriftBootRecord.fromJson(Map<String, dynamic> json) {
-    final bootId = json['b'];
-    final firstUptimeMs = json['fu'];
-    final firstNetworkUtcMs = json['fn'];
-    final lastUptimeMs = json['lu'];
-    final lastNetworkUtcMs = json['ln'];
-    final anchorCount = json['c'];
+    final bootId = json['bootId'];
+    final firstUptimeMs = json['firstUptimeMs'];
+    final firstNetworkUtcMs = json['firstNetworkUtcMs'];
+    final lastUptimeMs = json['lastUptimeMs'];
+    final lastNetworkUtcMs = json['lastNetworkUtcMs'];
+    final anchorCount = json['anchorCount'];
     if (bootId is! String ||
         firstUptimeMs is! int ||
         firstNetworkUtcMs is! int ||
@@ -87,14 +87,15 @@ final class DriftBootRecord {
     return (dUptime - dNetworkUtc) / dNetworkUtc;
   }
 
-  /// Serializes the record with compact keys for persistence.
+  /// Serializes the record for persistence. Keys mirror the field
+  /// names one-to-one.
   Map<String, dynamic> toJson() => {
-    'b': bootId,
-    'fu': firstUptimeMs,
-    'fn': firstNetworkUtcMs,
-    'lu': lastUptimeMs,
-    'ln': lastNetworkUtcMs,
-    'c': anchorCount,
+    'bootId': bootId,
+    'firstUptimeMs': firstUptimeMs,
+    'firstNetworkUtcMs': firstNetworkUtcMs,
+    'lastUptimeMs': lastUptimeMs,
+    'lastNetworkUtcMs': lastNetworkUtcMs,
+    'anchorCount': anchorCount,
   };
 
   @override

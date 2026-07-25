@@ -176,7 +176,9 @@ String _formatBackgroundResult(TrustedTimeBackgroundResult result) {
   }
 }
 
-/// Renders a signed drift rate as parts-per-million, e.g. `+12.3 ppm`.
+/// Renders a signed drift rate as parts-per-million, e.g. `+12.3 ppm`
+/// or `-4.2 ppm`. Only the plus needs adding: toStringAsFixed already
+/// renders the minus for negative values.
 String _formatPpm(double rate) {
   final ppm = rate * 1e6;
   final sign = ppm >= 0 ? '+' : '';
