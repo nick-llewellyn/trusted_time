@@ -885,6 +885,13 @@ void main() {
       await Future.delayed(const Duration(milliseconds: 10));
 
       impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      // The dispatch has already evaluated staleness against the 1ms
+      // bound and synchronously begun its cycle. Widen the interval
+      // before settling: the success path re-arms the refresh timer
+      // from _activeRefreshInterval, and a still-live 1ms schedule
+      // would let that timer fire mid-drain on a slow runner and
+      // cascade extra cycles into the probe count.
+      impl.setRefreshInterval(const Duration(days: 1));
       await settleSyncActivity();
 
       expect(probe.startCount, 1);
@@ -918,6 +925,10 @@ void main() {
       impl.resumeAutomaticRefresh();
       impl.debugCancelRefreshTimer();
       impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      // Same re-arm hazard as the positive test above: the cycle is
+      // already in flight, so widen the interval before settling to
+      // keep the success path's re-armed timer from cascading.
+      impl.setRefreshInterval(const Duration(days: 1));
       await settleSyncActivity();
 
       expect(probe.startCount, 1);
