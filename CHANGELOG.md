@@ -17,7 +17,11 @@
   48 hours, and a lifecycle observer (now installed in every mode)
   runs a full sync on app resume iff no trusted anchor exists or the
   anchor is at least one refresh interval old, measured on the same
-  monotonic timeline `TimeAssessment.anchorAge` reports.
+  monotonic timeline `TimeAssessment.anchorAge` reports. The anchored
+  staleness check honours `pauseAutomaticRefresh()`: while
+  `automaticRefreshActive` is `false`, the engine initiates no
+  anchor-age-driven syncs at all (timer and resume trigger alike);
+  the unanchored resume *establish* attempt still proceeds.
   `TrustedTimeConfig.mobileDefaults()` pairs the 48h staleness bound
   with a 24h `backgroundSyncInterval`, giving the best-effort OS
   scheduler (iOS `BGTaskScheduler`, Android `WorkManager`) a full day

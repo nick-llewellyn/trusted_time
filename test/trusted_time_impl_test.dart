@@ -875,11 +875,12 @@ void main() {
 
       // Shrink the staleness bound to 1ms instead of faking the
       // monotonic clock, then let real time carry the anchor past it
-      // (age is measured in whole milliseconds). Pause the refresh
-      // timer the setter arms so the sync we observe can only come
-      // from the resume trigger.
+      // (age is measured in whole milliseconds). Cancel the refresh
+      // timer the setter arms — without pausing the schedule, since
+      // pause suppresses the resume trigger too — so the sync we
+      // observe can only come from the resume trigger.
       impl.setRefreshInterval(const Duration(milliseconds: 1));
-      impl.pauseAutomaticRefresh();
+      impl.debugCancelRefreshTimer();
       final probe = registerProbe();
       await Future.delayed(const Duration(milliseconds: 10));
 
@@ -888,6 +889,62 @@ void main() {
 
       expect(probe.startCount, 1);
       expect(TrustedTime.getAssessment().isTrusted, isTrue);
+    });
+
+    test('pauseAutomaticRefresh suppresses the anchored resume '
+        'staleness check', () async {
+      // automaticRefreshActive == false must mean *no* anchor-age-
+      // driven syncs — timer and resume trigger alike. Same stale-
+      // anchor setup as the positive test above, but paused: the
+      // resume must not start a cycle.
+      await initWithAnchor(freshBox());
+      final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.getAssessment().isTrusted, isTrue);
+
+      impl.setRefreshInterval(const Duration(milliseconds: 1));
+      impl.pauseAutomaticRefresh();
+      expect(impl.automaticRefreshActive, isFalse);
+      final probe = registerProbe();
+      await Future.delayed(const Duration(milliseconds: 10));
+
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 0);
+
+      // Resuming the schedule restores the trigger: the anchor is
+      // still stale against the 1ms bound, so the same dispatch now
+      // starts a cycle.
+      impl.resumeAutomaticRefresh();
+      impl.debugCancelRefreshTimer();
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 1);
+    });
+
+    test('pauseAutomaticRefresh still allows the unanchored establish '
+        'attempt on resume', () async {
+      // Pause only opts out of anchor-age-driven cadence; a resume
+      // with no anchor is an establish attempt and must proceed.
+      await TrustedTime.initialize(
+        config: const TrustedTimeConfig(
+          ntpServers: [],
+          ntsServers: [],
+          persistState: false,
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      await TrustedTime.firstSyncSettled;
+      final impl = TrustedTimeImpl.instance;
+      expect(TrustedTime.getAssessment().isTrusted, isFalse);
+      impl.pauseAutomaticRefresh();
+      final probe = registerProbe();
+
+      impl.debugHandleAppLifecycleState(AppLifecycleState.resumed);
+      await settleSyncActivity();
+
+      expect(probe.startCount, 1);
     });
 
     test('a resume with no anchor at all runs a full sync', () async {
@@ -969,7 +1026,7 @@ void main() {
       await initWithAnchor(freshBox());
       final impl = TrustedTimeImpl.instance;
       impl.setRefreshInterval(const Duration(microseconds: 1));
-      impl.pauseAutomaticRefresh();
+      impl.debugCancelRefreshTimer();
       final probe = registerProbe();
 
       // Even with a stale anchor, only `resumed` triggers the check.

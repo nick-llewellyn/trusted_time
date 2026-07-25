@@ -742,6 +742,13 @@ final class TrustedTimeImpl {
   /// return `true` while no timer is yet pending — post-init pre-
   /// bootstrap, or in the recovery window after a failed sync where
   /// only the retry timer is armed.
+  ///
+  /// `false` guarantees the engine initiates no anchor-age-driven
+  /// syncs: both the refresh timer and the resume-time staleness
+  /// check ([_handleAppLifecycleState]) are gated on this value. The
+  /// unanchored resume *establish* attempt, the failed-sync retry
+  /// timer, integrity-event-driven syncs, and background sync are
+  /// intentionally outside this contract.
   bool get automaticRefreshActive =>
       !_automaticRefreshPaused && _activeRefreshInterval > Duration.zero;
 
@@ -867,16 +874,20 @@ final class TrustedTimeImpl {
   /// Other lifecycle states need no bookkeeping: staleness is a property
   /// of the anchor's age, not of how long the app was backgrounded.
   ///
-  /// A non-positive [activeRefreshInterval] (only reachable via a
-  /// non-positive [TrustedTimeConfig.refreshInterval] at init —
-  /// [setRefreshInterval] routes non-positive values to
-  /// [pauseAutomaticRefresh] without touching the interval) means the
-  /// integrator opted out of anchor-age-driven cadence, so an anchored
-  /// engine never resyncs on resume, matching [_scheduleRefresh]'s
-  /// disabled-timer semantics. The unanchored branch is unaffected: a
-  /// resume with no anchor is an *establish* attempt (the resume
-  /// analogue of the bootstrap cycle, which also runs regardless of
-  /// the interval), not a staleness refresh.
+  /// The staleness branch is gated on [automaticRefreshActive]: a
+  /// paused schedule ([pauseAutomaticRefresh]) or a non-positive
+  /// [activeRefreshInterval] (only reachable via a non-positive
+  /// [TrustedTimeConfig.refreshInterval] at init — [setRefreshInterval]
+  /// routes non-positive values to [pauseAutomaticRefresh] without
+  /// touching the interval) means the integrator opted out of
+  /// anchor-age-driven cadence, so an anchored engine never resyncs on
+  /// resume, matching [_scheduleRefresh]'s suppressed-timer semantics
+  /// and keeping `automaticRefreshActive == false` a reliable "no
+  /// anchor-age-driven syncs" signal. The unanchored branch is
+  /// unaffected by either condition: a resume with no anchor is an
+  /// *establish* attempt (the resume analogue of the bootstrap cycle,
+  /// which also runs regardless of the schedule), not a staleness
+  /// refresh.
   void _handleAppLifecycleState(AppLifecycleState state) {
     if (_disposed) return;
     if (state != AppLifecycleState.resumed) return;
@@ -884,10 +895,12 @@ final class TrustedTimeImpl {
     // _performSync would only converge on the same in-flight future.
     if (_syncInProgress != null) return;
     if (_trusted && _anchor != null) {
-      // Staleness is disabled outright when the interval is
-      // non-positive; without this, `age < interval` below would never
-      // hold and every resume would resync.
-      if (_activeRefreshInterval <= Duration.zero) return;
+      // Staleness refreshes are suppressed while paused and disabled
+      // outright when the interval is non-positive — exactly the two
+      // conditions automaticRefreshActive folds together. Without the
+      // interval half, `age < interval` below would never hold and
+      // every resume would resync.
+      if (!automaticRefreshActive) return;
       final age = Duration(milliseconds: _syncClock.elapsedSinceAnchorMs());
       if (age < _activeRefreshInterval) return;
     }
@@ -919,6 +932,18 @@ final class TrustedTimeImpl {
   @visibleForTesting
   void debugHandleAppLifecycleState(AppLifecycleState state) =>
       _handleAppLifecycleState(state);
+
+  /// Cancels any pending refresh timer *without* pausing the schedule.
+  ///
+  /// Lets tests isolate the resume-time staleness trigger from the
+  /// refresh timer while keeping [automaticRefreshActive] true —
+  /// [pauseAutomaticRefresh] cannot serve that purpose because pause
+  /// suppresses the resume trigger too.
+  @visibleForTesting
+  void debugCancelRefreshTimer() {
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
+  }
 
   static const _bgChannel = MethodChannel('trusted_time/background');
 

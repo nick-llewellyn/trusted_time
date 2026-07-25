@@ -830,8 +830,12 @@ abstract final class TrustedTime {
   /// [setRefreshInterval] also arm a fresh refresh timer from the
   /// time of the call independent of cycle completion.
   ///
-  /// Sync cycles triggered by [forceResync], integrity events, or
-  /// background platform schedulers still run while this is `false`.
+  /// `false` guarantees the engine initiates no anchor-age-driven
+  /// syncs: both the automatic refresh timer and the resume-time
+  /// staleness check are suppressed. Sync cycles triggered by
+  /// [forceResync], integrity events, the failed-sync retry timer,
+  /// background platform schedulers, or an unanchored resume
+  /// *establish* attempt still run while this is `false`.
   static bool get automaticRefreshActive {
     if (_override != null) return false;
     return TrustedTimeImpl.instance.automaticRefreshActive;
@@ -846,11 +850,17 @@ abstract final class TrustedTime {
   /// timer (benchmarking harnesses, deterministic test harnesses,
   /// battery-sensitive consumers that schedule their own checks).
   ///
-  /// Pause only suppresses the *automatic refresh* timer. The
-  /// following continue to operate while paused:
+  /// Pause suppresses both anchor-age-driven sync mechanisms: the
+  /// *automatic refresh* timer and the resume-time anchor staleness
+  /// check (an anchored engine no longer resyncs on foreground
+  /// resume, however stale the anchor). The following continue to
+  /// operate while paused:
   ///  * the retry timer scheduled by a failed sync (recovery from a
   ///    failed bootstrap or a failed refresh still proceeds);
   ///  * sync cycles triggered by [forceResync];
+  ///  * the unanchored resume *establish* attempt (a resume with no
+  ///    trusted anchor is a bootstrap analogue, not a staleness
+  ///    refresh);
   ///  * platform background sync if it was enabled.
   /// Consumers that want to fully suppress all engine-driven syncs
   /// should pause this timer *and* either avoid configuring
