@@ -306,6 +306,13 @@ final class TrustedTimeImpl {
   /// genuine oscillator drift.
   static const _kMinDriftCorrectionSpan = Duration(hours: 1);
 
+  /// Largest drift-rate magnitude accepted for correction: 200 ppm.
+  /// Real oscillators sit around 5–50 ppm, so anything beyond this
+  /// bound indicates corrupt or semantically-implausible persisted
+  /// history rather than genuine drift — and rates near or below -1
+  /// would make the `elapsed / (1 + rate)` projection blow up.
+  static const _kMaxDriftRateMagnitude = 0.0002;
+
   /// Builds the unified [TimeAssessment] snapshot for the current
   /// instant — time, posture reason, and caveats, all evaluated at one
   /// moment on the same monotonic timeline as [now].
@@ -357,8 +364,11 @@ final class TrustedTimeImpl {
 
   /// Resolves the drift rate usable for correction: the newest history
   /// record's observed rate, iff that record belongs to the live
-  /// anchor's boot session and its observed span crosses
-  /// [_kMinDriftCorrectionSpan]. Prior boots' rates are diagnostics
+  /// anchor's boot session, its observed span crosses
+  /// [_kMinDriftCorrectionSpan], and the rate is finite with magnitude
+  /// within [_kMaxDriftRateMagnitude] (persisted history is only
+  /// syntactically validated, so a semantically-corrupt record must
+  /// not reach the projection). Prior boots' rates are diagnostics
   /// only ([driftHistory]) — never applied across a reboot.
   double? _currentBootDriftRate(TrustAnchor anchor) {
     final bootId = anchor.bootId;
@@ -368,7 +378,10 @@ final class TrustedTimeImpl {
     final newest = records.last;
     if (newest.bootId != bootId) return null;
     if (newest.span < _kMinDriftCorrectionSpan) return null;
-    return newest.observedDriftRate;
+    final rate = newest.observedDriftRate;
+    if (rate == null || !rate.isFinite) return null;
+    if (rate.abs() > _kMaxDriftRateMagnitude) return null;
+    return rate;
   }
 
   /// Backs [TimeAssessment.syncInProgress]. A cycle guarded by

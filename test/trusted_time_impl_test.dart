@@ -1205,8 +1205,9 @@ void main() {
     // time as well as through whether any source was queried at all.
     // Match the AnchorStore anchor key by stable prefix rather than the
     // exact versioned literal (currently tt_anchor_v2) so a key version
-    // bump does not silently turn this into a cold start. The prefix is
-    // unambiguous: the store's other key is tt_drift_history_v1.
+    // bump does not silently turn this into a cold start. No other
+    // store key (drift history, legacy cleanup keys) shares the
+    // tt_anchor_ prefix.
     const anchorKeyPrefix = 'tt_anchor_';
 
     // Wait-out attack shape: the anchor's recorded uptime (1000ms) is
@@ -1483,6 +1484,33 @@ void main() {
         expect(history.first.bootId, 'boot-old');
         expect(history.last.bootId, 'boot-A');
         expect(history.last.anchorCount, 1);
+      },
+    );
+
+    test(
+      'an implausible persisted rate is never applied to the projection',
+      () async {
+        // Persisted history is only syntactically validated, so a
+        // parseable-but-corrupt record can carry an absurd rate. Here
+        // a 2h span with 1h of uptime excess yields +500000 ppm — far
+        // beyond the 200 ppm sanity bound — so correction must be
+        // withheld while the record stays visible as diagnostics.
+        installChannelMocks(
+          historyJson: historyRecord(
+            span: const Duration(hours: 2),
+            driftMs: 3600000,
+          ),
+        );
+
+        await initWarmRestored();
+
+        final assessment = TrustedTime.getAssessment();
+        expect(assessment.time, isNotNull);
+        expect(assessment.driftRate, isNull);
+        expect(assessment.driftCorrectedTime, isNull);
+        final history = TrustedTime.getDriftHistory();
+        expect(history, hasLength(1));
+        expect(history.single.observedDriftRate, closeTo(0.5, 1e-9));
       },
     );
   });
