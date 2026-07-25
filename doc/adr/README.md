@@ -99,7 +99,7 @@ Notes on previously-listed divergences:
   left verbatim per the append-only policy.
 - **ADR 0006**'s validate tier (and the `CadenceMode` /
   `validateFreshness()` surface that carried it) was removed in favour
-  of a 24h anchor-age policy; the establish-cadence decisions stand.
+  of a 48h anchor-age policy; the establish-cadence decisions stand.
   Recorded in ADR 0006's 2026-07-25 postscript rather than by editing
   the Accepted text. ADR 0007's references to the "Validate window"
   should be read against that postscript: the truth box is still
