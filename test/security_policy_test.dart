@@ -240,9 +240,9 @@ void main() {
       // verified anchor warm-restored within the same boot session
       // assesses as secure regardless of its age. There is no freshness
       // window on this path by design — staleness is the responsibility
-      // of anchorAge / uncertainty / validateFreshness / the refresh
-      // scheduler, per the Secure Time Contract's separation of
-      // authentication and accuracy.
+      // of anchorAge / uncertainty / the refresh scheduler, per the
+      // Secure Time Contract's separation of authentication and
+      // accuracy.
       final staleUtc = DateTime.utc(2023, 1, 1).millisecondsSinceEpoch;
       final staleVerifiedAnchorJson = jsonEncode(
         TrustAnchor(

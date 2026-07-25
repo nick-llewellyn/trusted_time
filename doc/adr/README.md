@@ -97,6 +97,14 @@ Notes on previously-listed divergences:
   NTP-removal claim is no longer a divergence for the same reason
   (the underlying decision has been superseded). The row's text is
   left verbatim per the append-only policy.
+- **ADR 0006**'s validate tier (and the `CadenceMode` /
+  `validateFreshness()` surface that carried it) was removed in favour
+  of a 24h anchor-age policy; the establish-cadence decisions stand.
+  Recorded in ADR 0006's 2026-07-25 postscript rather than by editing
+  the Accepted text. ADR 0007's references to the "Validate window"
+  should be read against that postscript: the truth box is still
+  recomputed per-establish; there is simply no validate cycle between
+  establishes any more.
 - **ADR 0007** is no longer listed as a code divergence. Its three
   implementation pieces have landed: tier-aware Marzullo admission
   and the `degradedTier` `IntegrityEvent` reason via `trusted_time-q1n`

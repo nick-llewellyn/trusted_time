@@ -133,56 +133,11 @@ final class TrustedTimeImpl {
   /// that was torn down before its first cycle concluded).
   final Completer<void> _firstSyncSettled = Completer<void>();
 
-  // Tiered-cadence auxiliaries (ADR 0006), live only under
-  // [CadenceMode.tieredMobile]. Under the legacy
-  // [CadenceMode.singleTier30m] schedule all three stay null/zero and no
-  // tiered code path is ever reached, so that mode is bit-for-bit
-  // unchanged.
-  Timer? _validateTimer;
+  // Resume anchor-age check: installed at bootstrap wherever a live
+  // widgets binding exists, so returning to the foreground with a
+  // stale (or absent) anchor triggers a full sync immediately instead
+  // of waiting for the next refresh tick.
   WidgetsBindingObserver? _lifecycleObserver;
-  Duration? _backgroundedElapsed;
-  int _validateCycleCount = 0;
-
-  // Sleep/wake divergence probe (desktop analogue of the
-  // foreground-resume trigger). Desktop embedders do not reliably
-  // deliver AppLifecycleState transitions around machine suspend, so
-  // the wake-up moment — when the anchor is most likely stale — would
-  // otherwise go unprobed until the next periodic validate tick. The
-  // probe reads two monotonic timelines back-to-back: the sleep-aware
-  // nts clock (counts through suspend) and a Stopwatch (freezes).
-  // Divergence accumulated between ticks equals time spent suspended.
-  Timer? _wakeProbeTimer;
-  MonotonicReader? _wakeProbeReader;
-  Stopwatch? _wakeProbeStopwatch;
-  int _wakeProbeLastSleepAwareMicros = 0;
-  int _wakeProbeLastFrozenMicros = 0;
-
-  /// Cadence of the sleep/wake divergence probe. Cheap (two clock
-  /// reads, no I/O), so it can run far more often than the validate
-  /// tier itself; it also bounds wake-detection latency.
-  static const _wakeProbeInterval = Duration(seconds: 30);
-
-  // Validate-cycle in-flight guard (ADR 0006). Held for the duration of
-  // a single [_runValidateCycle] so the periodic validate timer and the
-  // foreground-resume trigger can never run overlapping validate bursts
-  // against the same source.
-  bool _validateInProgress = false;
-
-  /// Monotonic reader used to measure how long the app spent backgrounded.
-  /// Deliberately *not* wall-clock time: a trusted-time library must not
-  /// trust [DateTime.now] to gate its own freshness checks, since a
-  /// backward clock jump would yield a negative duration and skip the
-  /// validate cycle precisely when drift is most likely. Resolved via
-  /// [resolveMonotonicReader], so on bridge-initialized configs the
-  /// reading rides the sleep-aware nts clock and background time spent
-  /// in device suspend counts toward the foreground-validate threshold;
-  /// bridge-less configs fall back to a suspend-frozen [Stopwatch]
-  /// timeline. Only differences between readings are meaningful.
-  final int Function() _monotonicRead = resolveMonotonicReader().read;
-
-  /// Current reading of [_monotonicRead] as a [Duration] since the
-  /// reader's arbitrary epoch. Only differences are meaningful.
-  Duration get _monotonicElapsed => Duration(microseconds: _monotonicRead());
 
   /// Synchronous re-entry guard for [_performSync], paired with
   /// [_syncInProgress]. The Completer-based check is the canonical
@@ -405,72 +360,6 @@ final class TrustedTimeImpl {
     await _performSync();
   }
 
-  /// Confirms the live trust anchor is still fresh using the validate
-  /// tier (ADR 0006): a short burst of authenticated NTS queries against
-  /// one source, keeping the lowest-RTT sample, with no consensus
-  /// rebuild.
-  ///
-  /// Returns `true` when the probe agrees with the projected anchor to
-  /// within [TrustedTimeConfig.maxAllowedUncertaintyMs], and `false`
-  /// when the probe ran successfully but the anchor disagrees (the
-  /// caller may then [forceResync]). A `false` return does **not**
-  /// invalidate the anchor — a single disagreeing probe is a hint, not
-  /// a verdict.
-  ///
-  /// Throws [TrustedTimeFreshnessProbeException] when the probe cannot
-  /// be performed at all: no anchor has been established, no NTS source
-  /// is available, or every query in the burst failed (see
-  /// [SyncEngine.validate]).
-  ///
-  /// The probe is deliberately **authLevel-agnostic**: the sample's
-  /// [TimeSample.authLevel] is not compared against the anchor's.
-  /// Freshness is an operational claim (the clock has not drifted), not
-  /// an authentication claim — the anchor's integrity guarantees come
-  /// entirely from the establish cycle's tiered consensus. As shipped,
-  /// the mixed case cannot arise anyway: `bundledOnly` (the default)
-  /// cannot produce [NtsAuthLevel.none] samples, and `platformOnly`
-  /// ([TrustedTimeConfig.usePlatformTrust]) cannot produce
-  /// [NtsAuthLevel.verified] anchors, so the probe is never weaker than
-  /// the anchor it checks. A guard here would also make this method
-  /// unusable under `usePlatformTrust: true`. If a future trust mode
-  /// makes mixed auth levels reachable, revisit this posture (pinned by
-  /// the authLevel-agnostic test in `trusted_time_impl_test.dart`).
-  Future<bool> validateFreshness() async {
-    // If a full establish cycle is already running, a separate probe
-    // would only contend with it for the same NTS client. Defer to the
-    // cycle: an anchor it establishes is, by definition, fresher than
-    // any probe could prove.
-    final inFlight = _syncInProgress;
-    if (inFlight != null) {
-      await inFlight.future;
-      if (_trusted && _anchor != null) return true;
-      throw const TrustedTimeFreshnessProbeException(
-        'Freshness probe deferred to an in-flight sync that did not '
-        'establish a trust anchor.',
-      );
-    }
-
-    if (!_trusted || _anchor == null) {
-      throw const TrustedTimeFreshnessProbeException(
-        'No established trust anchor to validate. Await initialize() '
-        '(or forceResync()) so an establish cycle can build an anchor '
-        'before probing freshness.',
-      );
-    }
-
-    final sample = await _syncEngine.validate();
-
-    // Project the anchor to "now" using the same monotonic arithmetic
-    // as now(), then compare against the probe's midpoint. The few ms
-    // between the probe returning and this projection are bounded by
-    // post-query processing and are negligible against
-    // maxAllowedUncertaintyMs.
-    final projectedNowMs =
-        _anchor!.networkUtcMs + _syncClock.elapsedSinceAnchorMs();
-    final offsetMs = (projectedNowMs - sample.interval.midpoint).abs();
-    return offsetMs <= _config.maxAllowedUncertaintyMs;
-  }
-
   /// Enables background synchronization to keep trust anchors fresh.
   ///
   /// **Android/iOS**: delegates to the native scheduler (WorkManager /
@@ -538,7 +427,7 @@ final class TrustedTimeImpl {
     // config errors throw, network outcomes never do.
     final _ = _config.effectiveTrustMode;
 
-    _startTieredSchedulingIfNeeded();
+    _installLifecycleObserver();
 
     if (_config.persistState) {
       // Restore the drift history before the anchor: a warm-restored
@@ -935,9 +824,9 @@ final class TrustedTimeImpl {
   void _scheduleRetry() {
     _retryTimer?.cancel();
     // Null alongside cancel() so the field never retains a reference to a
-    // cancelled Timer on the no-retry path, matching _scheduleRefresh /
-    // _scheduleValidate and keeping "_retryTimer == null" a reliable
-    // "no retry armed" signal for diagnostics.
+    // cancelled Timer on the no-retry path, matching _scheduleRefresh and
+    // keeping "_retryTimer == null" a reliable "no retry armed" signal
+    // for diagnostics.
     _retryTimer = null;
     if (_disposed) return;
     final delay = _syncEngine.getNextRetryDelay();
@@ -946,210 +835,53 @@ final class TrustedTimeImpl {
     }
   }
 
-  /// Starts the tiered-cadence auxiliaries (ADR 0006): the periodic
-  /// validate timer plus a self-installed [WidgetsBindingObserver] that
-  /// runs a freshness probe when the app returns to the foreground after
-  /// a long background. No-op under [CadenceMode.singleTier30m], so the
-  /// legacy single-timer schedule is left bit-for-bit unchanged.
-  void _startTieredSchedulingIfNeeded() {
-    if (_config.cadenceMode != CadenceMode.tieredMobile) return;
-    _scheduleValidate();
-    _startWakeProbeIfNeeded();
-    final observer = _AppLifecycleObserver(
-      (state) => _handleAppLifecycleState(state, _monotonicElapsed),
-    );
+  /// Installs the resume-time anchor-age check: a self-installed
+  /// [WidgetsBindingObserver] that runs a full sync when the app
+  /// returns to the foreground with a stale (or absent) anchor.
+  void _installLifecycleObserver() {
+    final observer = _AppLifecycleObserver(_handleAppLifecycleState);
     try {
       WidgetsBinding.instance.addObserver(observer);
       _lifecycleObserver = observer;
     } catch (e) {
       // No widgets binding (e.g. a headless background isolate). The
-      // periodic validate timer still drives cadence; only the
+      // periodic refresh timer still drives cadence; only the
       // foreground-resume trigger is unavailable in this context.
       if (TrustedTimeLog.enabled) {
         TrustedTimeLog.log(
           TrustedTimeLogLevel.info,
-          '[TrustedTime] Foreground-validate observer not installed: $e',
+          '[TrustedTime] Resume anchor-age observer not installed: $e',
         );
       }
     }
   }
 
-  /// Arms the sleep/wake divergence probe (desktop analogue of the
-  /// foreground-resume trigger).
-  ///
-  /// Requires a sleep-aware reader: divergence is measured *between*
-  /// the sleep-aware timeline and a suspend-frozen [Stopwatch], so
-  /// without the nts bridge there is no second timeline to compare
-  /// against and the probe cannot exist. Mobile platforms keep it too —
-  /// it is redundant with the lifecycle trigger there but harmless
-  /// (two clock reads every 30s) and covers embedders whose lifecycle
-  /// events are unreliable.
-  void _startWakeProbeIfNeeded() {
-    final reader = resolveMonotonicReader();
-    if (!reader.isSleepAware) return;
-    _wakeProbeReader = reader;
-    _wakeProbeStopwatch = Stopwatch()..start();
-    _wakeProbeLastSleepAwareMicros = reader.read();
-    _wakeProbeLastFrozenMicros = 0;
-    _wakeProbeTimer = Timer.periodic(
-      _wakeProbeInterval,
-      (_) => _wakeProbeTick(),
-    );
-  }
-
-  /// One divergence measurement. If the sleep-aware timeline advanced
-  /// materially more than the frozen one since the previous tick, the
-  /// machine was suspended in between; if the suspended span crosses
-  /// [TrustedTimeConfig.foregroundValidateThreshold], run a validate
-  /// cycle — same threshold and escalation as the mobile
-  /// foreground-resume trigger.
-  void _wakeProbeTick() {
+  /// Resume-time anchor-age check. On [AppLifecycleState.resumed], runs
+  /// a full sync iff no trusted anchor exists or the anchor is at least
+  /// one refresh interval old ([activeRefreshInterval], so a runtime
+  /// [setRefreshInterval] override governs staleness here too). Anchor
+  /// age is measured on the projection's monotonic timeline
+  /// ([SyncClock.elapsedSinceAnchorMs]) — the same reading
+  /// [TimeAssessment.anchorAge] reports — never wall-clock time, so a
+  /// backward clock jump can neither hide staleness nor fabricate it.
+  /// Other lifecycle states need no bookkeeping: staleness is a property
+  /// of the anchor's age, not of how long the app was backgrounded.
+  void _handleAppLifecycleState(AppLifecycleState state) {
     if (_disposed) return;
-    final reader = _wakeProbeReader;
-    final stopwatch = _wakeProbeStopwatch;
-    if (reader == null || stopwatch == null) return;
-    final sleepAwareNow = reader.read();
-    final frozenNow = stopwatch.elapsedMicroseconds;
-    final sleepAwareDelta = sleepAwareNow - _wakeProbeLastSleepAwareMicros;
-    final frozenDelta = frozenNow - _wakeProbeLastFrozenMicros;
-    _wakeProbeLastSleepAwareMicros = sleepAwareNow;
-    _wakeProbeLastFrozenMicros = frozenNow;
-    final divergence = Duration(microseconds: sleepAwareDelta - frozenDelta);
-    // Scheduling jitter produces sub-second divergence between two
-    // healthy timelines; the floor keeps a zero/negative configured
-    // threshold ("probe on every resume") from firing on every tick.
-    const noiseFloor = Duration(seconds: 2);
-    final configured = _config.foregroundValidateThreshold;
-    final threshold = configured < noiseFloor ? noiseFloor : configured;
-    if (divergence >= threshold) {
-      if (TrustedTimeLog.enabled) {
-        TrustedTimeLog.log(
-          TrustedTimeLogLevel.info,
-          '[TrustedTime] Suspend/resume detected '
-          '(~${divergence.inSeconds}s asleep); running validate probe.',
-        );
-      }
-      unawaited(_runValidateCycle());
-    }
-  }
-
-  /// Arms the validate-tier timer (ADR 0006). Re-arms itself after each
-  /// cycle completes so probes never overlap. No-op under
-  /// [CadenceMode.singleTier30m] or when [TrustedTimeConfig.validateInterval]
-  /// is non-positive.
-  void _scheduleValidate() {
-    _validateTimer?.cancel();
-    _validateTimer = null;
-    if (_disposed) return;
-    if (_config.cadenceMode != CadenceMode.tieredMobile) return;
-    final interval = _config.validateInterval;
-    if (interval <= Duration.zero) return;
-    _validateTimer = Timer(interval, () {
-      // Fire-and-forget: the cycle re-arms the timer via whenComplete, so
-      // the returned Future is intentionally not awaited. unawaited makes
-      // that explicit and matches the other validate/sync call sites.
-      unawaited(_runValidateCycle().whenComplete(_scheduleValidate));
-    });
-  }
-
-  /// Runs one validate-tier freshness probe and escalates to a full
-  /// establish cycle only if the probe positively disagrees with network
-  /// time (ADR 0006).
-  ///
-  /// Tolerant by design: a probe that cannot run at all (no anchor yet,
-  /// no NTS source, every burst query failed) is "freshness unknown",
-  /// not a verdict — it is swallowed and the anchor and schedule are left
-  /// intact, mirroring [validateFreshness]'s contract. A probe is also
-  /// skipped while a full sync is already in flight, since an establish
-  /// cycle supersedes a cheap probe, and while another validate cycle is
-  /// already running, so the timer and foreground-resume entry points
-  /// never issue overlapping bursts.
-  Future<void> _runValidateCycle() async {
-    if (_disposed) return;
-    _validateCycleCount++;
+    if (state != AppLifecycleState.resumed) return;
+    // An establish cycle already in flight supersedes the age check;
+    // _performSync would only converge on the same in-flight future.
     if (_syncInProgress != null) return;
-    // Validate-in-flight guard. The periodic timer self-rearms only
-    // after its cycle completes, so the timer path never overlaps
-    // itself — but the foreground-resume trigger calls in independently
-    // and can land while a timer-driven probe is still awaiting its NTS
-    // burst. Without this guard the two entry points would issue
-    // concurrent SyncEngine.validate() bursts, doubling radio/battery
-    // use and contending on shared per-source state (e.g. NTS cookie
-    // jars); the flag gives both paths the same non-overlap guarantee
-    // the self-rearming timer already had on its own.
-    if (_validateInProgress) return;
-    _validateInProgress = true;
-    bool fresh;
-    try {
-      fresh = await validateFreshness();
-    } on TrustedTimeFreshnessProbeException {
-      return;
-    } catch (e) {
-      if (TrustedTimeLog.enabled) {
-        TrustedTimeLog.log(
-          TrustedTimeLogLevel.warning,
-          '[TrustedTime] Validate probe error: $e',
-        );
-      }
-      return;
-    } finally {
-      _validateInProgress = false;
+    if (_trusted && _anchor != null) {
+      final age = Duration(milliseconds: _syncClock.elapsedSinceAnchorMs());
+      if (age < _activeRefreshInterval) return;
     }
-    if (!fresh && !_disposed && _syncInProgress == null) {
-      unawaited(_performSync());
-    }
+    unawaited(_performSync());
   }
-
-  /// Foreground-resume validate trigger (ADR 0006). Records the first
-  /// non-resumed lifecycle transition as the background-entry reading on
-  /// a monotonic clock, and on the next [AppLifecycleState.resumed] runs
-  /// a validate cycle iff the app was backgrounded for at least
-  /// [TrustedTimeConfig.foregroundValidateThreshold]. [now] is a
-  /// monotonic elapsed reading (see [_monotonicElapsed]), never wall-clock
-  /// time,
-  /// so a backward clock jump can neither produce a negative duration nor
-  /// suppress the probe. Gated on [CadenceMode.tieredMobile] so the
-  /// legacy mode never reacts to lifecycle events.
-  void _handleAppLifecycleState(AppLifecycleState state, Duration now) {
-    if (_disposed) return;
-    if (_config.cadenceMode != CadenceMode.tieredMobile) return;
-    if (state == AppLifecycleState.resumed) {
-      final since = _backgroundedElapsed;
-      _backgroundedElapsed = null;
-      if (since == null) return;
-      // A negative threshold is nonsensical but cannot be rejected in the
-      // `const` config constructor; normalize it to zero here so it means
-      // "probe on every resume" rather than relying on the always-true
-      // comparison against a negative bound.
-      final threshold = _config.foregroundValidateThreshold.isNegative
-          ? Duration.zero
-          : _config.foregroundValidateThreshold;
-      if (now - since >= threshold) {
-        unawaited(_runValidateCycle());
-      }
-      return;
-    }
-    // Any non-resumed state means the app left the foreground. Keep the
-    // first such reading (??=) so a burst of inactive/paused/hidden
-    // callbacks does not reset the measured background duration.
-    _backgroundedElapsed ??= now;
-  }
-
-  /// Whether the tiered-cadence validate timer is currently armed.
-  @visibleForTesting
-  bool get debugValidateTimerActive => _validateTimer != null;
 
   /// Whether the foreground-resume lifecycle observer is installed.
   @visibleForTesting
   bool get debugLifecycleObserverInstalled => _lifecycleObserver != null;
-
-  /// Whether the sleep/wake divergence probe timer is armed.
-  @visibleForTesting
-  bool get debugWakeProbeActive => _wakeProbeTimer != null;
-
-  /// Number of validate cycles attempted since construction.
-  @visibleForTesting
-  int get debugValidateCycleCount => _validateCycleCount;
 
   /// The desktop in-isolate periodic background-sync timer, if armed.
   ///
@@ -1167,14 +899,11 @@ final class TrustedTimeImpl {
   @visibleForTesting
   bool get debugRetryTimerActive => _retryTimer != null;
 
-  /// Drives the foreground-resume validate path deterministically in
-  /// tests without a real [WidgetsBinding] lifecycle dispatch. [elapsed]
-  /// overrides the monotonic reading used to measure background duration.
+  /// Drives the resume anchor-age check deterministically in tests
+  /// without a real [WidgetsBinding] lifecycle dispatch.
   @visibleForTesting
-  void debugHandleAppLifecycleState(
-    AppLifecycleState state, {
-    Duration? elapsed,
-  }) => _handleAppLifecycleState(state, elapsed ?? _monotonicElapsed);
+  void debugHandleAppLifecycleState(AppLifecycleState state) =>
+      _handleAppLifecycleState(state);
 
   static const _bgChannel = MethodChannel('trusted_time/background');
 
@@ -1249,12 +978,6 @@ final class TrustedTimeImpl {
     _retryTimer = null;
     _desktopBgTimer?.cancel();
     _desktopBgTimer = null;
-    _validateTimer?.cancel();
-    _validateTimer = null;
-    _wakeProbeTimer?.cancel();
-    _wakeProbeTimer = null;
-    _wakeProbeReader = null;
-    _wakeProbeStopwatch = null;
     final observer = _lifecycleObserver;
     if (observer != null) {
       try {
@@ -1317,8 +1040,8 @@ class _ProxySyncObserver implements SyncObserver {
 }
 
 /// Forwards [WidgetsBindingObserver.didChangeAppLifecycleState] to a
-/// callback so [TrustedTimeImpl] can self-install a foreground-resume
-/// validate trigger (ADR 0006) without itself mixing in the observer.
+/// callback so [TrustedTimeImpl] can self-install the resume-time
+/// anchor-age check without itself mixing in the observer.
 class _AppLifecycleObserver with WidgetsBindingObserver {
   _AppLifecycleObserver(this._onState);
   final void Function(AppLifecycleState) _onState;

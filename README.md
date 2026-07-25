@@ -328,7 +328,7 @@ void main() {
 | `ntpBurstCount` | `int` | `8` | Sequential SNTP exchanges per NTP source per sync; the lowest-delay sample is kept |
 | `ntsServers` | `List<String>` | `['time.cloudflare.com']` | NTS server hostnames (opt-in) |
 | `ntsPort` | `int` | `4460` | NTS-KE port |
-| `refreshInterval` | `Duration` | `30m` | How often to re-sync in the foreground |
+| `refreshInterval` | `Duration` | `48h` | Foreground re-sync period and the on-resume anchor staleness bound |
 | `backgroundSyncInterval` | `Duration?` | `null` | If set, enables background sync at this interval |
 | `maxLatency` | `Duration` | `4s` | Per-source query timeout |
 | `maxConcurrentDnsLookups` | `int?` | `null` → `6` | Cold-start ceiling on concurrent *uncached* DNS lookups, shared across source kinds (NTP governed in-process; forwarded to NTS). Supersedes the deprecated NTS-only `ntsDnsConcurrencyCap` — see [ADR 0008](doc/adr/0008-unified-dns-tls-budget.md) |
@@ -338,9 +338,6 @@ void main() {
 | `maxAllowedUncertaintyMs` | `int` | `5000` | Sources above this uncertainty are excluded |
 | `persistState` | `bool` | `true` | Persist anchor to secure storage across launches |
 | `earlyExit` | `bool` | `true` | Return as soon as a stable quorum is reached |
-| `cadenceMode` | `CadenceMode` | `singleTier30m` | Sync schedule: the legacy single uniform loop, or the tiered establish/validate model (mobile) — see [Tiered sync cadence](#tiered-sync-cadence-mobile) |
-| `validateInterval` | `Duration` | `1h` | Tiered mode only: how often the lightweight validate probe runs in the foreground |
-| `foregroundValidateThreshold` | `Duration` | `15m` | Tiered mode only: minimum time backgrounded before a foreground resume triggers a validate probe |
 
 ---
 
@@ -371,47 +368,30 @@ Because projection depends only on the anchor and the monotonic clock, wall-cloc
 
 ---
 
-## Tiered sync cadence (mobile)
+## Sync cadence (mobile)
 
-By default `TrustedTime` runs a single uniform refresh loop
-(`CadenceMode.singleTier30m`): every `refreshInterval` it re-races all
-sources through full Marzullo consensus. This is unchanged from 1.x.
+`TrustedTime` implements a 48h anchor-age policy that is cheap on
+battery and radio. An anchor is kept fresh by (a) the foreground
+refresh timer (every `refreshInterval`, 48h default), (b) the OS-level
+background job when `enableBackgroundSync()` is active, and (c) an
+anchor-age check when the app returns to the foreground — if the
+anchor is older than `refreshInterval` (or absent), a full sync runs
+immediately instead of waiting for the next timer tick.
 
-Mobile apps can opt into a two-tier schedule that is far cheaper on
-battery and radio while keeping the anchor fresh:
-
-- **Establish** — the full consensus cycle, run infrequently (24h via
-  `mobileDefaults()`). This is the only tier that builds a new anchor.
-- **Validate** — a lightweight freshness probe run frequently
-  (`validateInterval`, 1h default): a short authenticated NTS burst
-  against one source, keeping the lowest-RTT sample, with no consensus
-  rebuild. If the probe disagrees with the anchor beyond
-  `maxAllowedUncertaintyMs`, an establish cycle is triggered to recover.
-
-In tiered mode the library also installs a `WidgetsBindingObserver` and
-runs a validate probe when the app returns to the foreground after being
-backgrounded for at least `foregroundValidateThreshold` (15m default) —
-the moment the anchor is most likely to have drifted.
+`mobileDefaults()` sets `backgroundSyncInterval` to 24h against the
+48h staleness bound: the background task attempts a refresh daily,
+and the foreground resume trigger only forces a sync if the
+best-effort OS scheduler (iOS `BGTaskScheduler`, Android
+`WorkManager`) has failed to land the job for more than 48 hours.
 
 ```dart
-// Opt in to the tiered mobile schedule.
+// Opt in to the mobile schedule (daily background refresh).
 await TrustedTime.initialize(config: TrustedTimeConfig.mobileDefaults());
-
-// Or compose it onto an existing config.
-await TrustedTime.initialize(
-  config: myConfig.copyWith(cadenceMode: CadenceMode.tieredMobile),
-);
-
-// Cheaply confirm the anchor on demand (e.g. before a sensitive action)
-// without forcing a full resync. Returns false if the anchor disagrees
-// with network time; throws TrustedTimeFreshnessProbeException if the
-// probe could not run (no anchor yet, or no NTS source configured).
-final fresh = await TrustedTime.validateFreshness();
 ```
 
 `WidgetsFlutterBinding.ensureInitialized()` must have run before
 `initialize()` for the foreground trigger to attach; in a headless
-isolate the periodic validate timer still drives cadence on its own.
+isolate the periodic timers still drive cadence on their own.
 
 ---
 
