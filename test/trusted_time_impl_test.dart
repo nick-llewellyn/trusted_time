@@ -87,24 +87,16 @@ void main() {
       },
     );
 
-    test('a trusted assessment carries time, not an estimate', () {
+    test('a trusted assessment carries time', () {
       final assessment = TrustedTime.getAssessment();
       expect(assessment.time, isNotNull);
       expect(assessment.uncertainty, Duration.zero);
-      expect(assessment.estimate, isNull);
     });
 
-    test('an unanchored assessment carries a full-confidence estimate '
-        'immediately after reboot', () {
-      mock.simulateReboot();
-      final estimate = TrustedTime.getAssessment().estimate;
-      expect(estimate, isNotNull);
-      expect(estimate!.confidence, 1.0);
-    });
-
-    test('an untrusted assessment without reboot data has no estimate', () {
-      mock.setTrusted(false);
-      expect(TrustedTime.getAssessment().estimate, isNull);
+    test('mock assessments never carry drift fields', () {
+      expect(TrustedTime.getAssessment().driftRate, isNull);
+      expect(TrustedTime.getAssessment().driftCorrectedTime, isNull);
+      expect(TrustedTime.getDriftHistory(), isEmpty);
     });
   });
 
@@ -1214,7 +1206,7 @@ void main() {
     // Match the AnchorStore anchor key by stable prefix rather than the
     // exact versioned literal (currently tt_anchor_v2) so a key version
     // bump does not silently turn this into a cold start. The prefix is
-    // unambiguous: the store's other keys live under tt_last_*.
+    // unambiguous: the store's other key is tt_drift_history_v1.
     const anchorKeyPrefix = 'tt_anchor_';
 
     // Wait-out attack shape: the anchor's recorded uptime (1000ms) is
@@ -1312,6 +1304,187 @@ void main() {
       expect(counter.count, 0);
       expect(TrustedTime.getAssessment().time!.year, 2023);
     });
+  });
+
+  group('drift correction (assessment drift fields)', () {
+    // End-to-end coverage of the passive drift pipeline: persisted
+    // drift history is restored on init, the warm-restored anchor is
+    // deduped against it, and getAssessment() surfaces driftRate /
+    // driftCorrectedTime only when the *current boot's* record spans
+    // at least an hour.
+    const anchorKeyPrefix = 'tt_anchor_';
+    const historyKeyPrefix = 'tt_drift_history_';
+
+    final persistedUtc = DateTime.utc(2023, 6, 1).millisecondsSinceEpoch;
+    // Anchor uptime is chosen so a 2h-earlier first observation still
+    // has positive uptime, and the mocked current uptime sits above
+    // the anchor's so the legacy monotonic inequality honours it.
+    const anchorUptimeMs = 7201720;
+    const currentUptimeMs = 8000000;
+
+    final persistedAnchorJson = jsonEncode(
+      TrustAnchor(
+        networkUtcMs: persistedUtc,
+        uptimeMs: anchorUptimeMs,
+        wallMs: persistedUtc,
+        uncertaintyMs: 10,
+        bootId: 'boot-A',
+      ).toJson(),
+    );
+
+    void installChannelMocks({required String historyJson}) {
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(storageChannel, (call) async {
+        if (call.method == 'read') {
+          final key = (call.arguments as Map)['key'] as String?;
+          if (key != null && key.startsWith(anchorKeyPrefix)) {
+            return persistedAnchorJson;
+          }
+          if (key != null && key.startsWith(historyKeyPrefix)) {
+            return historyJson;
+          }
+        }
+        return null;
+      });
+      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+        if (call.method == 'getUptimeMs') return currentUptimeMs;
+        if (call.method == 'getBootId') return 'boot-A';
+        return null;
+      });
+    }
+
+    tearDown(() {
+      // Restore the file-level default handlers for sibling groups.
+      final messenger =
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(storageChannel, (call) async => null);
+      messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+        if (call.method == 'getUptimeMs') return 1000;
+        return null;
+      });
+    });
+
+    Future<void> initWarmRestored() async {
+      final box = _MidpointBox(
+        DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
+      );
+      await TrustedTime.initialize(
+        config: TrustedTimeConfig(
+          ntpServers: const [],
+          ntsServers: const [],
+          earlyExit: false,
+          additionalSources: [
+            _BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
+            _BoxedSource(box, id: 'ntp:b', groupId: 'g2'),
+          ],
+        ),
+      );
+      addTearDown(() => TrustedTimeImpl.instance.dispose());
+      await TrustedTime.firstSyncSettled;
+    }
+
+    /// A current-boot history record whose latest pair matches the
+    /// persisted anchor exactly (so the warm re-apply dedups) and whose
+    /// first observation sits [span] earlier on both timelines, skewed
+    /// by [driftMs] on the uptime axis.
+    String historyRecord({required Duration span, required int driftMs}) {
+      final spanMs = span.inMilliseconds;
+      return jsonEncode([
+        DriftBootRecord(
+          bootId: 'boot-A',
+          firstUptimeMs: anchorUptimeMs - spanMs - driftMs,
+          firstNetworkUtcMs: persistedUtc - spanMs,
+          lastUptimeMs: anchorUptimeMs,
+          lastNetworkUtcMs: persistedUtc,
+          anchorCount: 2,
+        ).toJson(),
+      ]);
+    }
+
+    test(
+      'no drift fields when the current boot span is under an hour',
+      () async {
+        installChannelMocks(
+          historyJson: historyRecord(
+            span: const Duration(minutes: 30),
+            driftMs: 2,
+          ),
+        );
+
+        await initWarmRestored();
+
+        final assessment = TrustedTime.getAssessment();
+        expect(assessment.time, isNotNull);
+        expect(assessment.driftRate, isNull);
+        expect(assessment.driftCorrectedTime, isNull);
+        // The restored record is exposed, deduped against the re-applied
+        // warm anchor (anchorCount stays 2).
+        final history = TrustedTime.getDriftHistory();
+        expect(history, hasLength(1));
+        expect(history.single.anchorCount, 2);
+      },
+    );
+
+    test('a >=1h current-boot span yields driftRate and a corrected '
+        'projection', () async {
+      // 720 ms of uptime excess over a 2h network span: +100 ppm.
+      installChannelMocks(
+        historyJson: historyRecord(
+          span: const Duration(hours: 2),
+          driftMs: 720,
+        ),
+      );
+
+      await initWarmRestored();
+
+      final assessment = TrustedTime.getAssessment();
+      expect(assessment.driftRate, isNotNull);
+      expect(assessment.driftRate!, closeTo(0.0001, 1e-9));
+      // Both fields derive from the one elapsed read in the snapshot:
+      // corrected == anchor + anchorAge/(1+rate), against the same
+      // anchorAge that produced time == anchor + anchorAge.
+      final elapsedMs = assessment.anchorAge!.inMilliseconds;
+      expect(assessment.time!.millisecondsSinceEpoch, persistedUtc + elapsedMs);
+      expect(
+        assessment.driftCorrectedTime!.millisecondsSinceEpoch,
+        persistedUtc + (elapsedMs / (1 + assessment.driftRate!)).round(),
+      );
+    });
+
+    test(
+      'a prior boot\'s record is never applied to the live anchor',
+      () async {
+        // Same >=1h, +100ppm record, but keyed to a previous boot: the
+        // live anchor (boot-A) must open a fresh zero-span record instead
+        // of inheriting the old rate.
+        final oldBoot = jsonEncode([
+          DriftBootRecord(
+            bootId: 'boot-old',
+            firstUptimeMs: 0,
+            firstNetworkUtcMs: persistedUtc - 7200000,
+            lastUptimeMs: 7200720,
+            lastNetworkUtcMs: persistedUtc,
+            anchorCount: 5,
+          ).toJson(),
+        ]);
+        installChannelMocks(historyJson: oldBoot);
+
+        await initWarmRestored();
+
+        final assessment = TrustedTime.getAssessment();
+        expect(assessment.time, isNotNull);
+        expect(assessment.driftRate, isNull);
+        expect(assessment.driftCorrectedTime, isNull);
+        // History keeps the prior boot for diagnostics and opened a new
+        // record for the current boot.
+        final history = TrustedTime.getDriftHistory();
+        expect(history, hasLength(2));
+        expect(history.first.bootId, 'boot-old');
+        expect(history.last.bootId, 'boot-A');
+        expect(history.last.anchorCount, 1);
+      },
+    );
   });
 
   group('bootstrap ordering: anchor restore precedes warm phase', () {

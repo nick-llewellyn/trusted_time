@@ -58,6 +58,7 @@ import 'src/background_sync.dart'
         BackgroundSyncSuccess,
         TrustedTimeBackgroundResult;
 import 'src/background_sync.dart' as bg show runBackgroundSync;
+import 'src/drift_history.dart';
 import 'src/exceptions.dart';
 import 'src/models.dart';
 import 'src/nts_bootstrap.dart';
@@ -97,7 +98,7 @@ export 'src/models.dart'
 // a transitive dependency of this package.
 export 'package:nts/nts.dart' show TrustMode, TrustBackend, NtsTrustStatus;
 export 'src/time_assessment.dart';
-export 'src/trusted_time_estimate.dart';
+export 'src/drift_history.dart' show DriftBootRecord;
 export 'src/trusted_time_mock.dart';
 export 'src/infra/sync_observer.dart';
 export 'src/infra/trusted_time_log.dart'
@@ -249,10 +250,10 @@ abstract final class TrustedTime {
   /// The call is cheap (arithmetic projection on the monotonic
   /// timeline, no platform-channel or network I/O) and never throws
   /// for posture reasons: when no trust anchor exists,
-  /// [TimeAssessment.time] is `null`, [TimeAssessment.reason] explains
-  /// why ([TrustStatusReason.neverSynced], [TrustStatusReason.rebootDetected],
-  /// or [TrustStatusReason.syncFailed]), and [TimeAssessment.estimate]
-  /// carries a best-effort wall-clock extrapolation when available.
+  /// [TimeAssessment.time] is `null` and [TimeAssessment.reason]
+  /// explains why ([TrustStatusReason.neverSynced],
+  /// [TrustStatusReason.rebootDetected], or
+  /// [TrustStatusReason.syncFailed]).
   ///
   /// Typical pull-model usage — assess at meaningful boundaries rather
   /// than caching one result:
@@ -281,6 +282,25 @@ abstract final class TrustedTime {
   static TimeAssessment getAssessment() {
     if (_override != null) return _override!.getAssessment();
     return TrustedTimeImpl.instance.getAssessment();
+  }
+
+  /// Returns the recorded per-boot oscillator drift history, oldest →
+  /// newest.
+  ///
+  /// Pure diagnostics: each [DriftBootRecord] summarizes the drift of
+  /// the device's uptime clock against network-consensus UTC over one
+  /// boot session, collected passively from applied trust anchors and
+  /// persisted across restarts (up to the 10 most recent boots). Only
+  /// the **current** boot's observation ever influences
+  /// [TimeAssessment.driftCorrectedTime]; prior boots are reported
+  /// here for observability and field analysis only.
+  ///
+  /// Empty until at least one anchor with a boot identifier has been
+  /// applied. Under a [TrustedTimeMock] override this returns an empty
+  /// list (mock time has no oscillator to observe).
+  static List<DriftBootRecord> getDriftHistory() {
+    if (_override != null) return const [];
+    return TrustedTimeImpl.instance.driftHistory;
   }
 
   /// Returns the [TrustedTimeConfig] the engine is currently running

@@ -15,10 +15,8 @@ import 'infra/consensus_cache.dart';
 import 'infra/trusted_time_log.dart';
 import 'domain/time_sample.dart';
 import 'domain/marzullo_engine.dart';
-import 'drift_calibrator.dart';
+import 'drift_history.dart';
 import 'time_assessment.dart';
-import 'trusted_time_estimate.dart';
-import 'trusted_time_mock.dart';
 
 /// ## Absolute Top Tier: High-Integrity Implementation Engine
 ///
@@ -105,7 +103,7 @@ final class TrustedTimeImpl {
   final IntegrityMonitor _monitor;
   final ConsensusCache _cache;
   final SyncClock _syncClock;
-  final DriftCalibrator _driftCalibrator = DriftCalibrator();
+  final DriftHistoryRecorder _driftHistory = DriftHistoryRecorder();
   final _observers = <SyncObserver>{};
 
   TrustAnchor? _anchor;
@@ -212,8 +210,6 @@ final class TrustedTimeImpl {
   /// catch re-entry that the Completer-based guard might miss
   /// after a future refactor.
   bool _syncEntryGuard = false;
-  int? _offlineLastUtcMs;
-  int? _offlineLastWallMs;
   // Idempotency guard for [dispose]. Composed inner resources have
   // mixed semantics — SyncClock.close is
   // idempotent, but IntegrityMonitor's StreamController.close is
@@ -304,6 +300,12 @@ final class TrustedTimeImpl {
     }
   }
 
+  /// Minimum observed span (on the network-UTC timeline) before the
+  /// current boot's drift rate is trusted for correction: shorter
+  /// windows are dominated by per-anchor consensus noise rather than
+  /// genuine oscillator drift.
+  static const _kMinDriftCorrectionSpan = Duration(hours: 1);
+
   /// Builds the unified [TimeAssessment] snapshot for the current
   /// instant — time, posture reason, and caveats, all evaluated at one
   /// moment on the same monotonic timeline as [now].
@@ -317,17 +319,15 @@ final class TrustedTimeImpl {
     final anchor = _anchor;
     if (_trusted && anchor != null) {
       _enforceSleepAwareProjection();
-      // One monotonic read: time, anchorAge, and uncertainty all derive
-      // from the same elapsed value, so the snapshot truly describes a
-      // single instant.
+      // One monotonic read: time, anchorAge, uncertainty and the drift
+      // pair all derive from the same elapsed value, so the snapshot
+      // truly describes a single instant.
       final elapsedMs = _syncClock.elapsedSinceAnchorMs();
       final time = DateTime.fromMillisecondsSinceEpoch(
         anchor.networkUtcMs + elapsedMs,
         isUtc: true,
       );
-      final driftFactor =
-          _driftCalibrator.calibratedFactor ?? _config.oscillatorDriftFactor;
-      final driftMs = (elapsedMs.abs() * driftFactor).round();
+      final rate = _currentBootDriftRate(anchor);
       return TimeAssessment(
         reason: anchor.authLevel == NtsAuthLevel.verified
             ? TrustStatusReason.synchronized
@@ -335,8 +335,15 @@ final class TrustedTimeImpl {
         authLevel: anchor.authLevel,
         confidence: anchor.confidence,
         time: time,
-        uncertainty: Duration(milliseconds: anchor.uncertaintyMs + driftMs),
+        uncertainty: Duration(milliseconds: anchor.uncertaintyMs),
         anchorAge: Duration(milliseconds: elapsedMs),
+        driftRate: rate,
+        driftCorrectedTime: rate == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(
+                anchor.networkUtcMs + (elapsedMs / (1 + rate)).round(),
+                isUtc: true,
+              ),
         syncInProgress: _syncActivity,
       );
     }
@@ -344,9 +351,24 @@ final class TrustedTimeImpl {
       reason: _unanchoredReason,
       authLevel: NtsAuthLevel.none,
       confidence: ConfidenceLevel.none,
-      estimate: nowEstimated(),
       syncInProgress: _syncActivity,
     );
+  }
+
+  /// Resolves the drift rate usable for correction: the newest history
+  /// record's observed rate, iff that record belongs to the live
+  /// anchor's boot session and its observed span crosses
+  /// [_kMinDriftCorrectionSpan]. Prior boots' rates are diagnostics
+  /// only ([driftHistory]) — never applied across a reboot.
+  double? _currentBootDriftRate(TrustAnchor anchor) {
+    final bootId = anchor.bootId;
+    if (bootId == null) return null;
+    final records = _driftHistory.records;
+    if (records.isEmpty) return null;
+    final newest = records.last;
+    if (newest.bootId != bootId) return null;
+    if (newest.span < _kMinDriftCorrectionSpan) return null;
+    return newest.observedDriftRate;
   }
 
   /// Backs [TimeAssessment.syncInProgress]. A cycle guarded by
@@ -357,45 +379,9 @@ final class TrustedTimeImpl {
   bool get _syncActivity =>
       _syncInProgress != null || !_firstSyncSettled.isCompleted;
 
-  /// Best-effort wall-clock extrapolation backing
-  /// [TimeAssessment.estimate]. Susceptible to wall-clock manipulation.
-  TrustedTimeEstimate? nowEstimated() {
-    int? baseUtcMs;
-    int? baseWallMs;
-
-    if (_anchor != null) {
-      baseUtcMs = _anchor!.networkUtcMs;
-      baseWallMs = _anchor!.wallMs;
-    } else if (_offlineLastUtcMs != null && _offlineLastWallMs != null) {
-      baseUtcMs = _offlineLastUtcMs;
-      baseWallMs = _offlineLastWallMs;
-    } else {
-      return null;
-    }
-
-    final currentTime = testOverride != null
-        ? testOverride!.now
-        : DateTime.now();
-    final wallElapsed = Duration(
-      milliseconds: currentTime.millisecondsSinceEpoch - baseWallMs!,
-    );
-    final confidence = (1.0 - wallElapsed.inMinutes.abs() / 4320.0).clamp(
-      0.0,
-      1.0,
-    );
-    final driftFactor =
-        _driftCalibrator.calibratedFactor ?? _config.oscillatorDriftFactor;
-    final errorMs = (wallElapsed.inMilliseconds.abs() * driftFactor).round();
-
-    return TrustedTimeEstimate(
-      estimatedTime: DateTime.fromMillisecondsSinceEpoch(
-        baseUtcMs! + wallElapsed.inMilliseconds,
-        isUtc: true,
-      ),
-      confidence: confidence,
-      estimatedError: Duration(milliseconds: errorMs),
-    );
-  }
+  /// The recorded per-boot drift history, oldest → newest. Backs
+  /// `TrustedTime.getDriftHistory()`.
+  List<DriftBootRecord> get driftHistory => _driftHistory.records;
 
   /// Forces an immediate network synchronization cycle, purging the current anchor.
   ///
@@ -542,11 +528,11 @@ final class TrustedTimeImpl {
     _startTieredSchedulingIfNeeded();
 
     if (_config.persistState) {
-      final lastKnown = await _store.loadLastKnown();
-      if (lastKnown != null) {
-        _offlineLastUtcMs = lastKnown.trustedUtcMs;
-        _offlineLastWallMs = lastKnown.wallMs;
-      }
+      // Restore the drift history before the anchor: a warm-restored
+      // anchor re-applied by _applyAnchor below must land on the loaded
+      // history (dedup against the persisted latest pair), not on an
+      // empty recorder that would double-count it.
+      _driftHistory.restore(await _store.loadDriftHistory());
     }
 
     // The persisted-anchor restore check runs before any network-bound
@@ -759,8 +745,6 @@ final class TrustedTimeImpl {
       // A successful cycle retires any rebootDetected/neverSynced
       // posture; from here on, losing trust means a failed cycle.
       _unanchoredReason = TrustStatusReason.syncFailed;
-      _offlineLastUtcMs = anchor.networkUtcMs;
-      _offlineLastWallMs = anchor.wallMs;
       _scheduleRefresh();
     } catch (e) {
       if (TrustedTimeLog.enabled) {
@@ -800,7 +784,31 @@ final class TrustedTimeImpl {
       anchor.wallMs,
       initialElapsedMs: initialElapsedMs,
     );
-    _driftCalibrator.recordAnchor(anchor.wallMs, anchor.networkUtcMs);
+    // Passive drift-history bookkeeping. recordAnchor is synchronous
+    // and dedups warm-restore re-applies, so persistence is only paid
+    // when the history actually changed. The write is fire-and-forget:
+    // _applyAnchor must stay synchronous, and history is pure
+    // diagnostics — a lost write costs one observation, never trust.
+    final changed = _driftHistory.recordAnchor(
+      uptimeMs: anchor.uptimeMs,
+      networkUtcMs: anchor.networkUtcMs,
+      bootId: anchor.bootId,
+    );
+    if (changed && _config.persistState) {
+      unawaited(
+        _store.saveDriftHistory(_driftHistory.records).catchError((
+          Object e,
+          StackTrace s,
+        ) {
+          if (TrustedTimeLog.enabled) {
+            TrustedTimeLog.log(
+              TrustedTimeLogLevel.warning,
+              '[TrustedTime] Drift history persistence failed: $e\n$s',
+            );
+          }
+        }),
+      );
+    }
   }
 
   void _scheduleRefresh() {

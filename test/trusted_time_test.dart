@@ -105,30 +105,6 @@ void main() {
       expect(assessment.isSecure, isTrue);
     });
 
-    test('Offline Best-Effort: estimate decays confidence over 72h', () {
-      mock.simulateReboot(); // Lose trust to enable estimation paths.
-
-      final estimate = TrustedTime.getAssessment().estimate;
-      expect(estimate, isNotNull);
-      expect(
-        estimate!.confidence,
-        1.0,
-      ); // No time elapsed yet since "mocked" reboot.
-      expect(estimate.isReasonable, isTrue);
-
-      // Advance virtual clock by 36 hours (half of 72h).
-      mock.advanceTime(const Duration(hours: 36));
-      final estimate36h = TrustedTime.getAssessment().estimate!;
-      expect(estimate36h.confidence, closeTo(0.5, 0.01));
-      expect(estimate36h.isReasonable, isTrue);
-
-      // Advance past 72h.
-      mock.advanceTime(const Duration(hours: 40));
-      final estimate76h = TrustedTime.getAssessment().estimate!;
-      expect(estimate76h.confidence, 0.0);
-      expect(estimate76h.isReasonable, isFalse);
-    });
-
     test(
       'Timezone-Proof: trustedLocalTimeIn() returns correct offsets',
       () async {

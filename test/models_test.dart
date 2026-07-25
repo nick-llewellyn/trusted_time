@@ -228,28 +228,16 @@ void main() {
       const config = TrustedTimeConfig();
       expect(config.cadenceMode, CadenceMode.singleTier30m);
       expect(config.refreshInterval, const Duration(minutes: 30));
-      expect(config.oscillatorDriftFactor, 0.00005);
     });
 
     test('mobileDefaults() selects tieredMobile with platform-tuned knobs', () {
-      // Pins every value ADR 0006 fixes for the factory: the mode, the
-      // 15 ppm drift envelope, and the 24h establish cadence on both the
-      // foreground refresh and background maintenance timers.
+      // Pins every value ADR 0006 fixes for the factory: the mode and
+      // the 24h establish cadence on both the foreground refresh and
+      // background maintenance timers.
       final config = TrustedTimeConfig.mobileDefaults();
       expect(config.cadenceMode, CadenceMode.tieredMobile);
-      expect(config.oscillatorDriftFactor, 0.000015);
       expect(config.refreshInterval, const Duration(hours: 24));
       expect(config.backgroundSyncInterval, const Duration(hours: 24));
-    });
-
-    test('mobileDefaults() leaves the global drift default unchanged', () {
-      // ADR 0006 open question 2: the platform factory tightens drift
-      // for mobile callers without silently shrinking the conservative
-      // worst-case band for desktop callers on the global default.
-      expect(
-        const TrustedTimeConfig().oscillatorDriftFactor,
-        isNot(TrustedTimeConfig.mobileDefaults().oscillatorDriftFactor),
-      );
     });
 
     test('round-trips cadenceMode through copyWith', () {

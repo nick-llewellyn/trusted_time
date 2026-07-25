@@ -4,6 +4,28 @@
 
 ### Breaking Changes
 
+- **Removed the offline estimation surface and speculative drift
+  modelling in favour of observed per-boot drift history.**
+  `TrustedTimeEstimate`, `TimeAssessment.estimate`, and
+  `TrustedTimeConfig.oscillatorDriftFactor` are gone, along with the
+  adaptive drift calibrator and the `tt_last_trusted_utc_ms` /
+  `tt_last_anchor_wall_ms` secure-storage keys (stale entries are
+  deleted on the next `clearPersistedState()`). Two consequences:
+  `getAssessment().uncertainty` is now the anchor's measured consensus
+  uncertainty alone — it no longer grows with anchor age, so apply
+  your own staleness policy against `anchorAge` — and unanchored
+  postures carry no fallback timestamp (wall-clock extrapolation was
+  manipulable by the very adversary this library defends against).
+  In their place the engine passively records real oscillator
+  behaviour: a new `TrustedTime.getDriftHistory()` diagnostics API
+  returns per-boot `DriftBootRecord`s (first/latest anchor pairs,
+  persisted for the last 10 boots), and `TimeAssessment` gains
+  experimental `driftRate` / `driftCorrectedTime` fields, populated
+  once the current boot has ≥1h of observed span. Prior boots'
+  observations are never applied for correction. `TrustedTimeMock`
+  assessments report the drift fields as `null` and
+  `getDriftHistory()` as empty under a mock override.
+
 - **`TrustedTime.initialize()` no longer waits for the first network
   sync.** The returned future resolves after local work only (storage
   restore, reboot check, timer arming) on every path; on a cold start
@@ -39,7 +61,7 @@
   non-null iff trusted), `reason` (`TrustStatusReason.synchronized` /
   `degraded` / `neverSynced` / `rebootDetected` / `syncFailed`),
   `authLevel`, `confidence` (now including `ConfidenceLevel.none`),
-  `uncertainty`, `anchorAge`, `estimate`, plus derived `isTrusted`
+  `uncertainty`, `anchorAge`, plus derived `isTrusted`
   and `isSecure`. Posture is never an exception: an unanchored engine
   yields `time == null` with an explanatory `reason` instead of
   `TrustedTimeNotReadyException`, and strictness

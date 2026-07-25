@@ -95,7 +95,6 @@ final class TrustedTimeConfig {
     this.maxAllowedUncertaintyMs = 5000,
     this.persistState = true,
     this.earlyExit = true,
-    this.oscillatorDriftFactor = 0.00005,
     this.backgroundSyncInterval,
     this.transientStreakThreshold = 5,
     this.cadenceMode = CadenceMode.singleTier30m,
@@ -126,13 +125,6 @@ final class TrustedTimeConfig {
   /// * [cadenceMode] is [CadenceMode.tieredMobile], so the engine runs
   ///   an infrequent full *establish* cycle plus a cheap *validate*
   ///   cycle instead of a single uniform refresh loop.
-  /// * [oscillatorDriftFactor] is `0.000015` (15 ppm), matching the
-  ///   measured drift envelope of modern ARM SoCs (Pixel Tablet
-  ///   generation, A14+ iPhones) in pocket conditions, which is roughly
-  ///   3–10× tighter than the conservative 50 ppm global default. The
-  ///   global default is deliberately left unchanged so desktop callers
-  ///   whose hardware really does drift at 30–50 ppm keep the wider
-  ///   worst-case `estimatedError` band.
   /// * [refreshInterval] is 24h — the establish cadence, the value iOS
   ///   `BGTaskScheduler` and Android `WorkManager` will actually honour
   ///   on battery-conscious devices.
@@ -145,7 +137,6 @@ final class TrustedTimeConfig {
   factory TrustedTimeConfig.mobileDefaults() {
     return const TrustedTimeConfig(
       cadenceMode: CadenceMode.tieredMobile,
-      oscillatorDriftFactor: 0.000015,
       refreshInterval: Duration(hours: 24),
       backgroundSyncInterval: Duration(hours: 24),
       validateInterval: Duration(hours: 1),
@@ -363,10 +354,6 @@ final class TrustedTimeConfig {
   /// is reached, conserving network and battery resources.
   final bool earlyExit;
 
-  /// The assumed drift rate of the device oscillator in seconds per second.
-  /// Used for offline confidence degradation (0.00005 ≈ 50ppm).
-  final double oscillatorDriftFactor;
-
   /// The interval at which the engine should perform a background synchronization.
   /// If null, background synchronization is disabled.
   final Duration? backgroundSyncInterval;
@@ -551,7 +538,6 @@ final class TrustedTimeConfig {
     int? maxAllowedUncertaintyMs,
     bool? persistState,
     bool? earlyExit,
-    double? oscillatorDriftFactor,
     Duration? backgroundSyncInterval,
     int? transientStreakThreshold,
     CadenceMode? cadenceMode,
@@ -581,8 +567,6 @@ final class TrustedTimeConfig {
           maxAllowedUncertaintyMs ?? this.maxAllowedUncertaintyMs,
       persistState: persistState ?? this.persistState,
       earlyExit: earlyExit ?? this.earlyExit,
-      oscillatorDriftFactor:
-          oscillatorDriftFactor ?? this.oscillatorDriftFactor,
       backgroundSyncInterval:
           backgroundSyncInterval ?? this.backgroundSyncInterval,
       transientStreakThreshold:
@@ -619,7 +603,6 @@ final class TrustedTimeConfig {
         other.maxAllowedUncertaintyMs == maxAllowedUncertaintyMs &&
         other.persistState == persistState &&
         other.earlyExit == earlyExit &&
-        other.oscillatorDriftFactor == oscillatorDriftFactor &&
         other.backgroundSyncInterval == backgroundSyncInterval &&
         other.transientStreakThreshold == transientStreakThreshold &&
         other.cadenceMode == cadenceMode &&
@@ -649,7 +632,6 @@ final class TrustedTimeConfig {
     maxAllowedUncertaintyMs,
     persistState,
     earlyExit,
-    oscillatorDriftFactor,
     backgroundSyncInterval,
     transientStreakThreshold,
     cadenceMode,
@@ -691,7 +673,6 @@ final class TrustedTimeConfig {
         '  maxAllowedUncertaintyMs: $maxAllowedUncertaintyMs,\n'
         '  persistState: $persistState,\n'
         '  earlyExit: $earlyExit,\n'
-        '  oscillatorDriftFactor: $oscillatorDriftFactor,\n'
         '  backgroundSyncInterval: $backgroundSyncInterval,\n'
         '  transientStreakThreshold: $transientStreakThreshold,\n'
         '  cadenceMode: $cadenceMode,\n'

@@ -262,8 +262,8 @@ void main() {
           // Match the AnchorStore anchor key by stable prefix rather than
           // the exact versioned literal (currently tt_anchor_v2) so a key
           // version bump does not silently turn this into a cold start.
-          // The prefix is unambiguous: the store's other keys live under
-          // tt_last_*.
+          // The prefix is unambiguous: the store's other key is
+          // tt_drift_history_v1.
           final key = (call.arguments as Map)['key'] as String?;
           if (call.method == 'read' &&
               (key?.startsWith('tt_anchor_') ?? false)) {
