@@ -817,6 +817,11 @@ void main() {
           ],
         ),
       );
+      // Resolving the singleton at teardown time is deliberate: if a
+      // test re-initializes, init() itself disposes the prior instance
+      // and dispose() is idempotent, so this closure always tears down
+      // whichever engine is live. A captured reference would instead
+      // leak the replacement.
       addTearDown(() => TrustedTimeImpl.instance.dispose());
       // These tests assert on the bootstrap cycle's concluded anchor;
       // wait for the detached cycle to settle.
