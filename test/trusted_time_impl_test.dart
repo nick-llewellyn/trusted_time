@@ -1513,6 +1513,50 @@ void main() {
         expect(history.single.observedDriftRate, closeTo(0.5, 1e-9));
       },
     );
+
+    test(
+      'corrupt history whose cleanup delete also fails cannot fail init',
+      () async {
+        // Corruption is treated as absence so bootstrap can never fail
+        // over diagnostics — including when the *cleanup* delete of the
+        // corrupt entry itself throws (e.g. secure storage rejecting the
+        // call). The store must swallow the delete failure and hand the
+        // engine an empty history.
+        final messenger =
+            TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+        messenger.setMockMethodCallHandler(storageChannel, (call) async {
+          if (call.method == 'read') {
+            final key = (call.arguments as Map)['key'] as String?;
+            if (key != null && key.startsWith(anchorKeyPrefix)) {
+              return persistedAnchorJson;
+            }
+            if (key != null && key.startsWith(historyKeyPrefix)) {
+              return 'not valid json {{{';
+            }
+          }
+          if (call.method == 'delete') {
+            throw PlatformException(code: 'STORAGE_UNAVAILABLE');
+          }
+          return null;
+        });
+        messenger.setMockMethodCallHandler(monotonicChannel, (call) async {
+          if (call.method == 'getUptimeMs') return currentUptimeMs;
+          if (call.method == 'getBootId') return 'boot-A';
+          return null;
+        });
+
+        await initWarmRestored();
+
+        // Init survived: warm restore applied, history opened fresh for
+        // the current boot only.
+        final assessment = TrustedTime.getAssessment();
+        expect(assessment.isTrusted, isTrue);
+        expect(assessment.time!.year, 2023);
+        final history = TrustedTime.getDriftHistory();
+        expect(history, hasLength(1));
+        expect(history.single.bootId, 'boot-A');
+      },
+    );
   });
 
   group('bootstrap ordering: anchor restore precedes warm phase', () {

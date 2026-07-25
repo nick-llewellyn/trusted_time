@@ -70,7 +70,7 @@ final class AnchorStore implements AnchorStorage {
       final json = jsonDecode(raw) as Map<String, dynamic>;
       return TrustAnchor.fromJson(json);
     } catch (_) {
-      await _storage.delete(key: _keyAnchor);
+      await _bestEffortDelete(_keyAnchor);
       return null;
     }
   }
@@ -97,8 +97,24 @@ final class AnchorStore implements AnchorStorage {
           .map((e) => DriftBootRecord.fromJson(e as Map<String, dynamic>))
           .toList();
     } catch (_) {
-      await _storage.delete(key: _keyDriftHistory);
+      await _bestEffortDelete(_keyDriftHistory);
       return const [];
+    }
+  }
+
+  /// Deletes [key], swallowing any failure.
+  ///
+  /// Used to clear corrupt entries from the load paths, where corruption
+  /// is treated as absence: if the cleanup delete itself throws (e.g. a
+  /// [PlatformException] from secure storage), the corrupt payload just
+  /// stays put until the next successful write or delete — that must not
+  /// escalate into a bootstrap failure.
+  static Future<void> _bestEffortDelete(String key) async {
+    try {
+      await _storage.delete(key: key);
+    } catch (_) {
+      // Best-effort cleanup only; the caller already treats the entry
+      // as absent.
     }
   }
 
