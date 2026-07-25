@@ -9,8 +9,9 @@
   `TrustedTimeEstimate`, `TimeAssessment.estimate`, and
   `TrustedTimeConfig.oscillatorDriftFactor` are gone, along with the
   adaptive drift calibrator and the `tt_last_trusted_utc_ms` /
-  `tt_last_anchor_wall_ms` secure-storage keys (stale entries are
-  deleted on the next `clearPersistedState()`). Two consequences:
+  `tt_last_anchor_wall_ms` secure-storage keys (never written or read
+  anymore; the storage layer's wipe path still deletes them, so
+  upgrading installs don't strand stale ciphertext). Two consequences:
   `getAssessment().uncertainty` is now the anchor's measured consensus
   uncertainty alone — it no longer grows with anchor age, so apply
   your own staleness policy against `anchorAge` — and unanchored

@@ -44,6 +44,23 @@ void main() {
       expect(record.span, Duration.zero);
     });
 
+    test('span clamps to zero when the network-UTC delta is negative', () {
+      // A record whose latest observation sits *before* the first on the
+      // network-UTC timeline (semantically-corrupt persisted data, or
+      // consensus UTC stepping backwards) must not surface a negative
+      // "span"; the rate is likewise unavailable.
+      const record = DriftBootRecord(
+        bootId: 'boot-A',
+        firstUptimeMs: 0,
+        firstNetworkUtcMs: 2000,
+        lastUptimeMs: 500,
+        lastNetworkUtcMs: 1000,
+        anchorCount: 2,
+      );
+      expect(record.span, Duration.zero);
+      expect(record.observedDriftRate, isNull);
+    });
+
     test('JSON round-trip preserves every field', () {
       const record = DriftBootRecord(
         bootId: 'boot-A',

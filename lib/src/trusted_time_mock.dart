@@ -79,7 +79,14 @@ final class TrustedTimeMock {
   /// background refresh in flight.
   void setSyncInProgress(bool inProgress) => _syncInProgress = inProgress;
 
-  /// Restores the mock to a trusted state and clears reboot history.
+  /// Restores the mock to a trusted state, simulating a successful
+  /// re-sync.
+  ///
+  /// Also resets the scripted unanchored reason to
+  /// [TrustStatusReason.syncFailed], ending a
+  /// [TrustStatusReason.rebootDetected] posture set by
+  /// [simulateReboot] — mirroring production, where only a successful
+  /// sync clears a detected reboot.
   void restoreTrust() {
     _trusted = true;
     _unanchoredReason = TrustStatusReason.syncFailed;

@@ -71,8 +71,16 @@ final class DriftBootRecord {
 
   /// Observed span between the first and latest anchor, measured on the
   /// network-UTC timeline.
-  Duration get span =>
-      Duration(milliseconds: lastNetworkUtcMs - firstNetworkUtcMs);
+  ///
+  /// Clamped to [Duration.zero] when the latest observation does not
+  /// sit after the first (a semantically-corrupt persisted record, or
+  /// consensus UTC stepping backwards): a negative duration would
+  /// contradict the "span" semantics. [observedDriftRate] already
+  /// treats such non-positive deltas as unavailable.
+  Duration get span {
+    final deltaMs = lastNetworkUtcMs - firstNetworkUtcMs;
+    return deltaMs <= 0 ? Duration.zero : Duration(milliseconds: deltaMs);
+  }
 
   /// The signed drift rate observed over [span]:
   /// `(dUptime - dNetworkUtc) / dNetworkUtc`.
