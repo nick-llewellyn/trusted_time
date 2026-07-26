@@ -175,6 +175,12 @@ void main() {
       ('cam.ac.uk', 'cam.ac.uk'),
       // Case is normalized.
       ('GBG1.NTS.NETNOD.SE', 'netnod.se'),
+      // FQDN root dot and stray empty labels are dropped, so the
+      // FQDN form groups with the plain form instead of minting a
+      // malformed trailing-dot group.
+      ('example.com.', 'example.com'),
+      ('gbg1.nts.netnod.se.', 'netnod.se'),
+      ('ntp0.cam.ac.uk.', 'cam.ac.uk'),
     ];
 
     for (final (host, expected) in cases) {

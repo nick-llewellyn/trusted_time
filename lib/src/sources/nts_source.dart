@@ -93,16 +93,23 @@ const Set<String> _multiLabelPublicSuffixes = {
 /// `gbg1.nts.netnod.se` → `netnod.se`; `ntp0.cam.ac.uk` →
 /// `cam.ac.uk`; `ntp.neu.edu.cn` → `neu.edu.cn`. Hostnames with two
 /// or fewer labels (including a bare TLD or a single label) are
-/// returned unchanged, lowercased. IP literals get no special
-/// handling — they pass through the same label logic, which is
-/// harmless: grouping collapses rather than splits.
+/// returned lowercased. Empty labels — a trailing root dot in
+/// FQDN form (`example.com.`) or stray consecutive dots — are
+/// dropped before extraction, so `example.com.` groups with
+/// `example.com` rather than minting a malformed `com.` group. IP
+/// literals get no special handling — they pass through the same
+/// label logic, which is harmless: grouping collapses rather than
+/// splits.
 String _registrableDomain(String host) {
-  final normalized = host.toLowerCase();
-  final labels = normalized.split('.');
-  if (labels.length <= 2) return normalized;
+  final labels = host
+      .toLowerCase()
+      .split('.')
+      .where((label) => label.isNotEmpty)
+      .toList();
+  if (labels.length <= 2) return labels.join('.');
   final lastTwo = labels.sublist(labels.length - 2).join('.');
   final take = _multiLabelPublicSuffixes.contains(lastTwo) ? 3 : 2;
-  if (labels.length <= take) return normalized;
+  if (labels.length <= take) return labels.join('.');
   return labels.sublist(labels.length - take).join('.');
 }
 
