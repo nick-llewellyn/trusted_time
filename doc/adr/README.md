@@ -77,9 +77,11 @@ surface that had not yet been re-introduced as feat/* PRs. As of this
 PR, three Accepted ADRs are known to diverge from current code:
 
 - **ADR 0001** describes `TrustedTimeConfig.ntsServers` as "opt-in,
-  empty by default". Current code defaults it to
-  `['time.cloudflare.com']`. The `Decision` text is the original
-  position; the implementation has drifted.
+  empty by default". Current code enables NTS by default with two
+  anycast anchors from distinct operators
+  (`['time.cloudflare.com', 'nts.netnod.se']` — see
+  `trusted_time-cln`). The `Decision` text is the original position;
+  the implementation has deliberately moved on.
 - **ADR 0002** decides on real headless background anchor refresh.
   Implementation is still in-progress (`trusted_time-e0v`) — the
   current native code performs only an HTTPS HEAD connectivity check.

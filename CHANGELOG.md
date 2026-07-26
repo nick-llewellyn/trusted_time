@@ -4,6 +4,35 @@
 
 ### Breaking Changes
 
+- **Default source lists rebuilt around a stepping-only leap-second
+  policy and administrative diversity.** `ntpServers` now defaults to
+  `['pool.ntp.org', 'time.apple.com', 'time.windows.com']` —
+  `time.google.com` is removed because Google smears leap seconds,
+  and a smeared source diverges from stepping sources by up to a full
+  second around a leap event. `ntsServers` now defaults to
+  `['time.cloudflare.com', 'nts.netnod.se']`: two anycast anchors
+  from distinct operators, so the out-of-the-box config satisfies the
+  default `minGroupCount` of 2 and can mint a verified truth box on
+  its own (the previous single-host default never could). Every
+  default host steps. Consumers pinning the old defaults explicitly
+  are unaffected; consumers relying on the implicit defaults get the
+  new lists on their next sync.
+
+- **NTS sources now group by registrable domain instead of full
+  hostname.** `NtsSource.groupId` for `gbg1.nts.netnod.se`,
+  `mmo1.nts.netnod.se`, and `nts.netnod.se` is now the single group
+  `netnod.se` rather than three distinct groups, so
+  `minGroupCount` counts administrative operators and a "diverse"
+  verified quorum can no longer be minted from one operator's
+  regional endpoints. Multi-label public suffixes are handled by a
+  small embedded suffix set (`cam.ac.uk` under `ac.uk`,
+  `neu.edu.cn` under `edu.cn`, etc.); unknown suffixes collapse
+  conservatively to the last two labels, which can only merge groups
+  (under-count diversity), never split them. The NTP tier's
+  ASN-derived grouping is unchanged. Pools that relied on
+  hostname-level grouping to reach `minGroupCount` from one
+  operator's endpoints will now need genuinely distinct operators.
+
 - **Removed the tiered validate cadence in favour of a 48h anchor-age
   policy.** `CadenceMode`, `TrustedTimeConfig.validateInterval`,
   `TrustedTimeConfig.foregroundValidateThreshold`,

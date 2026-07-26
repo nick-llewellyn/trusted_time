@@ -114,7 +114,7 @@ You can pass a `TrustedTimeConfig` to customise sources, sync intervals, and sec
 ```dart
 await TrustedTime.initialize(
   config: const TrustedTimeConfig(
-    ntpServers: ['time.cloudflare.com', 'time.google.com', 'pool.ntp.org'],
+    ntpServers: ['pool.ntp.org', 'time.apple.com', 'time.windows.com'],
     refreshInterval: Duration(hours: 6),
     backgroundSyncInterval: Duration(hours: 12),
     minGroupCount: 2,
@@ -249,7 +249,7 @@ Background refresh bounds the staleness of the fallback anchor: if a sync fails 
 
 ### NTS (Network Time Security)
 
-Pass `ntsServers` in the config to enable RFC 8915 authenticated time. NTS is opt-in and off by default — apps that do not configure it have zero overhead from the feature.
+RFC 8915 authenticated time is on by default: `ntsServers` ships with two anycast anchors from distinct operators (`time.cloudflare.com`, `nts.netnod.se`), enough to mint a verified truth box under the default `minGroupCount` of 2. Pass your own list to customise, or an empty list to disable NTS entirely — apps that pass `ntsServers: []` have zero overhead from the feature.
 
 ```dart
 await TrustedTime.initialize(
@@ -324,9 +324,9 @@ void main() {
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `ntpServers` | `List<String>` | `pool.ntp.org`, `time.google.com` | NTP server hostnames |
+| `ntpServers` | `List<String>` | `pool.ntp.org`, `time.apple.com`, `time.windows.com` | NTP server hostnames (every default host handles a leap second by stepping the clock, not by smearing it) |
 | `ntpBurstCount` | `int` | `8` | Sequential SNTP exchanges per NTP source per sync; the lowest-delay sample is kept |
-| `ntsServers` | `List<String>` | `['time.cloudflare.com']` | NTS server hostnames (opt-in) |
+| `ntsServers` | `List<String>` | `time.cloudflare.com`, `nts.netnod.se` | NTS server hostnames |
 | `ntsPort` | `int` | `4460` | NTS-KE port |
 | `refreshInterval` | `Duration` | `48h` | Foreground re-sync period and the on-resume anchor staleness bound |
 | `backgroundSyncInterval` | `Duration?` | `null` | If set, enables background sync at this interval |

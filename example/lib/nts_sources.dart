@@ -1,15 +1,19 @@
 /// Worldwide NTS server pool for the Beauty Parade benchmarking mode.
 ///
-/// Transcribed from the canonical inventory at
-/// `../nts/example/assets/nts-sources.yml` (82 entries; 81 here
-/// after the IPv6-only exclusion below). Hostnames
-/// originally wrapped in markdown-link syntax (`[host](url)`) in the
-/// source YAML are unwrapped to bare hostnames here. The single
-/// IPv6-only entry (`ntp3.ipv6.fau.de`) is intentionally omitted so
-/// the pool only contains hosts a typical IPv4-capable device can
-/// reach; that exclusion is the only deliberate filter applied —
-/// every other entry is preserved verbatim so re-vendoring the
-/// canonical list stays a mechanical diff.
+/// The 52 verified hosts recorded on `trusted_time-cln`
+/// (2026-07-25): every host below completed a full live NTS-KE +
+/// AEAD-NTPv4 exchange (AES-SIV-CMAC-256) during the re-verification
+/// probe, and every host follows the leap-second stepping policy.
+/// Unverified, dropped (`time.txryan.com`), and demoted-undecided
+/// (`ntp8.rdem-systems.com`) entries from the previous 81-host
+/// vendored list are excluded. Ordered by the ticket's tiers:
+/// anycast, then unicast stratum 1, then unicast stratum 2.
+///
+/// One correction relative to the ticket's inventory table:
+/// `sth1.nts.netnod.se` was omitted from the table (which is why it
+/// enumerates 51 rows while its prose says "52 hosts verified"); it
+/// was re-probed live on 2026-07-26 (full NTS-KE + AEAD-NTPv4
+/// exchange, stratum 1) and is included here.
 ///
 /// The benchmarking UI uses this pool both as the manual chip grid
 /// (operator picks arbitrary subsets) and as the source for the
@@ -17,52 +21,15 @@
 /// through fixed-size subsets to give every host isolated,
 /// contention-free measurements over time).
 const List<String> extendedNtsPool = [
+  // Anycast
   'time.cloudflare.com',
+  'nts.netnod.se',
+  // Unicast — stratum 1
   'nts.teambelgium.net',
-  'a.st1.ntp.br',
-  'b.st1.ntp.br',
-  'c.st1.ntp.br',
-  'd.st1.ntp.br',
-  'gps.ntp.br',
-  'brazil.time.system76.com',
-  'time.bolha.one',
-  'time1.mbix.ca',
-  'time2.mbix.ca',
-  'time3.mbix.ca',
-  'time.web-clock.ca',
-  'nts1.ntp.hr',
-  'nts2.ntp.hr',
-  'time.cincura.net',
-  'ntp.miuku.net',
-  'paris.time.system76.com',
-  'ntp1.rdem-systems.com',
-  'ntp2.rdem-systems.com',
-  'ntp3.rdem-systems.com',
-  'ntp4.rdem-systems.com',
-  'ntp5.rdem-systems.com',
-  'ntp6.rdem-systems.com',
-  'ntp8.rdem-systems.com',
-  'ntp9.rdem-systems.com',
-  'ntp10.rdem-systems.com',
-  'ntp11.rdem-systems.com',
-  'ntp3.fau.de',
-  'ntp7.rdem-systems.com',
   'ptbtime1.ptb.de',
   'ptbtime2.ptb.de',
   'ptbtime3.ptb.de',
   'ptbtime4.ptb.de',
-  'www.jabber-germany.de',
-  'www.masters-of-cloud.de',
-  'ntp.nanosrvr.cloud',
-  '1.nts.nothingtohide.nl',
-  '2.nts.nothingtohide.nl',
-  '3.nts.nothingtohide.nl',
-  '4.nts.nothingtohide.nl',
-  'ntppool1.time.nl',
-  'ntppool2.time.nl',
-  'nts.decepticon.space',
-  'ntpmon.dcs1.biz',
-  'nts.netnod.se',
   'gbg1.nts.netnod.se',
   'gbg2.nts.netnod.se',
   'lul1.nts.netnod.se',
@@ -73,31 +40,42 @@ const List<String> extendedNtsPool = [
   'sth2.nts.netnod.se',
   'svl1.nts.netnod.se',
   'svl2.nts.netnod.se',
-  'ntp.3eck.net',
-  'ntp.trifence.ch',
-  'ntp.zeitgitter.net',
-  'ntp01.maillink.ch',
-  'ntp02.maillink.ch',
-  'ntp03.maillink.ch',
-  'time.signorini.ch',
-  'ntp2.glypnod.com',
-  'ntp1.dmz.terryburton.co.uk',
-  'ntp2.dmz.terryburton.co.uk',
+  'nts.decepticon.space',
+  'nts1.ntp.hr',
+  'nts2.ntp.hr',
+  'time.web-clock.ca',
+  'd.st1.ntp.br',
+  'time.cincura.net',
+  'ntp.neu.edu.cn',
+  'ntp1.neu.edu.cn',
+  // Unicast — stratum 2
   'ntp0.cam.ac.uk',
   'ntp1.cam.ac.uk',
   'ntp2.cam.ac.uk',
   'ntp3.cam.ac.uk',
-  'ntp1.glypnod.com',
+  'ntp2.rdem-systems.com',
+  'ntp4.rdem-systems.com',
+  'ntp6.rdem-systems.com',
+  'ntp7.rdem-systems.com',
+  'ntp9.rdem-systems.com',
+  'ntp10.rdem-systems.com',
+  'ntp11.rdem-systems.com',
+  '1.nts.nothingtohide.nl',
+  '2.nts.nothingtohide.nl',
+  '3.nts.nothingtohide.nl',
+  '4.nts.nothingtohide.nl',
+  'www.jabber-germany.de',
+  'www.masters-of-cloud.de',
+  'ntp.3eck.net',
+  'ntp.miuku.net',
+  'ntp.viarouge.net',
+  'time.cifelli.xyz',
+  'virginia.time.system76.com',
   'ohio.time.system76.com',
   'oregon.time.system76.com',
-  'virginia.time.system76.com',
-  'stratum1.time.cifelli.xyz',
-  'time.cifelli.xyz',
-  'time.txryan.com',
-  'ntp.viarouge.net',
-  'time.xargs.org',
-  'ntp1.wiktel.com',
-  'ntp2.wiktel.com',
+  'paris.time.system76.com',
+  'brazil.time.system76.com',
+  '0.ntp.bksp.in',
 ];
 
 /// Curated NTS pool for the integration stress test.

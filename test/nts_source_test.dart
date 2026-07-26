@@ -143,6 +143,73 @@ void main() {
     });
   });
 
+  group('NtsSource groupId (registrable-domain grouping)', () {
+    // groupId counts administrative operators, not hostnames: every
+    // regional endpoint of one operator must collapse to a single
+    // group so minGroupCount cannot be satisfied from one operator.
+    // Rows pin (host, expected groupId); the mini-PSL cases exercise
+    // multi-label public suffixes where last-two-labels would merge
+    // unrelated operators.
+    const cases = <(String, String)>[
+      // Plain registrable domains: last two labels.
+      ('time.cloudflare.com', 'cloudflare.com'),
+      ('nts.netnod.se', 'netnod.se'),
+      ('gbg1.nts.netnod.se', 'netnod.se'),
+      ('sth2.nts.netnod.se', 'netnod.se'),
+      ('ptbtime1.ptb.de', 'ptb.de'),
+      ('ptbtime4.ptb.de', 'ptb.de'),
+      ('ohio.time.system76.com', 'system76.com'),
+      ('brazil.time.system76.com', 'system76.com'),
+      ('1.nts.nothingtohide.nl', 'nothingtohide.nl'),
+      ('d.st1.ntp.br', 'ntp.br'),
+      ('0.ntp.bksp.in', 'bksp.in'),
+      // Mini-PSL multi-label suffixes: last three labels.
+      ('ntp0.cam.ac.uk', 'cam.ac.uk'),
+      ('ntp3.cam.ac.uk', 'cam.ac.uk'),
+      ('ntp.neu.edu.cn', 'neu.edu.cn'),
+      ('ntp1.neu.edu.cn', 'neu.edu.cn'),
+      // Two or fewer labels pass through unchanged.
+      ('example.com', 'example.com'),
+      ('localhost', 'localhost'),
+      // Host exactly at suffix+1 depth stays whole.
+      ('cam.ac.uk', 'cam.ac.uk'),
+      // Case is normalized.
+      ('GBG1.NTS.NETNOD.SE', 'netnod.se'),
+      // FQDN root dot and stray empty labels are dropped, so the
+      // FQDN form groups with the plain form instead of minting a
+      // malformed trailing-dot group.
+      ('example.com.', 'example.com'),
+      ('gbg1.nts.netnod.se.', 'netnod.se'),
+      ('ntp0.cam.ac.uk.', 'cam.ac.uk'),
+    ];
+
+    for (final (host, expected) in cases) {
+      test('$host -> $expected', () {
+        expect(NtsSource(host).groupId, expected);
+      });
+    }
+
+    test('one operator\'s regional endpoints share a single group', () {
+      final netnodGroups = {
+        for (final host in [
+          'nts.netnod.se',
+          'gbg1.nts.netnod.se',
+          'lul2.nts.netnod.se',
+          'mmo1.nts.netnod.se',
+          'svl2.nts.netnod.se',
+        ])
+          NtsSource(host).groupId,
+      };
+      expect(netnodGroups, {'netnod.se'});
+    });
+
+    test('id retains the full hostname (unchanged by grouping)', () {
+      final source = NtsSource('gbg1.nts.netnod.se');
+      expect(source.id, 'nts:gbg1.nts.netnod.se');
+      expect(source.groupId, 'netnod.se');
+    });
+  });
+
   group('NtsSource burst orchestration (via debugQueryOverride)', () {
     test('burst issues burstCount queries and returns the lowest-RTT '
         'sample', () async {
