@@ -1,10 +1,13 @@
+// Deliberately Flutter-free (dart:io + dart:typed_data only) so the
+// `bin/ntp_cli.dart` probe tool can run this resolver on the
+// standalone Dart VM. The production rootBundle loader lives in
+// `asn_bundle_loader.dart`; Flutter callers (NtpSource) inject it.
 import 'dart:io' show InternetAddress, InternetAddressType, gzip;
 import 'dart:typed_data';
 
-import 'package:flutter/services.dart' show rootBundle;
-
 /// Loads the raw bytes of a bundled asset. Injectable so unit tests can
-/// supply an in-memory table instead of touching [rootBundle].
+/// supply an in-memory table, and so non-Flutter callers (the CLI probe
+/// tool) can read the snapshot from disk instead of the asset bundle.
 typedef AssetByteLoader = Future<Uint8List> Function(String key);
 
 /// Offline IP-to-ASN resolver backed by the bundled iptoasn.com snapshot
@@ -16,9 +19,11 @@ typedef AssetByteLoader = Future<Uint8List> Function(String key);
 /// `null` so callers can fall back gracefully — no exception escapes
 /// [lookup].
 final class AsnResolver {
-  /// Creates a resolver. [loader] defaults to [rootBundle]-backed loading
-  /// of the package's bundled assets.
-  AsnResolver({AssetByteLoader? loader}) : _load = loader ?? _bundleLoad;
+  /// Creates a resolver reading table bytes through [loader] — the
+  /// `rootBundle`-backed `rootBundleAssetLoader` in production Flutter
+  /// use, an in-memory table in unit tests, or a filesystem reader on
+  /// the plain Dart VM.
+  AsnResolver({required AssetByteLoader loader}) : _load = loader;
 
   /// Asset key for the IPv4 table.
   static const String keyV4 =
@@ -35,11 +40,6 @@ final class AsnResolver {
   // to a cached `null`-completing future, so failures are not retried.
   Future<_Table?>? _v4;
   Future<_Table?>? _v6;
-
-  static Future<Uint8List> _bundleLoad(String key) async {
-    final data = await rootBundle.load(key);
-    return data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
-  }
 
   /// Returns the ASN owning [ip], or `null` when the address is unknown,
   /// the table is unavailable, or the asset cannot be decoded.

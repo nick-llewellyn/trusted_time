@@ -2,6 +2,7 @@ import 'dart:async' show TimeoutException;
 import 'dart:io' show InternetAddress, InternetAddressType;
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
+import '../data/asn_bundle_loader.dart';
 import '../data/asn_resolver.dart';
 import '../domain/time_sample.dart';
 import '../domain/time_source.dart';
@@ -89,7 +90,9 @@ final class NtpSource implements TimeSource {
 
   /// Shared across all NTP sources so the bundled ASN table is
   /// decompressed and held in memory exactly once per isolate.
-  static final AsnResolver _sharedAsn = AsnResolver();
+  static final AsnResolver _sharedAsn = AsnResolver(
+    loader: rootBundleAssetLoader,
+  );
 
   final String _host;
   final AsnResolver? _asnOverride;

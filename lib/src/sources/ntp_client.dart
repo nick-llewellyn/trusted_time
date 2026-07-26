@@ -3,9 +3,14 @@ import 'dart:io';
 import 'dart:math' show Random;
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+// package:meta rather than flutter/foundation for the annotation, and
+// the Flutter-free reader library rather than monotonic_clock.dart:
+// this file must compile on the standalone Dart VM so the
+// `bin/ntp_cli.dart` probe tool can drive the exact exchange
+// `NtpSource` consumes.
+import 'package:meta/meta.dart' show visibleForTesting;
 
-import '../monotonic_clock.dart';
+import '../monotonic_reader.dart';
 
 /// Seconds between the NTP epoch (1900-01-01) and the Unix epoch.
 const int _ntpToUnixSeconds = 2208988800;
@@ -18,7 +23,10 @@ const int _ntpToUnixSeconds = 2208988800;
 /// remaining fields carry the server-side error budget and quality
 /// telemetry verbatim from the reply header.
 final class NtpExchangeResult {
-  /// Documented on each field.
+  /// Documented on each field. [leapIndicator] and [referenceId] are
+  /// diagnostic telemetry consumed only by the `bin/ntp_cli.dart`
+  /// probe tool; they default to zero so exchange fixtures that
+  /// predate them need not supply values.
   const NtpExchangeResult({
     required this.offsetMicros,
     required this.delayMicros,
@@ -26,6 +34,8 @@ final class NtpExchangeResult {
     required this.stratum,
     required this.rootDelayMicros,
     required this.rootDispersionMicros,
+    this.leapIndicator = 0,
+    this.referenceId = 0,
   });
 
   /// Clock offset θ = ((T2−T1) + (T3−T4)) / 2: how far the local wall
@@ -55,6 +65,18 @@ final class NtpExchangeResult {
   /// Total dispersion to the reference clock, from the reply header's
   /// 16.16 fixed-point seconds field.
   final int rootDispersionMicros;
+
+  /// Leap-indicator bits from the reply header: 0 (no warning),
+  /// 1 (insertion pending), or 2 (deletion pending). LI = 3
+  /// (unsynchronized) is rejected during parsing and never appears
+  /// here. Announcement bits are only set inside a leap window, so
+  /// this is telemetry for the probe tool rather than policy input.
+  final int leapIndicator;
+
+  /// Reference identifier from the reply header (4 bytes, big-endian).
+  /// For stratum 1 an ASCII refclock code (e.g. `GPS`, `PPS`); for
+  /// stratum ≥ 2 an opaque upstream identifier. Probe telemetry only.
+  final int referenceId;
 }
 
 /// Performs one SNTP exchange against [address] (an IP literal or
@@ -266,5 +288,7 @@ NtpExchangeResult parseNtpReply(
     stratum: stratum,
     rootDelayMicros: _shortMicros(bd, 4),
     rootDispersionMicros: _shortMicros(bd, 8),
+    leapIndicator: leap,
+    referenceId: bd.getUint32(12),
   );
 }
