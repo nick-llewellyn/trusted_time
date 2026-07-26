@@ -607,6 +607,25 @@ void main() {
       expect(result.rootDelayMicros, closeTo(8000, 20));
     });
 
+    test('carries the leap indicator and reference id as telemetry', () {
+      const t1 = 1000000000000000;
+      final result = parseNtpReply(
+        reply(
+          li: 1,
+          t2Micros: t1 + 10000,
+          t3Micros: t1 + 15000,
+          referenceId: 'GPS\x00'.codeUnits,
+        ),
+        nonce: nonce,
+        t1Micros: t1,
+        t4Micros: t1 + 25000,
+        rttMicros: 25000,
+      );
+      expect(result.leapIndicator, 1);
+      // 'GPS\0' big-endian: 0x47_50_53_00.
+      expect(result.referenceId, 0x47505300);
+    });
+
     test('an implausible server interval falls back to the whole RTT', () {
       // T3 before T2 (server clock stepped mid-exchange): the
       // negative interval must not inflate δ below the true RTT.
