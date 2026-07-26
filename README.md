@@ -324,7 +324,7 @@ void main() {
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `ntpServers` | `List<String>` | `pool.ntp.org`, `time.apple.com`, `time.windows.com` | NTP server hostnames (all default hosts step, not smear, leap seconds) |
+| `ntpServers` | `List<String>` | `pool.ntp.org`, `time.apple.com`, `time.windows.com` | NTP server hostnames (every default host handles a leap second by stepping the clock, not by smearing it) |
 | `ntpBurstCount` | `int` | `8` | Sequential SNTP exchanges per NTP source per sync; the lowest-delay sample is kept |
 | `ntsServers` | `List<String>` | `time.cloudflare.com`, `nts.netnod.se` | NTS server hostnames |
 | `ntsPort` | `int` | `4460` | NTS-KE port |

@@ -1,17 +1,19 @@
 /// Worldwide NTS server pool for the Beauty Parade benchmarking mode.
 ///
-/// Transcribed verbatim from the verified inventory recorded on
-/// `trusted_time-cln` (2026-07-25): every host below completed a full
-/// live NTS-KE + AEAD-NTPv4 exchange (AES-SIV-CMAC-256) during the
-/// re-verification probe, and every host follows the leap-second
-/// stepping policy. Unverified, dropped (`time.txryan.com`), and
-/// demoted-undecided (`ntp8.rdem-systems.com`) entries from the
-/// previous 81-host vendored list are excluded. Ordered by the
-/// ticket's tiers: anycast, then unicast stratum 1, then unicast
-/// stratum 2. `sth1.nts.netnod.se` was omitted from the ticket's
-/// table (which is why it enumerates 51 while its prose says "52
-/// hosts verified"); it was re-probed live on 2026-07-26 (full
-/// NTS-KE + AEAD-NTPv4 exchange, stratum 1) and restored here.
+/// The 52 verified hosts recorded on `trusted_time-cln`
+/// (2026-07-25): every host below completed a full live NTS-KE +
+/// AEAD-NTPv4 exchange (AES-SIV-CMAC-256) during the re-verification
+/// probe, and every host follows the leap-second stepping policy.
+/// Unverified, dropped (`time.txryan.com`), and demoted-undecided
+/// (`ntp8.rdem-systems.com`) entries from the previous 81-host
+/// vendored list are excluded. Ordered by the ticket's tiers:
+/// anycast, then unicast stratum 1, then unicast stratum 2.
+///
+/// One correction relative to the ticket's inventory table:
+/// `sth1.nts.netnod.se` was omitted from the table (which is why it
+/// enumerates 51 rows while its prose says "52 hosts verified"); it
+/// was re-probed live on 2026-07-26 (full NTS-KE + AEAD-NTPv4
+/// exchange, stratum 1) and is included here.
 ///
 /// The benchmarking UI uses this pool both as the manual chip grid
 /// (operator picks arbitrary subsets) and as the source for the
