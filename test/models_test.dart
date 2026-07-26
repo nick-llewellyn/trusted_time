@@ -163,10 +163,14 @@ void main() {
     test('malformed contributor entries are dropped, not fatal', () {
       final json = anchorWith([full]).toJson();
       // Corrupt the list in-place: a mistyped entry, a non-map entry,
-      // and one valid record.
+      // entries with a missing or mistyped wonConsensus, and one valid
+      // record. A missing wonConsensus must drop the entry rather than
+      // silently defaulting to a fake "lost consensus" record.
       json['contributors'] = [
         {'sourceId': 42, 'groupId': 'x', 'rttMs': 'fast'},
         'not-a-map',
+        full.toJson()..remove('wonConsensus'),
+        full.toJson()..['wonConsensus'] = 'yes',
         full.toJson(),
       ];
 

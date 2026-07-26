@@ -326,12 +326,15 @@ final class NtpSource implements TimeSource {
 
     // In-cycle burst jitter: the spread (max − min) of the
     // per-attempt network delays δ — the same key the reduction above
-    // selects on. A spread needs at least two observations;
+    // selects on. Each bound is truncated to ms *before* subtracting,
+    // matching [TimeSample.delayMs]'s own µs→ms truncation, so the
+    // reported jitter always equals the spread of the per-attempt
+    // delayMs values. A spread needs at least two observations;
     // single-success bursts leave jitter null rather than reporting a
     // misleading 0.
     final jitterMs = successes.length < 2
         ? null
-        : (maxDelayMicros - minDelayMicros) ~/ 1000;
+        : (maxDelayMicros ~/ 1000) - (minDelayMicros ~/ 1000);
 
     // Derive the group only *after* the timed exchanges. The first
     // ASN lookup synchronously gunzips and parses the bundled table

@@ -505,6 +505,27 @@ void main() {
       expect(sample.jitterMs, 60);
     });
 
+    test('jitter matches the spread of the truncated per-attempt delayMs '
+        'values', () async {
+      // Delays 20.9ms and 80.1ms truncate to delayMs 20 and 80, so the
+      // reported jitter must be 60 — not the 59 that truncating the µs
+      // difference (80100 − 20900 = 59200µs) would produce. Jitter and
+      // delayMs must describe the same ms-scale metric.
+      final results = [
+        okResult(delayMicros: 20900, stratum: 2),
+        okResult(delayMicros: 80100, stratum: 3),
+      ];
+      var call = 0;
+      final source = burstSource(
+        burstCount: 2,
+        exchange: (address, {timeout = Duration.zero}) async => results[call++],
+      );
+
+      final sample = await source.getTime();
+      expect(sample.delayMs, 20);
+      expect(sample.jitterMs, 60);
+    });
+
     test('a single-success burst has null jitter, not zero', () async {
       // One observation has no spread; reporting 0 would fake a
       // perfectly stable path.

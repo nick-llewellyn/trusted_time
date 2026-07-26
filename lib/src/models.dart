@@ -797,12 +797,14 @@ final class TrustAnchorContributor {
     final groupId = json['groupId'];
     final rttMs = json['rttMs'];
     final dispersionMs = json['dispersionMs'];
+    final wonConsensus = json['wonConsensus'];
     final stratum = json['stratum'];
     final jitterMs = json['jitterMs'];
     if (sourceId is! String ||
         groupId is! String ||
         rttMs is! int ||
         dispersionMs is! int ||
+        wonConsensus is! bool ||
         stratum is! int? ||
         jitterMs is! int?) {
       return null;
@@ -822,7 +824,7 @@ final class TrustAnchorContributor {
       rttMs: rttMs,
       dispersionMs: dispersionMs,
       authLevel: authLevel,
-      wonConsensus: json['wonConsensus'] == true,
+      wonConsensus: wonConsensus,
       stratum: stratum,
       jitterMs: jitterMs,
     );
