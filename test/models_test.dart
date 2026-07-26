@@ -218,6 +218,31 @@ void main() {
     });
   });
 
+  group('TrustedTimeConfig default source lists', () {
+    test('ntpServers default to three stepping operators', () {
+      // Leap-second policy: every default host steps. time.google.com
+      // (smearing) was deliberately removed — a smeared source
+      // diverges from stepping sources by up to a full second around
+      // a leap event.
+      const config = TrustedTimeConfig();
+      expect(config.ntpServers, [
+        'pool.ntp.org',
+        'time.apple.com',
+        'time.windows.com',
+      ]);
+      expect(config.ntpServers, isNot(contains('time.google.com')));
+    });
+
+    test('ntsServers default to two anycast anchors from distinct '
+        'operators', () {
+      // minGroupCount defaults to 2, so the default NTS pool must
+      // span two registrable-domain groups to mint a verified truth
+      // box on its own.
+      const config = TrustedTimeConfig();
+      expect(config.ntsServers, ['time.cloudflare.com', 'nts.netnod.se']);
+    });
+  });
+
   group('TrustedTimeConfig sync cadence', () {
     test('defaults use the 48h anchor-age staleness bound', () {
       const config = TrustedTimeConfig();

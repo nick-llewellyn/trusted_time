@@ -50,8 +50,12 @@ enum ConfidenceLevel {
 final class TrustedTimeConfig {
   /// Creates a new configuration instance with sensible production defaults.
   const TrustedTimeConfig({
-    this.ntpServers = const ['pool.ntp.org', 'time.google.com'],
-    this.ntsServers = const ['time.cloudflare.com'],
+    this.ntpServers = const [
+      'pool.ntp.org',
+      'time.apple.com',
+      'time.windows.com',
+    ],
+    this.ntsServers = const ['time.cloudflare.com', 'nts.netnod.se'],
     this.ntsPort = 4460,
     this.maxConcurrentDnsLookups,
     // ignore: deprecated_member_use_from_same_package
@@ -111,10 +115,21 @@ final class TrustedTimeConfig {
   }
 
   /// The list of authoritative NTP server hostnames used for synchronization.
+  ///
+  /// Every default host follows the leap-second **stepping** policy;
+  /// smearing operators (Google, AWS) are deliberately excluded, since
+  /// a smeared source diverges from stepping sources by up to a full
+  /// second around a leap event and can poison the consensus.
   final List<String> ntpServers;
 
   /// The list of Network Time Security (NTS) servers used for cryptographically
   /// authenticated synchronization.
+  ///
+  /// The default pairs two anycast anchors from distinct operators
+  /// (Cloudflare, Netnod), so the out-of-the-box config can satisfy
+  /// [minGroupCount]'s two-distinct-groups requirement and mint a
+  /// verified truth box on its own. Both operators step (not smear)
+  /// leap seconds.
   final List<String> ntsServers;
 
   /// The TCP port used for the NTS Key Exchange (NTS-KE) handshake.
