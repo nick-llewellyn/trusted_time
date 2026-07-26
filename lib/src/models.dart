@@ -623,6 +623,7 @@ final class TrustAnchor {
     this.authLevel = NtsAuthLevel.none,
     this.confidence = ConfidenceLevel.low,
     this.bootId,
+    this.contributors = const [],
   });
 
   /// Deserializes a [TrustAnchor] from a JSON map with rigorous bounds checking.
@@ -661,6 +662,21 @@ final class TrustAnchor {
           ? ConfidenceLevel.values[confIdx]
           : ConfidenceLevel.none;
 
+      // Contributor telemetry is diagnostic, never trust-critical: a
+      // missing key (anchors persisted before the field existed) or a
+      // malformed entry degrades to fewer/no contributors rather than
+      // failing the whole anchor, which would discard a valid trust
+      // reference over cosmetic metadata.
+      final rawContributors = json['contributors'];
+      var contributors = const <TrustAnchorContributor>[];
+      if (rawContributors is List) {
+        contributors = [
+          for (final entry in rawContributors)
+            if (entry is Map<String, dynamic>)
+              ?TrustAnchorContributor.tryFromJson(entry),
+        ];
+      }
+
       return TrustAnchor(
         networkUtcMs: json['networkUtcMs'] as int,
         uptimeMs: json['uptimeMs'] as int,
@@ -669,6 +685,7 @@ final class TrustAnchor {
         authLevel: authLevel,
         confidence: confidence,
         bootId: json['bootId'] as String?,
+        contributors: contributors,
       );
     } catch (e) {
       throw TrustedTimePersistenceException('Malformed TrustAnchor JSON: $e');
@@ -703,6 +720,18 @@ final class TrustAnchor {
   /// without a boot ID fail closed: they are treated as rebooted.
   final String? bootId;
 
+  /// Per-source telemetry for every sample that entered the consensus
+  /// this anchor was minted from — winners and losers alike.
+  ///
+  /// Purely diagnostic: nothing in the trust chain reads it. It exists
+  /// so an anchor documents *who* produced it (which servers, at what
+  /// RTT/jitter/stratum, and whether each one's interval made the
+  /// winning set), feeding source-quality refinement and the example
+  /// app's telemetry views. Empty for anchors persisted before the
+  /// field existed and for synthetic anchors (e.g. the background-sync
+  /// probe path).
+  final List<TrustAnchorContributor> contributors;
+
   /// Alias for [networkUtcMs].
   int get trustedUtcMs => networkUtcMs;
 
@@ -729,6 +758,121 @@ final class TrustAnchor {
     'authLevel': authLevel.name,
     'confidence': confidence.index,
     if (bootId != null) 'bootId': bootId,
+    if (contributors.isNotEmpty)
+      'contributors': [for (final c in contributors) c.toJson()],
+  };
+}
+
+@immutable
+/// One time source's performance in the sync cycle that minted a
+/// [TrustAnchor] — the per-server line item behind the anchor's
+/// consensus.
+///
+/// Recorded for every sample that reached the consensus engine, not
+/// just the winning set: a source whose interval was excluded from the
+/// intersection ([wonConsensus] false) is exactly the signal
+/// source-quality refinement needs. Purely diagnostic — nothing in the
+/// trust chain reads these fields.
+final class TrustAnchorContributor {
+  /// Creates a contributor record from one cycle's telemetry.
+  const TrustAnchorContributor({
+    required this.sourceId,
+    required this.groupId,
+    required this.rttMs,
+    required this.dispersionMs,
+    required this.authLevel,
+    required this.wonConsensus,
+    this.stratum,
+    this.jitterMs,
+  });
+
+  /// Deserializes a contributor, or returns null when required fields
+  /// are missing or mistyped.
+  ///
+  /// Null rather than throw: contributor telemetry is diagnostic, so a
+  /// corrupt entry must cost only itself, never the anchor it rides in
+  /// (see [TrustAnchor.fromJson]).
+  static TrustAnchorContributor? tryFromJson(Map<String, dynamic> json) {
+    final sourceId = json['sourceId'];
+    final groupId = json['groupId'];
+    final rttMs = json['rttMs'];
+    final dispersionMs = json['dispersionMs'];
+    final stratum = json['stratum'];
+    final jitterMs = json['jitterMs'];
+    if (sourceId is! String ||
+        groupId is! String ||
+        rttMs is! int ||
+        dispersionMs is! int ||
+        stratum is! int? ||
+        jitterMs is! int?) {
+      return null;
+    }
+    // authLevel shares TrustAnchor's by-name encoding; an unknown name
+    // degrades to none, matching the anchor-level policy.
+    final rawAuth = json['authLevel'];
+    final authLevel = rawAuth is String
+        ? NtsAuthLevel.values.firstWhere(
+            (v) => v.name == rawAuth,
+            orElse: () => NtsAuthLevel.none,
+          )
+        : NtsAuthLevel.none;
+    return TrustAnchorContributor(
+      sourceId: sourceId,
+      groupId: groupId,
+      rttMs: rttMs,
+      dispersionMs: dispersionMs,
+      authLevel: authLevel,
+      wonConsensus: json['wonConsensus'] == true,
+      stratum: stratum,
+      jitterMs: jitterMs,
+    );
+  }
+
+  /// Stable source identifier (e.g. `ntp:pool.ntp.org`,
+  /// `nts:time.cloudflare.com`).
+  final String sourceId;
+
+  /// Administrative group of the source in this cycle — ASN-derived
+  /// for NTP, registrable domain for NTS (see ADR 0007).
+  final String groupId;
+
+  /// Network delay δ of the winning burst attempt, in milliseconds —
+  /// peer delay when the clock-filter fields were available, else the
+  /// whole round trip (the same value as [TimeSample.delayMs]).
+  final int rttMs;
+
+  /// Server-side error budget E = rootDelay/2 + rootDispersion, in
+  /// milliseconds (the same value as [TimeSample.dispersionMs]).
+  final int dispersionMs;
+
+  /// Authentication level of the sample this source contributed.
+  final NtsAuthLevel authLevel;
+
+  /// Whether this source's interval was part of the winning
+  /// intersection the anchor's UTC was derived from. False means the
+  /// source answered but its interval fell outside the consensus.
+  final bool wonConsensus;
+
+  /// NTP stratum the server reported (1–15), or null when the source
+  /// surfaces none.
+  final int? stratum;
+
+  /// In-cycle burst jitter (max − min network delay across the burst's
+  /// successful attempts), in milliseconds; null when the burst had
+  /// fewer than two successes or the source has no burst concept.
+  final int? jitterMs;
+
+  /// Serializes this contributor for storage inside
+  /// [TrustAnchor.toJson].
+  Map<String, dynamic> toJson() => {
+    'sourceId': sourceId,
+    'groupId': groupId,
+    'rttMs': rttMs,
+    'dispersionMs': dispersionMs,
+    'authLevel': authLevel.name,
+    'wonConsensus': wonConsensus,
+    if (stratum != null) 'stratum': stratum,
+    if (jitterMs != null) 'jitterMs': jitterMs,
   };
 }
 

@@ -412,4 +412,55 @@ void main() {
       expect(anchor.bootId, isNull);
     });
   });
+
+  group('SyncEngine anchor contributor telemetry', () {
+    // Every collected sample must yield one contributor record —
+    // winners and losers alike — because the excluded sources are
+    // exactly the signal source-quality refinement needs. Telemetry
+    // is diagnostic: its absence or shape must never affect the
+    // trust fields, which the other groups already pin down.
+    test('sync() records winners and losers with wonConsensus '
+        'attribution', () async {
+      final observer = _RecordingObserver();
+      final engine = _engineFor([
+        _TierSource(id: 'ntp:in1', groupId: 'g1', startMs: 1000, endMs: 1020),
+        _TierSource(id: 'ntp:in2', groupId: 'g2', startMs: 1005, endMs: 1025),
+        // Disjoint interval: answers, but loses the intersection.
+        _TierSource(id: 'ntp:out', groupId: 'g3', startMs: 1100, endMs: 1120),
+      ], observer: observer);
+
+      final anchor = await engine.sync();
+
+      expect(anchor.contributors, hasLength(3));
+      final byId = {for (final c in anchor.contributors) c.sourceId: c};
+      expect(byId['ntp:in1']!.wonConsensus, isTrue);
+      expect(byId['ntp:in2']!.wonConsensus, isTrue);
+      expect(byId['ntp:out']!.wonConsensus, isFalse);
+      // _TierSource samples carry no measured delay: rtt falls back to
+      // the interval width (2 × uncertainty = 20ms here).
+      expect(byId['ntp:in1']!.rttMs, 20);
+      expect(byId['ntp:in1']!.groupId, 'g1');
+      expect(byId['ntp:in1']!.authLevel, NtsAuthLevel.none);
+      // No stratum/jitter concept on these fixtures.
+      expect(byId['ntp:in1']!.stratum, isNull);
+      expect(byId['ntp:in1']!.jitterMs, isNull);
+    });
+
+    test('a failed source produces no contributor record', () async {
+      final observer = _RecordingObserver();
+      final engine = _engineFor([
+        _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+        _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+        _FailingNtsSource(),
+      ], observer: observer);
+
+      final anchor = await engine.sync();
+
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('nts:fail')),
+      );
+      expect(anchor.contributors, hasLength(2));
+    });
+  });
 }

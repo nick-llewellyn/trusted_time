@@ -347,6 +347,51 @@ void main() {
       expect(sample.delayMs, 47);
     });
 
+    test('winner carries the burst delay spread as jitterMs and its '
+        'own stratum', () async {
+      // RTTs 80/20/55ms → winner δ=20ms, spread 60ms. Stratum rides
+      // per-attempt so the winner's own value (not the last seen) is
+      // the one surfaced.
+      final rtts = <int>[80000, 20000, 55000];
+      var call = 0;
+      final source = NtsSource(
+        'test.example',
+        burstCount: 3,
+        debugQueryOverride: () async {
+          final attempt = call++;
+          return rawSample(
+            roundTripMicros: rtts[attempt],
+            serverStratum: attempt + 1,
+          );
+        },
+      );
+
+      final sample = await source.getTime();
+      expect(sample.delayMs, 20);
+      expect(sample.jitterMs, 60);
+      expect(sample.stratum, 2);
+    });
+
+    test('single-success burst leaves jitterMs null', () async {
+      // Two attempts, one lands: a spread needs two observations, so
+      // jitter stays null rather than reporting a misleading 0.
+      var call = 0;
+      final source = NtsSource(
+        'test.example',
+        burstCount: 2,
+        debugQueryOverride: () async {
+          if (call++ == 0) {
+            throw const nts.NtsError.timeout(phase: nts.TimeoutPhase.ntp);
+          }
+          return rawSample(roundTripMicros: 47000);
+        },
+      );
+
+      final sample = await source.getTime();
+      expect(sample.jitterMs, isNull);
+      expect(sample.stratum, 2);
+    });
+
     test('all-fail with a hard failure propagates the non-transient '
         'error even when transient siblings exist', () async {
       var call = 0;

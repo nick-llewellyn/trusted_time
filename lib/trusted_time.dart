@@ -76,7 +76,12 @@ export 'src/background_sync.dart'
         TrustedTimeBackgroundResult;
 export 'src/exceptions.dart';
 export 'src/models.dart'
-    show TrustedTimeConfig, TrustAnchor, ConfidenceLevel, SyncMetrics;
+    show
+        TrustedTimeConfig,
+        TrustAnchor,
+        TrustAnchorContributor,
+        ConfidenceLevel,
+        SyncMetrics;
 // TrustMode, TrustBackend, and NtsTrustStatus are part of
 // `package:nts`'s public surface and are exposed by this package's
 // API:

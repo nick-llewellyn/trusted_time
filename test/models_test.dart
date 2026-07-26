@@ -78,6 +78,120 @@ void main() {
     });
   });
 
+  group('TrustAnchor contributor telemetry', () {
+    // Contributor records are diagnostic metadata riding inside the
+    // anchor: serialization must round-trip them faithfully, but any
+    // absent or malformed entry must cost only itself — never the
+    // anchor (which is a trust reference the library must not discard
+    // over cosmetic metadata).
+
+    const full = TrustAnchorContributor(
+      sourceId: 'nts:time.example.com',
+      groupId: 'example.com',
+      rttMs: 42,
+      dispersionMs: 3,
+      authLevel: NtsAuthLevel.verified,
+      wonConsensus: true,
+      stratum: 2,
+      jitterMs: 7,
+    );
+
+    const minimal = TrustAnchorContributor(
+      sourceId: 'ntp:pool.ntp.org',
+      groupId: 'asn-unknown',
+      rttMs: 120,
+      dispersionMs: 0,
+      authLevel: NtsAuthLevel.none,
+      wonConsensus: false,
+    );
+
+    TrustAnchor anchorWith(List<TrustAnchorContributor> contributors) =>
+        TrustAnchor(
+          networkUtcMs: 1000000,
+          uptimeMs: 50000,
+          wallMs: 1000000,
+          uncertaintyMs: 10,
+          contributors: contributors,
+        );
+
+    test('contributors round-trip through toJson/fromJson', () {
+      final restored = TrustAnchor.fromJson(
+        anchorWith([full, minimal]).toJson(),
+      );
+
+      expect(restored.contributors, hasLength(2));
+      final a = restored.contributors[0];
+      expect(a.sourceId, 'nts:time.example.com');
+      expect(a.groupId, 'example.com');
+      expect(a.rttMs, 42);
+      expect(a.dispersionMs, 3);
+      expect(a.authLevel, NtsAuthLevel.verified);
+      expect(a.wonConsensus, isTrue);
+      expect(a.stratum, 2);
+      expect(a.jitterMs, 7);
+
+      final b = restored.contributors[1];
+      expect(b.sourceId, 'ntp:pool.ntp.org');
+      expect(b.authLevel, NtsAuthLevel.none);
+      expect(b.wonConsensus, isFalse);
+      // Optional telemetry absent → omitted from JSON → null on restore.
+      expect(b.stratum, isNull);
+      expect(b.jitterMs, isNull);
+    });
+
+    test('empty contributors are omitted from JSON (legacy-shape output)', () {
+      final json = anchorWith(const []).toJson();
+      expect(json.containsKey('contributors'), isFalse);
+    });
+
+    test('legacy JSON without a contributors key restores as empty', () {
+      // Anchors persisted before the field existed must keep loading.
+      final json = {
+        'networkUtcMs': 1000000,
+        'uptimeMs': 50000,
+        'wallMs': 1000000,
+        'uncertaintyMs': 10,
+        'authLevel': 'verified',
+        'confidence': 1,
+      };
+
+      final anchor = TrustAnchor.fromJson(json);
+      expect(anchor.contributors, isEmpty);
+      expect(anchor.authLevel, NtsAuthLevel.verified);
+    });
+
+    test('malformed contributor entries are dropped, not fatal', () {
+      final json = anchorWith([full]).toJson();
+      // Corrupt the list in-place: a mistyped entry, a non-map entry,
+      // and one valid record.
+      json['contributors'] = [
+        {'sourceId': 42, 'groupId': 'x', 'rttMs': 'fast'},
+        'not-a-map',
+        full.toJson(),
+      ];
+
+      final anchor = TrustAnchor.fromJson(json);
+      expect(anchor.contributors, hasLength(1));
+      expect(anchor.contributors.single.sourceId, 'nts:time.example.com');
+    });
+
+    test('unknown contributor authLevel degrades to none', () {
+      final entry = full.toJson()..['authLevel'] = 'quantum';
+      final anchor = TrustAnchor.fromJson(
+        anchorWith(const []).toJson()..['contributors'] = [entry],
+      );
+      expect(anchor.contributors.single.authLevel, NtsAuthLevel.none);
+    });
+
+    test('contributors is not part of the trust surface', () {
+      // A wholly corrupt contributors value must not fail the anchor.
+      final json = anchorWith(const []).toJson()..['contributors'] = 'garbage';
+      final anchor = TrustAnchor.fromJson(json);
+      expect(anchor.contributors, isEmpty);
+      expect(anchor.networkUtcMs, 1000000);
+    });
+  });
+
   group('TrustedTimeConfig trust policy', () {
     test('defaults resolve to bundledOnly (security-by-default flip)', () {
       // The headline security posture: a consumer who never reasons

@@ -312,10 +312,26 @@ final class NtpSource implements TimeSource {
     // burst-and-pick-min strategy the NTS path uses). Ties keep the
     // earliest attempt.
     var winner = successes.first;
+    var minDelayMicros = winner.raw.delayMicros;
+    var maxDelayMicros = winner.raw.delayMicros;
     for (final s in successes.skip(1)) {
-      if (s.raw.delayMicros < winner.raw.delayMicros) winner = s;
+      final d = s.raw.delayMicros;
+      if (d < minDelayMicros) {
+        minDelayMicros = d;
+        winner = s;
+      }
+      if (d > maxDelayMicros) maxDelayMicros = d;
     }
     _onStratumObserved?.call(winner.raw.stratum);
+
+    // In-cycle burst jitter: the spread (max − min) of the
+    // per-attempt network delays δ — the same key the reduction above
+    // selects on. A spread needs at least two observations;
+    // single-success bursts leave jitter null rather than reporting a
+    // misleading 0.
+    final jitterMs = successes.length < 2
+        ? null
+        : (maxDelayMicros - minDelayMicros) ~/ 1000;
 
     // Derive the group only *after* the timed exchanges. The first
     // ASN lookup synchronously gunzips and parses the bundled table
@@ -325,7 +341,7 @@ final class NtpSource implements TimeSource {
     // path is free.
     final group = await _groupIdFor(addr);
 
-    return _toTimeSample(winner.raw, winner.receivedAtMs, group);
+    return _toTimeSample(winner.raw, winner.receivedAtMs, group, jitterMs);
   }
 
   /// Converts one successful exchange into the [TimeSample] shape the
@@ -345,6 +361,7 @@ final class NtpSource implements TimeSource {
     NtpExchangeResult result,
     int receivedAtMs,
     String group,
+    int? jitterMs,
   ) {
     final timestampMs =
         (result.destinationUtcMicros + result.offsetMicros) ~/ 1000;
@@ -371,6 +388,10 @@ final class NtpSource implements TimeSource {
       // received at different points in the cycle before Marzullo
       // intersection.
       receivedAtMs: receivedAtMs,
+      // Per-burst telemetry for contributor records: the winning
+      // exchange's server stratum and the burst's delay spread.
+      stratum: result.stratum,
+      jitterMs: jitterMs,
     );
   }
 }

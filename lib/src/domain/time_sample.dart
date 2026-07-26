@@ -17,11 +17,17 @@ final class TimeSample {
     this.delayMs,
     this.dispersionMs = 0,
     this.receivedAtMs,
+    this.jitterMs,
+    this.stratum,
   }) : assert(
          delayMs == null || delayMs >= 0,
          'delayMs (δ) must be non-negative',
        ),
-       assert(dispersionMs >= 0, 'dispersionMs (E) must be non-negative');
+       assert(dispersionMs >= 0, 'dispersionMs (E) must be non-negative'),
+       assert(
+         jitterMs == null || jitterMs >= 0,
+         'jitterMs must be non-negative',
+       );
 
   /// The mathematical time interval.
   final TimeInterval interval;
@@ -111,6 +117,24 @@ final class TimeSample {
   /// consumed unshifted, preserving pre-existing behaviour.
   final int? receivedAtMs;
 
+  /// In-cycle burst jitter for this sample, in milliseconds — the
+  /// spread (max − min) of the per-attempt network delays observed
+  /// within the single query burst that produced this sample.
+  ///
+  /// A tight spread means the successive probes saw a consistent path;
+  /// a wide spread flags transient queueing or an unstable route even
+  /// when the winning attempt's [delayMs] looks good. Null when the
+  /// burst dispatched fewer than two successful attempts (a spread
+  /// needs at least two observations) or the source has no burst
+  /// concept (web NTP, custom sources, legacy fixtures).
+  final int? jitterMs;
+
+  /// NTP stratum reported by the server on the exchange that produced
+  /// this sample (1 = primary reference, 2–15 = secondary), or null
+  /// when the source does not surface one (custom sources, legacy
+  /// fixtures).
+  final int? stratum;
+
   static MonotonicReader? _receiptReader;
   static int _receiptOriginMicros = 0;
 
@@ -185,6 +209,8 @@ final class TimeSample {
       delayMs: delayMs,
       dispersionMs: dispersionMs,
       receivedAtMs: refMs,
+      jitterMs: jitterMs,
+      stratum: stratum,
     );
   }
 
