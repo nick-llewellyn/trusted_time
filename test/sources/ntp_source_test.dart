@@ -485,6 +485,60 @@ void main() {
       await source.getTime();
       expect(observed, [1]);
     });
+
+    test('sample carries the winner\'s stratum and the burst delay '
+        'spread as jitter', () async {
+      // Delays 50/20/80 ms → winner δ=20ms stratum 1, spread 60ms.
+      final results = [
+        okResult(delayMicros: 50000, stratum: 3),
+        okResult(delayMicros: 20000, stratum: 1),
+        okResult(delayMicros: 80000, stratum: 4),
+      ];
+      var call = 0;
+      final source = burstSource(
+        burstCount: 3,
+        exchange: (address, {timeout = Duration.zero}) async => results[call++],
+      );
+
+      final sample = await source.getTime();
+      expect(sample.stratum, 1);
+      expect(sample.jitterMs, 60);
+    });
+
+    test('jitter matches the spread of the truncated per-attempt delayMs '
+        'values', () async {
+      // Delays 20.9ms and 80.1ms truncate to delayMs 20 and 80, so the
+      // reported jitter must be 60 — not the 59 that truncating the µs
+      // difference (80100 − 20900 = 59200µs) would produce. Jitter and
+      // delayMs must describe the same ms-scale metric.
+      final results = [
+        okResult(delayMicros: 20900, stratum: 2),
+        okResult(delayMicros: 80100, stratum: 3),
+      ];
+      var call = 0;
+      final source = burstSource(
+        burstCount: 2,
+        exchange: (address, {timeout = Duration.zero}) async => results[call++],
+      );
+
+      final sample = await source.getTime();
+      expect(sample.delayMs, 20);
+      expect(sample.jitterMs, 60);
+    });
+
+    test('a single-success burst has null jitter, not zero', () async {
+      // One observation has no spread; reporting 0 would fake a
+      // perfectly stable path.
+      final source = burstSource(
+        burstCount: 1,
+        exchange: (address, {timeout = Duration.zero}) async =>
+            okResult(delayMicros: 20000, stratum: 2),
+      );
+
+      final sample = await source.getTime();
+      expect(sample.jitterMs, isNull);
+      expect(sample.stratum, 2);
+    });
   });
 
   group('NtpSource interval shaping', () {

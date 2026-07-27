@@ -931,7 +931,7 @@ final class SyncEngine {
     guard.inFlight = true;
 
     try {
-      final anchor = await _createAnchor(result);
+      final anchor = await _createAnchor(result, samples);
       // Defensive re-check after the await: no public path currently
       // completes [completer] while [_createAnchor] is in-flight (the
       // no-quorum branch of [_finalizeSync] is unreachable once
@@ -1096,7 +1096,10 @@ final class SyncEngine {
     }
   }
 
-  Future<TrustAnchor> _createAnchor(ConsensusResult result) async {
+  Future<TrustAnchor> _createAnchor(
+    ConsensusResult result,
+    List<TimeSample> samples,
+  ) async {
     // Anchor selection validates that consensus has participant samples.
     // This prevents outliers from corrupting the monotonic clock reference.
     final participantSamples = result.participants;
@@ -1162,6 +1165,30 @@ final class SyncEngine {
       }
     }
 
+    // Contributor telemetry: one record per collected sample —
+    // winners and losers alike — so the anchor documents who produced
+    // it and how each source performed. Built from the raw (pre-
+    // normalization) population handed to _completeSync, so rttMs is
+    // the delay actually measured; wonConsensus is attributed by
+    // sourceId against the winning set. Samples without a measured
+    // delay (custom sources, legacy fixtures) fall back to the
+    // interval width (2 × uncertainty ≈ RTT), mirroring the reducer's
+    // key so the recorded value stays in delay units.
+    final participantIds = result.participants.map((s) => s.sourceId).toSet();
+    final contributors = [
+      for (final s in samples)
+        TrustAnchorContributor(
+          sourceId: s.sourceId,
+          groupId: s.groupId,
+          rttMs: s.delayMs ?? 2 * s.uncertaintyMs,
+          dispersionMs: s.dispersionMs,
+          authLevel: s.authLevel,
+          wonConsensus: participantIds.contains(s.sourceId),
+          stratum: s.stratum,
+          jitterMs: s.jitterMs,
+        ),
+    ];
+
     return TrustAnchor(
       networkUtcMs: result.utc.millisecondsSinceEpoch,
       uptimeMs: uptimeMs - ageMs,
@@ -1170,6 +1197,7 @@ final class SyncEngine {
       authLevel: result.authLevel,
       confidence: result.confidence,
       bootId: bootId,
+      contributors: contributors,
     );
   }
 

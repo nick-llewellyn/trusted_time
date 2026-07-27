@@ -544,7 +544,46 @@ final class NtsSource implements TimeSource, Warmable {
     if (winnerIndex >= 0) {
       _onStratumObserved?.call(successes[winnerIndex].raw.serverStratum);
     }
-    return winner;
+
+    // In-cycle burst jitter: the spread (max − min) of the per-attempt
+    // network delays — the same [TimeSample.delayMs] key the reducer
+    // selects on, so the spread and the winner describe one metric. A
+    // spread needs at least two observations; single-success bursts
+    // leave jitter null rather than reporting a misleading 0. Attached
+    // as a copy after the identity lookup above so the reducer
+    // contract (winner must be an input instance) is preserved.
+    final jitterMs = _burstJitterMs(samples);
+    if (jitterMs == null) return winner;
+    return TimeSample(
+      interval: winner.interval,
+      sourceId: winner.sourceId,
+      groupId: winner.groupId,
+      authLevel: winner.authLevel,
+      trustBackend: winner.trustBackend,
+      delayMs: winner.delayMs,
+      dispersionMs: winner.dispersionMs,
+      receivedAtMs: winner.receivedAtMs,
+      stratum: winner.stratum,
+      jitterMs: jitterMs,
+    );
+  }
+
+  /// Spread (max − min) of [TimeSample.delayMs] across the burst's
+  /// successful attempts, or null when fewer than two attempts carry a
+  /// measured delay.
+  static int? _burstJitterMs(List<TimeSample> samples) {
+    int? minDelay;
+    int? maxDelay;
+    var measured = 0;
+    for (final s in samples) {
+      final d = s.delayMs;
+      if (d == null) continue;
+      measured++;
+      if (minDelay == null || d < minDelay) minDelay = d;
+      if (maxDelay == null || d > maxDelay) maxDelay = d;
+    }
+    if (measured < 2) return null;
+    return maxDelay! - minDelay!;
   }
 
   /// Converts one successful raw query result into the [TimeSample]
@@ -625,6 +664,11 @@ final class NtsSource implements TimeSource, Warmable {
       // on Android, the per-chain hybrid-fallback path). See
       // [TimeSample.trustBackend] for the semantics of each value.
       trustBackend: result.trustBackend,
+      // Each attempt's sample carries its own server-reported stratum
+      // so the reducer's winner is self-describing for contributor
+      // telemetry (the quality tracker still gets its single
+      // observation via [_onStratumObserved] above).
+      stratum: result.serverStratum,
     );
   }
 
