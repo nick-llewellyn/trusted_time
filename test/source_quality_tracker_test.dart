@@ -294,6 +294,24 @@ void main() {
         expect(snap, isNot(contains('stale')));
       });
 
+      test('restore clamps future-dated timestamps so they age out '
+          'normally', () {
+        // Recorded while the wall clock was a day ahead, then corrected:
+        // unclamped, the entry would outrank genuinely recent sources in
+        // snapshot() ordering and dodge the staleness cutoff forever.
+        const dayMs = 24 * 60 * 60 * 1000;
+        final now = DateTime.utc(2026, 7, 1).millisecondsSinceEpoch;
+        final tracker = SourceQualityTracker(wallClock: () => now)
+          ..restore({
+            'future': SourceQualityStats(
+              ewmaRttMs: 10,
+              successRate: 1.0,
+              lastProbedUtcMs: now + dayMs,
+            ),
+          });
+        expect(tracker.snapshot()['future']!.lastProbedUtcMs, equals(now));
+      });
+
       test('snapshot prunes to the most recently probed sources', () {
         var wall = 0;
         final busy = SourceQualityTracker(wallClock: () => wall);

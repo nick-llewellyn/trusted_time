@@ -254,6 +254,13 @@ final class SourceQualityTracker {
   /// Restored entries replace any accumulated stats for the same source;
   /// call this on engine construction, before the first cycle. The
   /// process-local observation history and cycle counters are unaffected.
+  ///
+  /// A future-dated `lastProbedUtcMs` (recorded while the wall clock was
+  /// ahead, then corrected) is clamped to now: left unclamped it would
+  /// dominate the recency ordering in [snapshot] indefinitely and dodge
+  /// the staleness cutoff forever. In-process recording always stamps
+  /// from the current clock, so restore is the only entry point for
+  /// future values.
   void restore(Map<String, SourceQualityStats> stats) {
     final now = _wallClock();
     stats.forEach((id, s) {
@@ -262,7 +269,7 @@ final class SourceQualityTracker {
         ..ewmaRttMs = s.ewmaRttMs
         ..ewmaJitterMs = s.ewmaJitterMs
         ..successRate = s.successRate.clamp(0.0, 1.0)
-        ..lastProbedUtcMs = s.lastProbedUtcMs;
+        ..lastProbedUtcMs = s.lastProbedUtcMs > now ? now : s.lastProbedUtcMs;
       final stratum = s.stratum;
       if (stratum != null) setStratum(id, stratum);
     });
