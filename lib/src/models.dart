@@ -840,7 +840,10 @@ final class TrustAnchorContributor {
 
   /// Network delay δ of the winning burst attempt, in milliseconds —
   /// peer delay when the clock-filter fields were available, else the
-  /// whole round trip (the same value as [TimeSample.delayMs]).
+  /// whole round trip ([TimeSample.delayMs]). When the sample carried
+  /// no measured delay (custom sources, legacy fixtures), this is
+  /// `2 × uncertaintyMs` (≈ RTT) instead — the same fallback key the
+  /// burst reduction selects on.
   final int rttMs;
 
   /// Server-side error budget E = rootDelay/2 + rootDispersion, in
