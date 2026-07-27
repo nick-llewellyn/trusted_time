@@ -435,6 +435,10 @@ final class TrustedTimeImpl {
       // history (dedup against the persisted latest pair), not on an
       // empty recorder that would double-count it.
       _driftHistory.restore(await _store.loadDriftHistory());
+      // Seed the engine's source-quality tracker before any sync cycle
+      // runs, so the very first cycle already ranks servers on the
+      // accumulated RTT/success history instead of starting blind.
+      _syncEngine.restoreSourceStats(await _store.loadSourceStats());
     }
 
     // The persisted-anchor restore check runs before any network-bound

@@ -64,6 +64,10 @@ void main() {
         saved!.networkUtcMs,
         closeTo(consensusUtc.millisecondsSinceEpoch, 100),
       );
+      // The banked cycle also persists per-source quality stats so the
+      // next run ranks servers on accumulated history.
+      final stats = await store.loadSourceStats();
+      expect(stats.keys, containsAll(['fake-a', 'fake-b']));
     });
 
     test('returns failure when quorum is not reached', () async {
@@ -109,6 +113,7 @@ void main() {
       );
       expect(result, isA<BackgroundSyncSuccess>());
       expect(await store.load(), isNull);
+      expect(await store.loadSourceStats(), isEmpty);
     });
 
     test(

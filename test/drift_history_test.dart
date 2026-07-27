@@ -1,8 +1,14 @@
+import 'dart:convert';
+
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
 import 'package:trusted_time/src/drift_history.dart';
+import 'package:trusted_time/src/source_quality_tracker.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('DriftBootRecord', () {
     test('observedDriftRate is signed (dUptime - dNet) / dNet', () {
       // Uptime advanced 3_600_360 ms while network UTC advanced
@@ -233,6 +239,99 @@ void main() {
 
       await storage.clear();
       expect(await storage.loadDriftHistory(), isEmpty);
+    });
+  });
+
+  group('InMemoryAnchorStorage source stats', () {
+    test('round-trips stats and clears with clear()', () async {
+      final storage = InMemoryAnchorStorage();
+      expect(await storage.loadSourceStats(), isEmpty);
+
+      const stats = {
+        'ntp:pool.ntp.org': SourceQualityStats(
+          ewmaRttMs: 42.5,
+          ewmaJitterMs: 3.0,
+          successRate: 0.9,
+          lastProbedUtcMs: 1700000000000,
+          stratum: 2,
+        ),
+      };
+      await storage.saveSourceStats(stats);
+      final loaded = await storage.loadSourceStats();
+      expect(loaded.keys, equals(stats.keys));
+      expect(loaded['ntp:pool.ntp.org']!.ewmaRttMs, equals(42.5));
+
+      await storage.clear();
+      expect(await storage.loadSourceStats(), isEmpty);
+    });
+  });
+
+  group('AnchorStore source stats (mocked secure storage)', () {
+    const storageChannel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
+    // Match the AnchorStore stats key by stable prefix rather than the
+    // exact versioned literal (currently tt_source_stats_v1) so a key
+    // version bump does not silently break these tests. No other store
+    // key shares the tt_source_stats_ prefix.
+    const statsKeyPrefix = 'tt_source_stats_';
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, null);
+    });
+
+    test('loadSourceStats decodes stored JSON and skips malformed '
+        'entries', () async {
+      final payload = jsonEncode({
+        'ntp:good': {
+          'ewmaRttMs': 42.5,
+          'ewmaJitterMs': 3.0,
+          'successRate': 0.9,
+          'lastProbedUtcMs': 1700000000000,
+          'stratum': 2,
+        },
+        // Malformed: successRate is not a number, so fromJson returns
+        // null and the entry must be skipped without discarding the
+        // rest of the map.
+        'ntp:bad': {'successRate': 'corrupt', 'lastProbedUtcMs': 1},
+      });
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            if (call.method == 'read') {
+              final key = (call.arguments as Map)['key'] as String?;
+              if (key?.startsWith(statsKeyPrefix) ?? false) return payload;
+            }
+            return null;
+          });
+
+      final loaded = await AnchorStore().loadSourceStats();
+
+      expect(loaded.keys, ['ntp:good']);
+      final stats = loaded['ntp:good']!;
+      expect(stats.ewmaRttMs, 42.5);
+      expect(stats.ewmaJitterMs, 3.0);
+      expect(stats.successRate, 0.9);
+      expect(stats.lastProbedUtcMs, 1700000000000);
+      expect(stats.stratum, 2);
+    });
+
+    test('clear() deletes the persisted source stats', () async {
+      final deletedKeys = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            if (call.method == 'delete') {
+              deletedKeys.add((call.arguments as Map)['key'] as String);
+            }
+            return null;
+          });
+
+      await AnchorStore().clear();
+
+      expect(
+        deletedKeys.where((k) => k.startsWith(statsKeyPrefix)),
+        hasLength(1),
+      );
     });
   });
 }

@@ -5,6 +5,7 @@ import 'models.dart';
 import 'infra/trusted_time_log.dart';
 import 'monotonic_clock.dart';
 import 'nts_bootstrap.dart';
+import 'source_quality_tracker.dart';
 import 'sync_cycle.dart';
 import 'sync_engine.dart';
 
@@ -287,6 +288,14 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
       ? await ensureNtsRuntime(config)
       : await ensureNtsRuntime(config, init: ntsInit);
 
+  // Load the persisted per-source quality stats once for the run: each
+  // fresh per-attempt engine below is seeded with them so even a
+  // headless cycle ranks servers on accumulated RTT/success history
+  // instead of starting blind. persistState-gated like the anchor.
+  final persistedStats = effectiveConfig.persistState
+      ? await anchorStore.loadSourceStats()
+      : const <String, SourceQualityStats>{};
+
   final maxAttempts = delays.length + 1;
   Object? lastError;
   var lastErrorRetryable = true;
@@ -294,7 +303,8 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
     // Fresh engine per attempt: a failed cycle arms per-source exponential
     // cooldowns (>= 2 min) inside the engine, so reusing it would make the
     // next attempt throw "all sources in cooldown" without any network I/O.
-    final engine = SyncEngine(config: effectiveConfig, clock: monotonicClock);
+    final engine = SyncEngine(config: effectiveConfig, clock: monotonicClock)
+      ..restoreSourceStats(persistedStats);
     try {
       // Shared query-and-bank unit (sync + persistState-gated save) —
       // the same cycle the foreground engine runs, so a headless anchor
