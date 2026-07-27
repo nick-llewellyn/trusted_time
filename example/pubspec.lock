@@ -347,10 +347,10 @@ packages:
     dependency: "direct main"
     description:
       name: nts
-      sha256: "46487ac5dee104f9eb168d40708bbd96f0c68a8d455e7559e9f379d72c2d3034"
+      sha256: b2157070baa916abbbfd665baf2f6250f6b5cb57733f897b1a739f5f0e362d7a
       url: "https://pub.dev"
     source: hosted
-    version: "7.1.0"
+    version: "8.0.0"
   objective_c:
     dependency: transitive
     description:
