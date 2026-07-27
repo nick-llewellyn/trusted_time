@@ -34,12 +34,27 @@ bool isTransientSyncError(Object error) =>
 /// unchanged; callers classify them with [isTransientSyncError]. A save
 /// failure therefore surfaces *before* the anchor is applied to any
 /// in-memory state, keeping "banked" an all-or-nothing outcome.
+///
+/// After a successfully banked anchor, the engine's per-source quality
+/// stats are also persisted (same [TrustedTimeConfig.persistState] gate)
+/// so the next process start ranks servers on accumulated RTT/success
+/// history instead of starting blind. That write is best-effort: stats
+/// are a ranking optimization, so a storage failure there costs one
+/// snapshot, never a successfully banked cycle.
 Future<TrustAnchor> performSyncCycle({
   required SyncEngine engine,
   required AnchorStorage store,
   required TrustedTimeConfig config,
 }) async {
   final anchor = await engine.sync();
-  if (config.persistState) await store.save(anchor);
+  if (config.persistState) {
+    await store.save(anchor);
+    try {
+      await store.saveSourceStats(engine.sourceStatsSnapshot());
+    } catch (_) {
+      // Best-effort: the anchor is already banked; losing one stats
+      // snapshot only delays ranking refinement by a cycle.
+    }
+  }
   return anchor;
 }

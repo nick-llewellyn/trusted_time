@@ -196,6 +196,16 @@ final class SyncEngine {
   /// observations; defaults to a fresh instance in production.
   final SourceQualityTracker _qualityTracker;
 
+  /// Seeds the quality tracker's durable stats from a persisted
+  /// snapshot. Call before the first [sync] so the first cycle already
+  /// ranks on RTT/success history instead of starting blind.
+  void restoreSourceStats(Map<String, SourceQualityStats> stats) =>
+      _qualityTracker.restore(stats);
+
+  /// Returns the quality tracker's durable stats for persistence.
+  Map<String, SourceQualityStats> sourceStatsSnapshot() =>
+      _qualityTracker.snapshot();
+
   int _syncAttempts = 0;
 
   /// Plausibility floor for the pre-sync rescue's coarse estimate.
@@ -1022,6 +1032,8 @@ final class SyncEngine {
           sourceId: sample.sourceId,
           uncertaintyMs: sample.uncertaintyMs,
           participatedInConsensus: participantIds.contains(sample.sourceId),
+          delayMs: sample.delayMs,
+          jitterMs: sample.jitterMs,
         );
       }
 

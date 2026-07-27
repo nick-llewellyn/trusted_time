@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
 import 'package:trusted_time/src/drift_history.dart';
+import 'package:trusted_time/src/source_quality_tracker.dart';
 
 void main() {
   group('DriftBootRecord', () {
@@ -233,6 +234,30 @@ void main() {
 
       await storage.clear();
       expect(await storage.loadDriftHistory(), isEmpty);
+    });
+  });
+
+  group('InMemoryAnchorStorage source stats', () {
+    test('round-trips stats and clears with clear()', () async {
+      final storage = InMemoryAnchorStorage();
+      expect(await storage.loadSourceStats(), isEmpty);
+
+      const stats = {
+        'ntp:pool.ntp.org': SourceQualityStats(
+          ewmaRttMs: 42.5,
+          ewmaJitterMs: 3.0,
+          successRate: 0.9,
+          lastProbedUtcMs: 1700000000000,
+          stratum: 2,
+        ),
+      };
+      await storage.saveSourceStats(stats);
+      final loaded = await storage.loadSourceStats();
+      expect(loaded.keys, equals(stats.keys));
+      expect(loaded['ntp:pool.ntp.org']!.ewmaRttMs, equals(42.5));
+
+      await storage.clear();
+      expect(await storage.loadSourceStats(), isEmpty);
     });
   });
 }

@@ -226,6 +226,25 @@
 
 ### Added
 
+- **Durable per-source quality stats** (`SourceQualityTracker`): the
+  smoothed source metrics — EWMA RTT (from measured `TimeSample.delayMs`),
+  EWMA in-cycle burst jitter, EWMA success rate, last-probed timestamp,
+  and stratum — now survive process death. They are persisted through
+  `AnchorStorage` (new `loadSourceStats`/`saveSourceStats`, secure-storage
+  key `tt_source_stats_v1`), saved after every successfully banked cycle
+  and restored on engine start (both foreground `initialize()` and the
+  headless background worker), all gated on `persistState` like the
+  anchor. A background cycle therefore ranks servers on accumulated
+  RTT/success history instead of starting blind. RTT is the proximity
+  signal proper — it stays honest through VPNs, travel, and CGNAT where
+  geography lies. Scoring now weighs measured RTT (30%), consensus
+  participation (25%), success rate (25%), burst jitter (10%), and
+  stratum (10%); a probe timeout decays a source's success rate —
+  penalizing and deferring it — but never permanently drops it, so one
+  lost UDP packet on a lossy link cannot blacklist a good server.
+  Persisted stats are pruned to the 32 most recently probed sources and
+  entries older than 30 days are discarded on restore.
+
 - **Sleep-aware projection is now observable and enforceable.** The
   suspend-frozen `Stopwatch` fallback (below) was previously silent: a
   bridge-less config could not tell which timeline projection rode.
