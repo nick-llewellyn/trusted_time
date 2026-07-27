@@ -33,6 +33,9 @@ class _BackgroundSyncLogPanelState extends State<BackgroundSyncLogPanel> {
   }
 
   Future<void> _reload() async {
+    // _clear() reaches this after an await, so the widget may already be
+    // gone by the time the reload it chains actually starts.
+    if (!mounted) return;
     setState(() => _loading = true);
     final path = await BackgroundSyncFileLog.resolvePath();
     final lines = await BackgroundSyncFileLog.readLatest();
