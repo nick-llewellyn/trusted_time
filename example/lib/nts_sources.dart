@@ -1,9 +1,11 @@
 /// Worldwide NTS server pool for the Beauty Parade benchmarking mode.
 ///
-/// The 52 verified hosts recorded on `trusted_time-cln`
-/// (2026-07-25): every host below completed a full live NTS-KE +
-/// AEAD-NTPv4 exchange (AES-SIV-CMAC-256) during the re-verification
-/// probe, and every host follows the leap-second stepping policy.
+/// 57 verified hosts: the 52 recorded on `trusted_time-cln`
+/// (2026-07-25) plus 5 admitted by the `trusted_time-2tx`
+/// geographic-gap sweep (2026-07-27). Every host below completed a
+/// full live NTS-KE + AEAD-NTPv4 exchange (AES-SIV-CMAC-256) during
+/// its verification probe, and every host follows the leap-second
+/// stepping policy.
 /// Unverified, dropped (`time.txryan.com`), and demoted-undecided
 /// (`ntp8.rdem-systems.com`) entries from the previous 81-host
 /// vendored list are excluded. Ordered by the ticket's tiers:
@@ -15,6 +17,26 @@
 /// was re-probed live on 2026-07-26 (full NTS-KE + AEAD-NTPv4
 /// exchange, stratum 1) and is included here.
 ///
+/// Geographic-gap sweep (`trusted_time-2tx`, 2026-07-27, UK vantage)
+/// added five hosts, each passing >= 3 consecutive live exchanges:
+/// `any.time.nl` (SIDN TimeNL BGP anycast, S2, documented no-smear —
+/// a third anycast administrative group alongside Cloudflare and
+/// Netnod), `nts.time.nl` (S1, NL), `time.dfm.dk` (S1, DK national
+/// metrology, serves UTC(DFM)), `mirror.mdapi.ch` (S1, CH), and
+/// `stratum1.time.cifelli.xyz` (S1, US). No admissible unicast host
+/// exists in Oceania, Africa, the Middle East, or Asia beyond the
+/// NEU pair: the sole APAC NTS candidate (`ntpmon.dcs1.biz`, SG)
+/// refuses connections, the ntp.br S1 fleet either times out or
+/// violates RFC 8915 §4.1.5 (AEAD record without Critical bit — same
+/// violation as ntp3.fau.de, ntp01.maillink.ch, ntp1.wiktel.com,
+/// time1.mbix.ca), and no gap-region national lab (NICT, KRISS,
+/// NTSC, NPL-India, CSIR-ZA) runs an NTS listener. Those regions
+/// remain anycast-only; explore/exploit selection design
+/// (`trusted_time-mvq`) must account for that. `nts.amethyst.name`
+/// verified live but is S3 unicast — excluded from the S1/S2 tiers
+/// (same precedent as `ntp8.rdem-systems.com`); `ntppool1/2.time.nl`
+/// completed NTS-KE but timed out in the NTP phase on most runs.
+///
 /// The benchmarking UI uses this pool both as the manual chip grid
 /// (operator picks arbitrary subsets) and as the source for the
 /// "Run Worldwide Beauty Parade" rotation mode (engine cycles
@@ -24,8 +46,13 @@ const List<String> extendedNtsPool = [
   // Anycast
   'time.cloudflare.com',
   'nts.netnod.se',
+  'any.time.nl',
   // Unicast — stratum 1
   'nts.teambelgium.net',
+  'nts.time.nl',
+  'time.dfm.dk',
+  'mirror.mdapi.ch',
+  'stratum1.time.cifelli.xyz',
   'ptbtime1.ptb.de',
   'ptbtime2.ptb.de',
   'ptbtime3.ptb.de',
