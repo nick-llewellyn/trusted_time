@@ -9,8 +9,9 @@ import 'package:trusted_time/src/sources/nts_auth_level.dart';
 /// A [TimeSource] whose sample interval, auth level, and trust backend are
 /// fully specified so tier classification can be exercised deterministically.
 ///
-/// A verified assessment ([TimeAssessment.isSecure] true) is only reachable
-/// by establishing a real anchor through a live sync — hence these sources.
+/// Callers drive the real engine with these rather than stubbing an
+/// assessment, because a verified assessment is only reachable by
+/// establishing a genuine anchor through a live sync.
 class TierSource implements TimeSource {
   TierSource({
     required this.id,
