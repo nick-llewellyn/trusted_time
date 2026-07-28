@@ -134,8 +134,24 @@ class BenchmarkController extends ChangeNotifier {
     try {
       await _benchmarkLogger.start(_telemetry);
     } catch (_) {
-      // Logger remains disposed; UI is unaffected.
+      // Logger remains unstarted; UI is unaffected.
     }
+    // BenchmarkLogger.start awaits the documents directory before it
+    // assigns its sink, and BenchmarkLogger.dispose short-circuits on
+    // a null sink. A dispose landing inside that window therefore
+    // tears down nothing, and the file handle and recorder
+    // subscription installed afterwards outlive this controller —
+    // the subscription being the durable half, since the recorder is
+    // root-scoped. Unwind it here instead.
+    if (_disposed) {
+      unawaited(_benchmarkLogger.dispose());
+      return;
+    }
+    // The log path only becomes readable once start resolves, and no
+    // other mutation is guaranteed to follow, so announce it rather
+    // than leaving Section 7 showing "not started" until the next
+    // unrelated rebuild.
+    notifyListeners();
   }
 
   @override
