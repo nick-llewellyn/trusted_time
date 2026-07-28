@@ -3,9 +3,13 @@ import 'package:trusted_time/src/domain/time_sample.dart';
 import 'package:trusted_time/src/infra/sync_observer.dart';
 import 'package:trusted_time/src/models.dart';
 
-/// [SyncObserver] that records every callback it receives, so tests can
-/// assert on consensus results, per-source failures, reported metrics,
-/// and how many cycles started.
+/// [SyncObserver] that records consensus results, per-source failures,
+/// reported metrics, and how many cycles started.
+///
+/// `onSampleReceived` and `onSyncFailed` are deliberately dropped:
+/// per-sample capture belongs to [SampleCountingObserver], whose
+/// doc comment carries the drop-semantics caveat that makes the tally
+/// meaningful, and no caller asserts on the sync-failure callback.
 class RecordingObserver implements SyncObserver {
   final List<({String sourceId, Object error})> sourceFailures = [];
   final List<ConsensusResult> consensusReached = [];
