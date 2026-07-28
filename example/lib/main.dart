@@ -52,7 +52,8 @@ Future<void> main() async {
   // widget's dispose() would silence the fan-out across hot-reloads
   // and HomePage rebuilds. The custom listener registries (_listeners,
   // _cycleListeners) are disposed by their consumers (the cycle-end
-  // disposer in _HomePageState.dispose), and ChangeNotifier listeners
+  // disposer and the session logger, both torn down in
+  // BenchmarkController.dispose), and ChangeNotifier listeners
   // attached via ListenableBuilder auto-detach with their parents, so
   // the missing dispose here does not leak per-build subscriptions.
   final telemetry = TelemetryRecorder();

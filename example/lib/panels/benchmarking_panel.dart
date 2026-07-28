@@ -307,9 +307,9 @@ class _RotationStatusLine extends StatelessWidget {
     final endExclusive = offset + subsetSize;
     final wraps = endExclusive > poolSize;
     // Match the wrap-aware slice-label format used for DNS deltas
-    // (see _logSliceDnsDeltaIfAvailable in main.dart) so the
-    // operator sees the same '76-80, 0-2' shape on screen and in
-    // the session log when a slice straddles the pool boundary.
+    // (see _logSliceDnsDeltaIfAvailable in benchmark_controller.dart)
+    // so the operator sees the same '76-80, 0-2' shape on screen and
+    // in the session log when a slice straddles the pool boundary.
     final String hostsLabel;
     if (wraps) {
       final wrapEnd = endExclusive % poolSize - 1;
