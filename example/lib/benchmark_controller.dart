@@ -143,6 +143,15 @@ class BenchmarkController extends ChangeNotifier {
     _disposed = true;
     _cancelInterCycleTimer();
     _cycleEndDisposer?.call();
+    if (_continuousSyncEnabled) {
+      // Continuous mode pauses the engine's refresh timer so the
+      // inter-cycle slider is the sole scheduler (see
+      // [setContinuousSync]). Tearing down the scheduler without
+      // restoring the timer would leave the engine with nothing
+      // driving refreshes at all, so the pause is unwound here as
+      // well as on the toggle-off path.
+      TrustedTime.resumeAutomaticRefresh();
+    }
     unawaited(_benchmarkLogger.dispose());
     super.dispose();
   }

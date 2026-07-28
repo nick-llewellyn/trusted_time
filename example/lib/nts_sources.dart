@@ -116,7 +116,7 @@ const List<String> extendedNtsPool = [
 /// NTS-KE handshake (cannibalisation pattern observed across runs).
 ///
 /// Shared between `main()` (which seeds the engine's initial config)
-/// and `BenchmarkController._selectedServers` (which seeds the Section 7
+/// and `BenchmarkController.selectedServers` (which seeds the Section 7
 /// FilterChip selection) so the chips and the live engine config
 /// agree on cold launch. Note that `mmo1.nts.netnod.se` is the
 /// Malmö regional endpoint, intentionally distinct from the
