@@ -6,40 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
 
-/// A [TimeSource] with a fully specified interval, auth level, and trust
-/// backend so the tiered-trust admission path can be driven deterministically
-/// through the real engine.
-///
-/// A verified assessment ([TimeAssessment.isSecure] true) is only reachable
-/// by establishing a real anchor through a live sync — hence these sources.
-class _TierSource implements TimeSource {
-  _TierSource({
-    required this.id,
-    required this.groupId,
-    required this.startMs,
-    required this.endMs,
-    this.authLevel = NtsAuthLevel.none,
-    this.trustBackend,
-  });
-
-  @override
-  final String id;
-  @override
-  final String groupId;
-  final int startMs;
-  final int endMs;
-  final NtsAuthLevel authLevel;
-  final TrustBackend? trustBackend;
-
-  @override
-  Future<TimeSample> getTime() async => TimeSample(
-    interval: TimeInterval(startMs: startMs, endMs: endMs),
-    sourceId: id,
-    groupId: groupId,
-    authLevel: authLevel,
-    trustBackend: trustBackend,
-  );
-}
+import 'support/fake_sources.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -133,7 +100,7 @@ void main() {
         // Two verified NTS samples overlap -> a Tier 1 truth box -> the
         // anchor is verified, so the secure contract is satisfied.
         await initWith([
-          _TierSource(
+          TierSource(
             id: 'nts:v1',
             groupId: 'g1',
             startMs: 1000,
@@ -141,7 +108,7 @@ void main() {
             authLevel: NtsAuthLevel.verified,
             trustBackend: TrustBackend.webpkiRoots,
           ),
-          _TierSource(
+          TierSource(
             id: 'nts:v2',
             groupId: 'g2',
             startMs: 1005,
@@ -164,15 +131,15 @@ void main() {
       // Quorum is reached, but no sample is verified -> the anchor degrades
       // to NtsAuthLevel.none and the secure contract fails closed.
       await initWith([
-        _TierSource(
+        TierSource(
           id: 'nts:platform',
           groupId: 'g1',
           startMs: 1000,
           endMs: 1020,
           trustBackend: TrustBackend.platform,
         ),
-        _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
-        _TierSource(id: 'ntp:c', groupId: 'g3', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+        TierSource(id: 'ntp:c', groupId: 'g3', startMs: 1000, endMs: 1020),
       ]);
 
       final assessment = TrustedTime.getAssessment();
@@ -187,14 +154,14 @@ void main() {
       // None of the injected samples are verified, so the anchor stays
       // NtsAuthLevel.none and the secure gate fails closed on every cycle.
       await initWith([
-        _TierSource(
+        TierSource(
           id: 'nts:platform',
           groupId: 'g1',
           startMs: 1000,
           endMs: 1020,
           trustBackend: TrustBackend.platform,
         ),
-        _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+        TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
       ]);
 
       for (var cycle = 0; cycle < 3; cycle++) {
@@ -317,8 +284,8 @@ void main() {
         // signature over the timestamp: samples are unconditionally
         // NtsAuthLevel.none and the anchor degrades.
         await initWith([
-          _TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
-          _TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
+          TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1005, endMs: 1025),
         ]);
 
         final assessment = TrustedTime.getAssessment();
@@ -394,8 +361,8 @@ void main() {
           await initWith([
             nts1,
             nts2,
-            _TierSource(id: 'ntp:a', groupId: 'g3', startMs: 1000, endMs: 1020),
-            _TierSource(id: 'ntp:b', groupId: 'g4', startMs: 1005, endMs: 1025),
+            TierSource(id: 'ntp:a', groupId: 'g3', startMs: 1000, endMs: 1020),
+            TierSource(id: 'ntp:b', groupId: 'g4', startMs: 1005, endMs: 1025),
           ]);
           expect(TrustedTime.getAssessment().isSecure, isTrue);
 
@@ -455,7 +422,7 @@ void main() {
   });
 }
 
-/// A fixed-interval [TimeSource] (mirroring [_TierSource]'s shape, but
+/// A fixed-interval [TimeSource] (mirroring [TierSource]'s shape, but
 /// unrelated to it) whose availability can be flipped mid-test, modelling
 /// an NTS server flap: responsive during the establish cycle, unreachable
 /// on a later resync.
