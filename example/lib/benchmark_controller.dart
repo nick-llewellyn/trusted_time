@@ -217,7 +217,14 @@ class BenchmarkController extends ChangeNotifier {
   /// onCycleEnd well before [interCycleDelaySeconds]) cannot reset
   /// the rotation timer and stall it on a slice whose hosts are all
   /// failing.
+  /// The [_disposed] guard is load-bearing rather than defensive: the
+  /// recorder snapshots its cycle-end listener list before fanning
+  /// out, so a cycle that ends while we are tearing down still
+  /// delivers here after our disposer has run. Without the early
+  /// return that late delivery would emit a cycle-delay log entry and
+  /// arm a timer whose only remaining job is to bail out.
   void _scheduleNextCycle() {
+    if (_disposed) return;
     if (_worldwideRotationActive) return;
     _cancelInterCycleTimer();
     if (!_continuousSyncEnabled || _reconfiguring) return;
