@@ -41,7 +41,16 @@ TrustedTimeConfig buildStressConfig() {
 /// scheduler (Android `WorkManager` / iOS `BGAppRefreshTask`) fires the
 /// background sync. The `@pragma('vm:entry-point')` annotation is mandatory
 /// — it keeps this symbol alive through release-mode tree-shaking so the
-/// callback handle persisted in `SharedPreferences`/`UserDefaults` resolves.
+/// callback handle persisted in `SharedPreferences`/`UserDefaults` can be
+/// resolved back to a function.
+///
+/// The pragma is necessary but not sufficient. A persisted handle encodes
+/// this function's *library URI* and name, so moving or renaming it
+/// invalidates any handle an installed build already stored — see
+/// [TrustedTime.registerBackgroundCallback]. The example re-registers on
+/// every launch, which repairs a stale handle on the first foreground run
+/// after such a change; a host that registers only once must re-register
+/// after moving its entrypoint.
 @pragma('vm:entry-point')
 void trustedTimeBackgroundCallback() {
   // The host callback signature is `void Function()`, so it cannot await
