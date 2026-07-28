@@ -19,7 +19,7 @@ import 'package:path_provider/path_provider.dart';
 /// debug-only `debugPrint` on failure — visible in `logcat` while the
 /// device was tethered, gone afterwards. This log makes the background
 /// process its own source of truth: every fire appends one line here,
-/// readable in-app (see the readback panel in `main.dart`) or off-device
+/// readable in-app (see `BackgroundSyncLogPanel`) or off-device
 /// via `adb pull`, with no `logcat` capture required.
 ///
 /// **Why a per-call open/write/close rather than a long-lived [IOSink].**

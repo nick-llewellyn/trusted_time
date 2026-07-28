@@ -309,7 +309,7 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
     // listener try/catch matches the _add fan-out so a thrower
     // cannot abort delivery to its peers; cycle-end listeners are
     // wired into application-level scheduling (see Section 7's
-    // continuous-sync hook in main.dart) and a thrown exception
+    // continuous-sync hook in BenchmarkController) and a thrown exception
     // here would propagate out through the SyncObserver callback
     // that triggered the cycle-end and into engine code.
     for (final l in List<void Function()>.of(_cycleListeners)) {
