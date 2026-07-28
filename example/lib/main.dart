@@ -1,11 +1,8 @@
 import 'dart:async';
-import 'dart:math';
-import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
 import 'package:flutter/material.dart';
-import 'package:nts/nts.dart' show NtsDnsPoolStats, ntsDnsPoolStats;
 import 'package:trusted_time/trusted_time.dart';
 import 'background_entrypoint.dart';
-import 'benchmark_logger.dart';
+import 'benchmark_controller.dart';
 import 'burst/burst_probe_panel.dart';
 import 'nts_sources.dart';
 import 'panels/background_sync_log_panel.dart';
@@ -102,69 +99,11 @@ class _HomePageState extends State<HomePage> {
   Timer? _ticker;
   bool _bgSyncEnabled = false;
 
-  // Section 7 — Benchmarking Configuration state.
-  //
-  // [_selectedServers] is seeded from `TrustedTime.config.ntsServers`,
-  // i.e. the live engine configuration as it stands when the home
-  // page is constructed. Because `main()` awaits
-  // `TrustedTime.initialize(...)` before `runApp(...)`, the engine's
-  // active host set is always available by the time this field
-  // initialiser runs. This decouples the chip selection from the
-  // particular bootstrap constant (`curatedNtsPool`) so a future
-  // change to the bootstrap pool — or a runtime reconfiguration —
-  // automatically propagates to the chip state instead of silently
-  // diverging from the live engine. The chip grid itself renders the
-  // union of curated and extended pools so every host the operator
-  // might reach for is representable.
-  // [_continuousSyncEnabled] gates the cycle-end auto-resync hook,
-  // which is wired in initState via the recorder's cycle-end listener
-  // so it survives reconfiguration cycles without re-subscription.
-  final Set<String> _selectedServers = Set<String>.of(
-    TrustedTime.config.ntsServers,
-  );
-  bool _continuousSyncEnabled = false;
-  bool _reconfiguring = false;
-  // Inter-cycle delay between continuous syncs. Investigative knob for
-  // observing per-server recovery behaviour and avoiding KE-server
-  // rate-limiting during long-form runs. The 5 s default lines up with
-  // the engine's per-source cooldown granularity; 0 reproduces the
-  // previous immediate-resync behaviour.
-  int _interCycleDelaySeconds = 5;
-  Timer? _interCycleTimer;
-  VoidCallback? _cycleEndDisposer;
-  // Worldwide Beauty Parade rotation state. When [_worldwideRotationActive]
-  // is true, every cycle-end advances [_worldwideRotationOffset] by
-  // [_worldwideSubsetSize] and reconfigures the engine with the next
-  // contiguous slice of [extendedNtsPool] (wrapping at the end). The
-  // chip-driven [_selectedServers] is intentionally not touched in this
-  // mode; the chips remain the manual-mode UI, and the worldwide card's
-  // own status line is the source of truth for what the engine is
-  // currently syncing against.
-  static const int _worldwideSubsetSize = 8;
-  bool _worldwideRotationActive = false;
-  int _worldwideRotationOffset = 0;
-
-  // Per-slice DNS pool delta tracking. Snapshot is taken at the tail of
-  // every rotation reconfigure; the next advance computes deltas
-  // against this snapshot before taking a fresh one. Logged through
-  // [TelemetryRecorder.logDnsDelta] so the per-slice DNS-pool
-  // behaviour (refusals, recoveries, in-flight high-water mark)
-  // appears in the on-screen terminal and the persisted session log
-  // alongside the slice's NTS-KE / NTP outcomes. Null until the
-  // first reconfigure inside a rotation run.
-  NtsDnsPoolStats? _lastSliceDnsSnapshot;
-  int? _lastSliceDnsOffset;
-
-  // Optional manual override for the engine's unified DNS lookup
-  // budget, forwarded as TrustedTimeConfig.maxConcurrentDnsLookups on
-  // the next reconfigure (ADR 0008). Null leaves the engine on its
-  // default budget (TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups).
-  // Investigative knob for diagnosing DNS-pool starvation observed
-  // via `DnsPoolStatsBar` (rising `refused`) versus genuine
-  // server-side timeouts.
-  int? _maxConcurrentDnsLookupsOverride;
-
-  final BenchmarkLogger _benchmarkLogger = BenchmarkLogger();
+  // Section 7 — Benchmarking Configuration. All orchestration (server
+  // selection, continuous sync, worldwide rotation, engine
+  // reconfigures, session logging) lives in the controller; this state
+  // only constructs, starts, and disposes it.
+  late final BenchmarkController _benchmark;
 
   final TextEditingController _tzController = TextEditingController(
     text: 'America/New_York',
@@ -186,166 +125,25 @@ class _HomePageState extends State<HomePage> {
       });
     });
 
-    // Section 7: continuous benchmarking — schedule a forceResync at
-    // the end of every cycle, after the configurable inter-cycle
-    // delay. The recorder fires onCycleEnd from both
-    // onMetricsReported (success) and onSyncFailed (failure), so this
-    // covers every cycle outcome. The Timer (rather than a microtask)
-    // gives us a cancellation handle so toggling continuous mode off
-    // mid-delay, applying a new server selection, or disposing the
-    // widget cannot race a forceResync against a torn-down engine.
-    _cycleEndDisposer = widget.telemetry.addCycleEndListener(
-      _scheduleNextCycle,
+    _benchmark = BenchmarkController(telemetry: widget.telemetry)
+      ..onReconfigureFailure = _showReconfigureFailure
+      ..start();
+  }
+
+  /// Surfaces a controller-reported reconfigure failure. The controller
+  /// has no [BuildContext], so the snack bar stays here.
+  void _showReconfigureFailure(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 5)),
     );
-
-    // Open the per-session log file and mirror every TelemetryEvent
-    // through it. Failures (sandboxed test envs, denied storage, etc.)
-    // are swallowed so the UI still functions when path_provider has
-    // no platform implementation.
-    unawaited(_startBenchmarkLogger());
-  }
-
-  Future<void> _startBenchmarkLogger() async {
-    try {
-      await _benchmarkLogger.start(widget.telemetry);
-    } catch (_) {
-      // Logger remains disposed; UI is unaffected.
-    }
-  }
-
-  /// Cycle-end hook for non-rotation continuous benchmarking. Cancels
-  /// any existing pending timer first so back-to-back cycle-end
-  /// notifications cannot stack delays. With delay == 0 we still
-  /// funnel through `Timer` so the cancel-on-toggle-off and
-  /// cancel-on-dispose guarantees stay uniform; the engine's own
-  /// state machine has already unwound by the time the zero-duration
-  /// timer fires.
-  ///
-  /// Bypassed in worldwide rotation mode: the next rotation step is
-  /// scheduled by [_reconfigureEngine] when init returns, so the
-  /// engine's internal exponential-backoff retries (which fire
-  /// onCycleEnd well before [_interCycleDelaySeconds]) cannot reset
-  /// the rotation timer and stall it on a slice whose hosts are all
-  /// failing.
-  void _scheduleNextCycle() {
-    if (_worldwideRotationActive) return;
-    _cancelInterCycleTimer();
-    if (!_continuousSyncEnabled || _reconfiguring) return;
-    final seconds = _interCycleDelaySeconds;
-    if (seconds > 0) {
-      widget.telemetry.logCycleDelay(seconds);
-    }
-    _interCycleTimer = Timer(Duration(seconds: seconds), () {
-      _interCycleTimer = null;
-      if (!mounted) return;
-      if (!_continuousSyncEnabled || _reconfiguring) return;
-      _forceResyncSafely();
-    });
-  }
-
-  /// Fire-and-forget [TrustedTime.forceResync] for the cycle-end and
-  /// continuous-toggle paths. Sync failures already surface through
-  /// the SyncObserver fan-out (TelemetryRecorder records them as
-  /// `syncFailed` events for both the on-screen terminal and the
-  /// persisted session log), so swallowing them here only prevents
-  /// the otherwise-redundant unhandled async error from escaping to
-  /// the zone. debugPrint preserves the trace for local development.
-  void _forceResyncSafely() {
-    unawaited(
-      TrustedTime.forceResync().catchError((Object e, StackTrace s) {
-        if (kDebugMode) {
-          debugPrint('[example] forceResync failed: $e\n$s');
-        }
-      }),
-    );
-  }
-
-  /// Schedules the next rotation advance, called from
-  /// [_reconfigureEngine] when init returns. Anchors the rotation
-  /// clock to reconfigure-completion rather than cycle-end events,
-  /// so engine-internal retries inside the slice cannot reset it.
-  /// When the timer fires it advances [_worldwideRotationOffset] and
-  /// reconfigures the engine to the next slice — which in turn
-  /// schedules the following advance, perpetuating the rotation
-  /// loop until either continuous sync is toggled off or rotation
-  /// mode is exited.
-  void _scheduleRotationAdvance() {
-    _cancelInterCycleTimer();
-    if (!_continuousSyncEnabled ||
-        !_worldwideRotationActive ||
-        _reconfiguring) {
-      return;
-    }
-    final seconds = _interCycleDelaySeconds;
-    if (seconds > 0) {
-      widget.telemetry.logCycleDelay(seconds);
-    }
-    _interCycleTimer = Timer(Duration(seconds: seconds), () {
-      _interCycleTimer = null;
-      if (!mounted) return;
-      if (!_continuousSyncEnabled ||
-          !_worldwideRotationActive ||
-          _reconfiguring) {
-        return;
-      }
-      _logSliceDnsDeltaIfAvailable();
-      setState(() {
-        _worldwideRotationOffset =
-            (_worldwideRotationOffset + _worldwideSubsetSize) %
-            extendedNtsPool.length;
-      });
-      unawaited(_reconfigureEngine(_currentWorldwideSubset()));
-    });
-  }
-
-  /// Computes the DNS pool counter deltas accumulated during the slice
-  /// that just ended (between the snapshot taken at its reconfigure
-  /// tail and now) and logs them through the telemetry recorder.
-  /// No-op when no prior snapshot exists (first slice of a run) or
-  /// when the snapshot read failed.
-  void _logSliceDnsDeltaIfAvailable() {
-    final prev = _lastSliceDnsSnapshot;
-    final prevOffset = _lastSliceDnsOffset;
-    if (prev == null || prevOffset == null) return;
-    final now = _readDnsStatsOrNull();
-    if (now == null) return;
-    final refusedDelta = now.refused - prev.refused;
-    final recoveredDelta = now.recovered - prev.recovered;
-    final hwmDelta = now.highWaterMark - prev.highWaterMark;
-    // Match the wrap-aware slice math in _currentWorldwideSubset so
-    // the logged label accurately describes the hosts measured.
-    // When the slice wraps the end of the pool we render it as two
-    // contiguous ranges (e.g. "slice 76-80, 0-2") rather than
-    // collapsing to a clamped single range that would silently hide
-    // the wrap-around.
-    final poolLen = extendedNtsPool.length;
-    final size = _worldwideSubsetSize;
-    final String sliceLabel;
-    if (prevOffset + size <= poolLen) {
-      sliceLabel = 'slice $prevOffset–${prevOffset + size - 1}';
-    } else {
-      final wrapEnd = (prevOffset + size) % poolLen - 1;
-      sliceLabel = 'slice $prevOffset–${poolLen - 1}, 0–$wrapEnd';
-    }
-    widget.telemetry.logDnsDelta(
-      '$sliceLabel '
-      'refused+$refusedDelta recovered+$recoveredDelta '
-      'hwmΔ$hwmDelta inFlight=${now.inFlight}',
-    );
-  }
-
-  void _cancelInterCycleTimer() {
-    _interCycleTimer?.cancel();
-    _interCycleTimer = null;
   }
 
   @override
   void dispose() {
-    _cancelInterCycleTimer();
-    _cycleEndDisposer?.call();
+    _benchmark.dispose();
     _ticker?.cancel();
     _tzController.dispose();
-    unawaited(_benchmarkLogger.dispose());
     super.dispose();
   }
 
@@ -363,166 +161,6 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _tzResult = 'Error: $e';
       });
-    }
-  }
-
-  /// Starts the Worldwide Beauty Parade: rotation mode that cycles the
-  /// engine through fixed-size subsets of [extendedNtsPool] so every
-  /// host gets isolated, contention-free measurements over a long-form
-  /// run. Each cycle reconfigures the engine with the next contiguous
-  /// slice of the pool (wrapping at the end); per-source telemetry
-  /// accumulated by the recorder can then be aggregated to rank hosts
-  /// by latency and reliability.
-  ///
-  /// Leaves [_selectedServers] (the chip selection) untouched so the
-  /// operator's manual subset is preserved for an immediate switch
-  /// back via Apply Selection. To stop the rotation: flip Continuous
-  /// Sync off via the toggle below the chip grid, or press Apply
-  /// Selection on the manual chip set.
-  Future<void> _runWorldwideBenchmark() async {
-    if (_reconfiguring) return;
-    setState(() {
-      _worldwideRotationActive = true;
-      _worldwideRotationOffset = 0;
-      _continuousSyncEnabled = true;
-    });
-    await _reconfigureEngine(_currentWorldwideSubset());
-  }
-
-  /// Returns the current rotation slice of [extendedNtsPool] starting
-  /// at [_worldwideRotationOffset]. Wraps around so the slice always
-  /// has [_worldwideSubsetSize] hosts even when the offset is near the
-  /// end of the pool, which keeps cycle-to-cycle quorum availability
-  /// uniform.
-  List<String> _currentWorldwideSubset() {
-    final pool = extendedNtsPool;
-    final size = _worldwideSubsetSize;
-    final start = _worldwideRotationOffset % pool.length;
-    if (start + size <= pool.length) {
-      return pool.sublist(start, start + size);
-    }
-    return [
-      ...pool.sublist(start),
-      ...pool.sublist(0, (start + size) % pool.length),
-    ];
-  }
-
-  /// Re-initialises the engine with the current Section 7 selection so
-  /// the next sync cycle uses exactly those servers. Exits rotation
-  /// mode if it was active — manual Apply Selection is the explicit
-  /// "go back to chip-driven control" gesture. Delegates to
-  /// [_reconfigureEngine] for the actual init.
-  Future<void> _applySelectedServers() async {
-    if (_selectedServers.isEmpty || _reconfiguring) return;
-    if (_worldwideRotationActive) {
-      setState(() => _worldwideRotationActive = false);
-    }
-    await _reconfigureEngine(_selectedServers.toList());
-  }
-
-  /// Disposes the previous TrustedTime instance and re-initialises it
-  /// against [servers]. TrustedTimeImpl's internal init() disposes the
-  /// previous instance before constructing a new one, so timers,
-  /// integrity subscriptions, and source warm state all reset
-  /// cleanly. The observer set lives on the instance and is therefore
-  /// lost across re-init; we re-register the telemetry recorder
-  /// afterwards. [_reconfiguring] gates the continuous-sync hook so a
-  /// cycle that completes during the dispose window cannot trigger a
-  /// forceResync against a disposed engine.
-  ///
-  /// Shared between manual Apply Selection (chip-driven), the initial
-  /// Run Worldwide Beauty Parade press, and every per-cycle rotation
-  /// step inside the worldwide mode.
-  Future<void> _reconfigureEngine(List<String> servers) async {
-    if (servers.isEmpty || _reconfiguring) return;
-    // Drop any in-flight inter-cycle timer so it cannot fire a
-    // forceResync against the engine instance we are about to dispose.
-    _cancelInterCycleTimer();
-    setState(() => _reconfiguring = true);
-    var failed = false;
-    try {
-      final shuffled = (List<String>.of(
-        servers,
-      )..shuffle(Random())).toList(growable: false);
-      await TrustedTime.initialize(
-        config: TrustedTimeConfig(
-          ntpServers: const [],
-          ntsServers: shuffled,
-          maxConcurrentDnsLookups: _maxConcurrentDnsLookupsOverride,
-          minimumQuorum: 2,
-          minQuorumRatio: 0.4,
-          refreshInterval: const Duration(seconds: 30),
-          persistState: true,
-        ),
-      );
-      TrustedTime.registerObserver(widget.telemetry);
-      // Pause state is reset on every TrustedTime.initialize() by
-      // design (see TrustedTime.pauseAutomaticRefresh docs). When
-      // continuous sync is on, re-pause immediately so the engine's
-      // refresh timer does not race the inter-cycle slider — the
-      // slider becomes the sole scheduler for the next cycle.
-      if (_continuousSyncEnabled) {
-        TrustedTime.pauseAutomaticRefresh();
-      }
-    } catch (e, s) {
-      // Centralised catch so a failed re-init cannot bubble up as an
-      // unhandled async error from any of this method's call sites
-      // (manual Apply Selection, Run Worldwide press, or the
-      // unawaited _scheduleRotationAdvance step). Keeping the
-      // recovery here rather than at every .catchError site means
-      // the rotation/continuous-flag teardown is identical across
-      // entry points.
-      failed = true;
-      if (kDebugMode) {
-        debugPrint('[example] TrustedTime.initialize failed: $e\n$s');
-      }
-      widget.telemetry.logReconfigureFailure(e.toString());
-      if (mounted) {
-        // Stop the rotation loop and continuous mode so a
-        // persistently-failing config doesn't spin forever firing
-        // the same failure on every advance. The operator can
-        // re-arm by pressing Apply Selection or Run Worldwide
-        // again with a different chip set.
-        setState(() {
-          _worldwideRotationActive = false;
-          _continuousSyncEnabled = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Reconfigure failed: $e'),
-            duration: const Duration(seconds: 5),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _reconfiguring = false);
-    }
-    if (failed) return;
-    // Anchor the rotation clock to reconfigure-completion. This must
-    // run after _reconfiguring is cleared so the schedule check
-    // inside _scheduleRotationAdvance does not bail out.
-    if (mounted && _worldwideRotationActive && _continuousSyncEnabled) {
-      // Snapshot the DNS pool counters for this slice so the next
-      // rotation advance can log the deltas. Captures `inFlight`
-      // immediately after reconfigure rather than at the very
-      // start of the slice's first NTS calls; the small overlap is
-      // acceptable because the deltas are computed across the same
-      // boundary on every step.
-      _lastSliceDnsSnapshot = _readDnsStatsOrNull();
-      _lastSliceDnsOffset = _worldwideRotationOffset;
-      _scheduleRotationAdvance();
-    }
-  }
-
-  /// Reads `package:nts`'s DNS pool snapshot, returning null on any
-  /// failure (NtsRustLib not initialised, FFI error). Mirrors the same
-  /// guard used by the telemetry panel's live readout so a failure
-  /// here cannot crash a benchmark in progress.
-  NtsDnsPoolStats? _readDnsStatsOrNull() {
-    try {
-      return ntsDnsPoolStats();
-    } catch (_) {
-      return null;
     }
   }
 
@@ -690,83 +328,36 @@ class _HomePageState extends State<HomePage> {
             _card(child: SyncTelemetryPanel(recorder: widget.telemetry)),
             _sectionHeader('Section 7 — Benchmarking Configuration'),
             _card(
-              child: BenchmarkingPanel(
-                pool: benchmarkChipPool,
-                worldwidePoolSize: extendedNtsPool.length,
-                worldwideRotationActive: _worldwideRotationActive,
-                worldwideRotationOffset: _worldwideRotationOffset,
-                worldwideSubsetSize: _worldwideSubsetSize,
-                selected: _selectedServers,
-                continuousEnabled: _continuousSyncEnabled,
-                reconfiguring: _reconfiguring,
-                interCycleDelaySeconds: _interCycleDelaySeconds,
-                maxConcurrentDnsLookupsOverride:
-                    _maxConcurrentDnsLookupsOverride,
-                // The unified DNS budget (ADR 0008) defaults to a fixed
-                // TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups
-                // rather than the former NTS-only `ntsServers.length + 2`
-                // auto-size, so the displayed default is stable across
-                // the chip selection and rotation slices.
-                defaultMaxConcurrentDnsLookups:
-                    TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups,
-                logFilePath: _benchmarkLogger.filePath,
-                onRunWorldwide: _runWorldwideBenchmark,
-                onDnsCapOverrideChanged: (val) {
-                  setState(() => _maxConcurrentDnsLookupsOverride = val);
-                },
-                onToggleServer: (host, picked) {
-                  setState(() {
-                    if (picked) {
-                      _selectedServers.add(host);
-                    } else {
-                      _selectedServers.remove(host);
-                    }
-                  });
-                },
-                onToggleContinuous: (val) {
-                  // Defence in depth: the SwitchListTile passes
-                  // null to onChanged while _reconfiguring (see
-                  // BenchmarkingPanel) so the user can't fire this
-                  // path during a re-init window. Re-check here to
-                  // keep the contract enforced even if the parent
-                  // forgets to wire the disable, since the body
-                  // calls into TrustedTime methods that would hit a
-                  // disposed engine instance during initialize().
-                  if (_reconfiguring) return;
-                  setState(() {
-                    _continuousSyncEnabled = val;
-                    if (!val) {
-                      // Stopping continuous sync also stops the
-                      // worldwide rotation; the rotation cannot
-                      // advance without the cycle-end hook firing.
-                      _worldwideRotationActive = false;
-                    }
-                  });
-                  if (val) {
-                    // Suppress the engine's internal refresh timer
-                    // for the duration of continuous mode so the
-                    // slider's inter-cycle delay is the sole
-                    // scheduler. Without this the engine's
-                    // refreshInterval (30 s here) raced the slider,
-                    // collapsing the configured cadence to whichever
-                    // timer fired first.
-                    TrustedTime.pauseAutomaticRefresh();
-                    // Kick the loop immediately rather than waiting
-                    // for the slider's first inter-cycle delay.
-                    _forceResyncSafely();
-                  } else {
-                    // Restore the engine's automatic cadence so a
-                    // long-idle app still refreshes its anchor.
-                    TrustedTime.resumeAutomaticRefresh();
-                    // Drop any pending inter-cycle timer so the loop
-                    // stops right now, not after the current delay.
-                    _cancelInterCycleTimer();
-                  }
-                },
-                onDelayChanged: (val) {
-                  setState(() => _interCycleDelaySeconds = val);
-                },
-                onApply: _applySelectedServers,
+              child: ListenableBuilder(
+                listenable: _benchmark,
+                builder: (context, _) => BenchmarkingPanel(
+                  pool: benchmarkChipPool,
+                  worldwidePoolSize: extendedNtsPool.length,
+                  worldwideRotationActive: _benchmark.worldwideRotationActive,
+                  worldwideRotationOffset: _benchmark.worldwideRotationOffset,
+                  worldwideSubsetSize: BenchmarkController.worldwideSubsetSize,
+                  selected: _benchmark.selectedServers,
+                  continuousEnabled: _benchmark.continuousSyncEnabled,
+                  reconfiguring: _benchmark.reconfiguring,
+                  interCycleDelaySeconds: _benchmark.interCycleDelaySeconds,
+                  maxConcurrentDnsLookupsOverride:
+                      _benchmark.maxConcurrentDnsLookupsOverride,
+                  // The unified DNS budget (ADR 0008) defaults to a fixed
+                  // TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups
+                  // rather than the former NTS-only `ntsServers.length + 2`
+                  // auto-size, so the displayed default is stable across
+                  // the chip selection and rotation slices.
+                  defaultMaxConcurrentDnsLookups:
+                      TrustedTimeConfig.kDefaultMaxConcurrentDnsLookups,
+                  logFilePath: _benchmark.logFilePath,
+                  onRunWorldwide: _benchmark.runWorldwideBenchmark,
+                  onDnsCapOverrideChanged:
+                      _benchmark.setMaxConcurrentDnsLookupsOverride,
+                  onToggleServer: _benchmark.toggleServer,
+                  onToggleContinuous: _benchmark.setContinuousSync,
+                  onDelayChanged: _benchmark.setInterCycleDelaySeconds,
+                  onApply: _benchmark.applySelectedServers,
+                ),
               ),
             ),
             _sectionHeader('Section 8 — Per-Host Burst Probe (wy3)'),
