@@ -10,11 +10,11 @@ import 'monotonic_clock.dart';
 import 'sync_cycle.dart';
 import 'sync_engine.dart';
 import 'sources/nts_auth_level.dart';
+import 'infra/app_lifecycle_observer.dart';
+import 'infra/proxy_sync_observer.dart';
 import 'infra/sync_observer.dart';
 import 'infra/consensus_cache.dart';
 import 'infra/trusted_time_log.dart';
-import 'domain/time_sample.dart';
-import 'domain/marzullo_engine.dart';
 import 'drift_history.dart';
 import 'time_assessment.dart';
 
@@ -50,7 +50,7 @@ final class TrustedTimeImpl {
       // observe each other through the shared static, and binding to
       // the instance keeps the observer set correct regardless of
       // when init() assigns _instance.
-      observer: _ProxySyncObserver(() => _observers),
+      observer: ProxySyncObserver(() => _observers),
       cache:
           _cache, // Shared cache between impl and engine for state propagation
     );
@@ -850,7 +850,7 @@ final class TrustedTimeImpl {
   /// [WidgetsBindingObserver] that runs a full sync when the app
   /// returns to the foreground with a stale (or absent) anchor.
   void _installLifecycleObserver() {
-    final observer = _AppLifecycleObserver(_handleAppLifecycleState);
+    final observer = AppLifecycleObserver(_handleAppLifecycleState);
     try {
       WidgetsBinding.instance.addObserver(observer);
       _lifecycleObserver = observer;
@@ -1034,62 +1034,4 @@ final class TrustedTimeImpl {
     _syncEngine.dispose();
     _syncClock.dispose();
   }
-}
-
-class _ProxySyncObserver implements SyncObserver {
-  _ProxySyncObserver(this._getObservers);
-  final Set<SyncObserver> Function() _getObservers;
-
-  @override
-  void onSyncStarted() {
-    for (final o in _getObservers()) {
-      o.onSyncStarted();
-    }
-  }
-
-  @override
-  void onSampleReceived(TimeSample sample) {
-    for (final o in _getObservers()) {
-      o.onSampleReceived(sample);
-    }
-  }
-
-  @override
-  void onSourceFailed(String sourceId, Object error) {
-    for (final o in _getObservers()) {
-      o.onSourceFailed(sourceId, error);
-    }
-  }
-
-  @override
-  void onConsensusReached(ConsensusResult result) {
-    for (final o in _getObservers()) {
-      o.onConsensusReached(result);
-    }
-  }
-
-  @override
-  void onSyncFailed(Object error) {
-    for (final o in _getObservers()) {
-      o.onSyncFailed(error);
-    }
-  }
-
-  @override
-  void onMetricsReported(SyncMetrics metrics) {
-    for (final o in _getObservers()) {
-      o.onMetricsReported(metrics);
-    }
-  }
-}
-
-/// Forwards [WidgetsBindingObserver.didChangeAppLifecycleState] to a
-/// callback so [TrustedTimeImpl] can self-install the resume-time
-/// anchor-age check without itself mixing in the observer.
-class _AppLifecycleObserver with WidgetsBindingObserver {
-  _AppLifecycleObserver(this._onState);
-  final void Function(AppLifecycleState) _onState;
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) => _onState(state);
 }

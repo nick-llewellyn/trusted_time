@@ -89,7 +89,7 @@ void main() {
     test(
       'first-ever initialize does not surface a null check on the proxy observer',
       () async {
-        // Regression: _ProxySyncObserver previously closed over the
+        // Regression: ProxySyncObserver previously closed over the
         // static _instance, which is only assigned after _bootstrap()
         // completes. The bootstrap sync's onSyncStarted callback
         // dereferenced `_instance!` synchronously and threw
