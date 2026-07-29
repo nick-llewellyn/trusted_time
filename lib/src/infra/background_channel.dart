@@ -9,7 +9,10 @@ import 'trusted_time_log.dart';
 /// Android/iOS and the in-isolate periodic timer everywhere else.
 ///
 /// Both paths converge on the `onSync` callback supplied at
-/// construction; the collaborator holds no reference to the engine.
+/// construction, which is the only coupling back to the caller: no
+/// typed reference to the engine, no import of it. The callback is
+/// normally an instance tear-off, so the caller does stay reachable
+/// from here for this object's lifetime.
 class BackgroundChannel {
   /// Creates a background-sync façade that runs [onSync] on every
   /// background fire, whether delivered by the platform scheduler or by
