@@ -598,12 +598,11 @@ final class TrustedTimeImpl {
     _syncEntryGuard = true;
     final completer = Completer<void>();
     _syncInProgress = completer;
-    // Clear both timers for the duration of this cycle. The retry
-    // timer may have fired into this very method, and a refresh armed
-    // by a prior successful cycle could otherwise fire moments after
-    // this one completes — the in-flight guard above only catches
-    // overlap, not that case. The success branch re-arms a fresh
-    // refresh window from this cycle's completion.
+    // Clear both timers for the duration of this cycle: a refresh
+    // armed by a prior successful cycle could otherwise fire moments
+    // after this one completes — the in-flight guard above only
+    // catches overlap, not that case. The success branch re-arms a
+    // fresh refresh window from this cycle's completion.
     _scheduler.cancelPending();
     try {
       // Shared query-and-bank unit (sync + persistState-gated save), so

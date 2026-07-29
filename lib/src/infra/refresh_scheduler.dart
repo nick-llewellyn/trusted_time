@@ -3,9 +3,14 @@ import 'dart:async';
 /// Owns the two sync-cadence timers: the automatic refresh timer and
 /// the failed-sync retry timer.
 ///
-/// Every mutator pairs `cancel()` with `= null`, so a null timer field
-/// is a reliable "nothing armed" signal at every site rather than a
-/// field that may still reference a spent or cancelled [Timer].
+/// Every mutator pairs `cancel()` with `= null`, and each timer clears
+/// its own field before dispatching, so a null timer field is a
+/// reliable "nothing armed" signal at every site rather than a field
+/// that may still reference a spent or cancelled [Timer]. Self-clearing
+/// on fire keeps that true independently of what `onTick` does: a
+/// callback that re-enters and bails early (a sync cycle already in
+/// flight) never gets the chance to clear the field on the scheduler's
+/// behalf.
 ///
 /// The scheduler holds no reference to the engine: [scheduleRetry]
 /// receives the backoff delay from the caller, and both timers fire
@@ -61,7 +66,7 @@ class RefreshScheduler {
     if (_disposed) return;
     if (_paused) return;
     if (_activeInterval <= Duration.zero) return;
-    _refreshTimer = Timer(_activeInterval, _onTick);
+    _refreshTimer = Timer(_activeInterval, _fire(() => _refreshTimer = null));
   }
 
   /// Arms the retry timer [delay] from now, replacing any pending
@@ -72,18 +77,33 @@ class RefreshScheduler {
     _retryTimer = null;
     if (_disposed) return;
     if (delay > Duration.zero) {
-      _retryTimer = Timer(delay, _onTick);
+      _retryTimer = Timer(delay, _fire(() => _retryTimer = null));
     }
+  }
+
+  /// Wraps [_onTick] so the fired timer's field is cleared before the
+  /// callback runs and no dispatch escapes after [dispose].
+  ///
+  /// [clearField] nulls whichever field armed this timer. It runs
+  /// unconditionally — including when disposed — because the field
+  /// describes *this* scheduler's arming state, not whether the
+  /// callback was worth running. It cannot clear a *newer* timer's
+  /// field: every arming path cancels before reassigning, so a
+  /// superseded timer never fires.
+  void Function() _fire(void Function() clearField) {
+    return () {
+      clearField();
+      if (_disposed) return;
+      _onTick();
+    };
   }
 
   /// Cancels both timers at the start of a sync cycle.
   ///
-  /// The retry timer may have fired into this very cycle, so clearing
-  /// the field keeps it from pointing at a spent [Timer]. Cancelling
-  /// the refresh timer closes a distinct gap: a refresh armed by a
-  /// prior successful cycle could otherwise fire moments after this
-  /// cycle completes, which the caller's in-flight guard does not
-  /// catch because there is no overlap. The success path re-arms a
+  /// Cancelling the refresh timer closes a gap the caller's in-flight
+  /// guard does not: a refresh armed by a prior successful cycle could
+  /// otherwise fire moments after this cycle completes, and there is
+  /// no overlap for that guard to catch. The success path re-arms a
   /// fresh window from this cycle's completion via [scheduleRefresh].
   void cancelPending() {
     _retryTimer?.cancel();
