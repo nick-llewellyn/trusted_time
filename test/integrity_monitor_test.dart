@@ -1,20 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/integrity_monitor.dart';
 import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/monotonic_clock.dart';
 
-class FakeMonotonicClock implements MonotonicClock {
-  int value = 1000;
-  String? bootId = 'boot-A';
-  int bootIdCalls = 0;
-  @override
-  Future<int> uptimeMs() async => value;
-  @override
-  Future<String?> getBootId() async {
-    bootIdCalls++;
-    return bootId;
-  }
-}
+import 'support/fake_clocks.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -24,7 +12,7 @@ void main() {
     late IntegrityMonitor monitor;
 
     setUp(() {
-      clock = FakeMonotonicClock();
+      clock = FakeMonotonicClock(value: 1000, bootId: 'boot-A');
       monitor = IntegrityMonitor(clock: clock);
     });
 

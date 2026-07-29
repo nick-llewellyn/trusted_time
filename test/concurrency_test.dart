@@ -6,90 +6,16 @@ import 'package:nts/nts.dart' as nts;
 import 'package:trusted_time/src/exceptions.dart';
 import 'package:trusted_time/src/sync_engine.dart';
 import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/domain/marzullo_engine.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
 import 'package:trusted_time/src/domain/time_sample.dart';
 import 'package:trusted_time/src/domain/time_interval.dart';
-import 'package:trusted_time/src/infra/sync_observer.dart';
 import 'package:trusted_time/src/monotonic_clock.dart';
 import 'package:trusted_time/src/source_quality_tracker.dart';
 import 'package:trusted_time/src/infra/dns_budget.dart';
 
-class MockMonotonicClock implements MonotonicClock {
-  @override
-  Future<int> uptimeMs() async => 100000;
-  @override
-  Future<String?> getBootId() async => 'boot-test';
-}
-
-/// Monotonic clock reporting a device uptime smaller than any
-/// plausible consensus age — models an app that started immediately
-/// after boot, for the backdating uptime-floor guard test.
-class JustBootedMonotonicClock implements MonotonicClock {
-  @override
-  Future<int> uptimeMs() async => 600;
-  @override
-  Future<String?> getBootId() async => 'boot-test';
-}
-
-/// Monotonic clock that deliberately holds the first [uptimeMs] call
-/// pending until either a second call arrives or one event-loop turn
-/// elapses. Used by the `_completeSync` re-entry guard tests (skj.2)
-/// to force two `_completeSync` invocations to overlap on the same
-/// microtask burst — without this gate, the default microtask
-/// scheduling lets the first call's `_createAnchor` resolve and
-/// complete the [Completer] before the second call even reaches its
-/// guard check, so the race never actually fires in-process even
-/// though it is reachable on a real device.
-///
-/// Behaviour: the first [uptimeMs] call races
-/// [_secondCallStarted.future] against `Future.delayed(Duration.zero)`
-/// via [Future.any]. Whichever resolves first releases the gate. The
-/// second [uptimeMs] call resolves [_secondCallStarted] synchronously
-/// and itself returns immediately.
-///
-/// Why one event-loop turn is the right fallback window: the race
-/// fires when both `_completeSync` invocations are scheduled by the
-/// same SyncEngine listener tick. The first invocation hits its
-/// `await _clock.uptimeMs()` and yields; the second invocation —
-/// scheduled as an `unawaited` microtask in the same listener tick —
-/// reaches its own `await _clock.uptimeMs()` within a small handful
-/// of microtasks. `Future.delayed(Duration.zero)` is timer-driven
-/// and resolves only after the current event-loop iteration drains
-/// its microtask queue, so the second call (if it is going to come)
-/// always wins the race against the timer fallback.
-///
-/// Equivalently: when the production re-entry guards are working,
-/// only one `_completeSync` reaches `_createAnchor`, so
-/// [_secondCallStarted] is never completed and the timer wins after
-/// one event-loop turn — the test completes in microseconds, not
-/// hundreds of milliseconds. When the guards are disabled the
-/// second call wins, the gate releases synchronously, and the
-/// duplicate-emission assertion still fires.
-class GatedMonotonicClock implements MonotonicClock {
-  final Completer<void> _secondCallStarted = Completer<void>();
-  int callCount = 0;
-
-  @override
-  Future<String?> getBootId() async => 'boot-test';
-
-  @override
-  Future<int> uptimeMs() async {
-    callCount++;
-    if (callCount == 1) {
-      await Future.any([
-        _secondCallStarted.future,
-        Future<void>.delayed(Duration.zero),
-      ]);
-      return 100000;
-    } else {
-      if (!_secondCallStarted.isCompleted) {
-        _secondCallStarted.complete();
-      }
-      return 100000;
-    }
-  }
-}
+import 'support/fake_clocks.dart';
+import 'support/fake_observers.dart';
+import 'support/fake_sources.dart';
 
 class RaceConditionSource implements TimeSource {
   RaceConditionSource(
@@ -276,30 +202,6 @@ class FlakySource implements TimeSource {
   }
 }
 
-/// Test source that records how many times [getTime] was invoked, so the
-/// colliding-id regression test can assert which of two sources sharing an
-/// `id` the engine actually queries.
-class CountingSource implements TimeSource {
-  CountingSource(this.id, this.utcMs, [this.groupId = 'test-group']);
-  @override
-  final String id;
-  final int utcMs;
-  @override
-  final String groupId;
-
-  int callCount = 0;
-
-  @override
-  Future<TimeSample> getTime() async {
-    callCount++;
-    return TimeSample(
-      interval: TimeInterval(startMs: utcMs - 10, endMs: utcMs + 10),
-      sourceId: id,
-      groupId: groupId,
-    );
-  }
-}
-
 enum WarmingPhase { warmStart, warmEnd, getTimeStart, getTimeEnd }
 
 class WarmingEvent {
@@ -397,91 +299,13 @@ class WarmingTestSource implements TimeSource, Warmable {
   }
 }
 
-/// SyncObserver that records every onSourceFailed call so tests can
-/// assert that warm-phase failures are surfaced.
-class RecordingObserver implements SyncObserver {
-  final List<({String sourceId, Object error})> sourceFailures = [];
-  final List<ConsensusResult> consensusReached = [];
-  final List<SyncMetrics> metricsReported = [];
-  int syncStartedCount = 0;
-
-  @override
-  void onSourceFailed(String sourceId, Object error) {
-    sourceFailures.add((sourceId: sourceId, error: error));
-  }
-
-  @override
-  void onSyncStarted() {
-    syncStartedCount++;
-  }
-
-  @override
-  void onSampleReceived(TimeSample sample) {}
-  @override
-  void onConsensusReached(ConsensusResult result) {
-    consensusReached.add(result);
-  }
-
-  @override
-  void onSyncFailed(Object error) {}
-  @override
-  void onMetricsReported(SyncMetrics metrics) {
-    metricsReported.add(metrics);
-  }
-}
-
-/// Records every sample handed to the engine's stream listener so
-/// stability-guard tests can assert how many samples the engine
-/// consumed before early-exit fired.
-///
-/// Two engine paths drop samples after the completer resolves:
-///   * the per-source fan-out loop in `SyncEngine.sync` guards every
-///     `sampleController.add(sample)` with
-///     `if (!streamClosed && !sampleController.isClosed)`, and the
-///     `finally` block sets `streamClosed = true` and closes the
-///     controller as soon as the completer resolves -- so a source
-///     whose `getTime()` future resolves after completion has its
-///     sample silently discarded before it ever reaches the listener;
-///   * if a sample is already queued on the stream when the completer
-///     completes, the listener's `if (completer.isCompleted) return;`
-///     guard at the top short-circuits before invoking the observer.
-///
-/// The combined effect is that a sample is recorded by this observer
-/// only if it reaches the listener before the completer resolves. The
-/// "no recorded sample after early-exit" guarantee therefore relies
-/// on the test pool's source delays leaving a comfortable wall-clock
-/// margin between the last "expected" arrival and the first "should
-/// be dropped" arrival -- the stability-guard tests below pin that
-/// margin at 300 ms (last expected at 100 ms, first dropped at 400
-/// ms), which is large compared to the few microtasks the engine
-/// needs between firing early-exit and the completer resolving.
-class SampleCountingObserver implements SyncObserver {
-  final List<TimeSample> samplesReceived = [];
-
-  @override
-  void onSampleReceived(TimeSample sample) {
-    samplesReceived.add(sample);
-  }
-
-  @override
-  void onSourceFailed(String sourceId, Object error) {}
-  @override
-  void onSyncStarted() {}
-  @override
-  void onConsensusReached(ConsensusResult result) {}
-  @override
-  void onSyncFailed(Object error) {}
-  @override
-  void onMetricsReported(SyncMetrics metrics) {}
-}
-
 void main() {
   group('SyncEngine Concurrency & Race Conditions', () {
     late TrustedTimeConfig config;
-    late MockMonotonicClock clock;
+    late FakeMonotonicClock clock;
 
     setUp(() {
-      clock = MockMonotonicClock();
+      clock = FakeMonotonicClock();
       config = const TrustedTimeConfig(
         minimumQuorum: 2,
         minGroupCount: 1, // Relax for tests
@@ -605,11 +429,11 @@ void main() {
   });
 
   group('SyncEngine Per-Source Warming Pipeline', () {
-    late MockMonotonicClock clock;
+    late FakeMonotonicClock clock;
     late TrustedTimeConfig config;
 
     setUp(() {
-      clock = MockMonotonicClock();
+      clock = FakeMonotonicClock();
       config = const TrustedTimeConfig(
         minimumQuorum: 2,
         minGroupCount: 1,
@@ -860,11 +684,11 @@ void main() {
   });
 
   group('SyncEngine.warmAllSources', () {
-    late MockMonotonicClock clock;
+    late FakeMonotonicClock clock;
     late TrustedTimeConfig config;
 
     setUp(() {
-      clock = MockMonotonicClock();
+      clock = FakeMonotonicClock();
       config = const TrustedTimeConfig(
         minimumQuorum: 2,
         minGroupCount: 1,
@@ -1000,10 +824,10 @@ void main() {
   });
 
   group('SyncEngine fail-closed trust resolution', () {
-    late MockMonotonicClock clock;
+    late FakeMonotonicClock clock;
 
     setUp(() {
-      clock = MockMonotonicClock();
+      clock = FakeMonotonicClock();
     });
 
     test(
@@ -1052,11 +876,11 @@ void main() {
   });
 
   group('SyncEngine TransientSourceError handling', () {
-    late MockMonotonicClock clock;
+    late FakeMonotonicClock clock;
     late TrustedTimeConfig config;
 
     setUp(() {
-      clock = MockMonotonicClock();
+      clock = FakeMonotonicClock();
       // Override every default source list so the engine only queries
       // the test's `additionalSources`. Without `ntsServers: const []`,
       // the default `['time.cloudflare.com']` would instantiate an
@@ -1343,11 +1167,11 @@ void main() {
   });
 
   group('SyncEngine quality-tracker integration (4em, a4d)', () {
-    late MockMonotonicClock clock;
+    late FakeMonotonicClock clock;
     late TrustedTimeConfig config;
 
     setUp(() {
-      clock = MockMonotonicClock();
+      clock = FakeMonotonicClock();
       // ntsServers: [] keeps the default Cloudflare NtsSource out of the
       // pool (see the TransientSourceError group for the full rationale).
       config = const TrustedTimeConfig(
@@ -1515,10 +1339,10 @@ void main() {
   });
 
   group('SyncEngine _completeSync re-entry guard (skj.2)', () {
-    late MockMonotonicClock clock;
+    late FakeMonotonicClock clock;
 
     setUp(() {
-      clock = MockMonotonicClock();
+      clock = FakeMonotonicClock();
     });
 
     test(
@@ -1760,7 +1584,7 @@ void main() {
           ntpServers: [],
           ntsServers: [],
         ).copyWith(additionalSources: sources),
-        clock: MockMonotonicClock(),
+        clock: FakeMonotonicClock(),
         observer: observer,
       );
 
@@ -1852,7 +1676,7 @@ void main() {
           ntpServers: [],
           ntsServers: [],
         ).copyWith(additionalSources: sources),
-        clock: MockMonotonicClock(),
+        clock: FakeMonotonicClock(),
         observer: observer,
       );
 
@@ -1913,7 +1737,7 @@ void main() {
           ntpServers: [],
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
-        clock: MockMonotonicClock(),
+        clock: FakeMonotonicClock(),
       );
 
       final anchor = await engine.sync();
@@ -1952,7 +1776,7 @@ void main() {
             ntpServers: [],
             ntsServers: [],
           ).copyWith(additionalSources: [s1, s2]),
-          clock: MockMonotonicClock(),
+          clock: FakeMonotonicClock(),
         );
 
         await expectLater(
@@ -2000,7 +1824,7 @@ void main() {
           ntpServers: [],
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2, s3]),
-        clock: MockMonotonicClock(),
+        clock: FakeMonotonicClock(),
       );
 
       final anchor = await engine.sync();
@@ -2046,11 +1870,11 @@ void main() {
           ntpServers: [],
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
-        clock: MockMonotonicClock(),
+        clock: FakeMonotonicClock(),
       );
 
       final anchor = await engine.sync();
-      // MockMonotonicClock reads 100000; receipt age is 3500 − 2000.
+      // FakeMonotonicClock reads 100000; receipt age is 3500 − 2000.
       expect(anchor.uptimeMs, 100000 - 1500);
     });
 
@@ -2083,7 +1907,7 @@ void main() {
           ntpServers: [],
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
-        clock: MockMonotonicClock(),
+        clock: FakeMonotonicClock(),
       );
 
       final anchor = await engine.sync();
@@ -2127,7 +1951,7 @@ void main() {
           ntpServers: [],
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
-        clock: JustBootedMonotonicClock(),
+        clock: FakeMonotonicClock.justBooted(),
       );
 
       final anchor = await engine.sync();
@@ -2272,13 +2096,13 @@ void main() {
   });
 
   group('SyncEngine pre-sync rescue orchestration', () {
-    late MockMonotonicClock clock;
+    late FakeMonotonicClock clock;
 
     /// Coarse instant far above the plausibility floor.
     final plausibleCoarse = DateTime.utc(2026, 7, 20, 12);
 
     setUp(() {
-      clock = MockMonotonicClock();
+      clock = FakeMonotonicClock();
     });
 
     SyncEngine buildEngine(List<TimeSource> sources, {int minimumQuorum = 1}) =>

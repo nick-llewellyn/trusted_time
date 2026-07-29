@@ -3,13 +3,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
 import 'package:trusted_time/src/background_sync.dart';
-import 'package:trusted_time/src/domain/time_interval.dart';
-import 'package:trusted_time/src/domain/time_sample.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
 import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/monotonic_clock.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart' as public_api;
+
+import 'support/fake_clocks.dart';
+import 'support/fake_sources.dart';
 
 /// Coverage for the headless background-sync unit-of-work
 /// ([runBackgroundSync]), its public-API wrapper
@@ -41,12 +41,12 @@ void main() {
       final result = await runBackgroundSync(
         config: _offlineConfig(
           sources: [
-            _FakeSource(
+            FakeSource(
               idValue: 'fake-a',
               groupIdValue: 'g1',
               utc: consensusUtc,
             ),
-            _FakeSource(
+            FakeSource(
               idValue: 'fake-b',
               groupIdValue: 'g2',
               utc: consensusUtc.add(const Duration(milliseconds: 5)),
@@ -54,7 +54,7 @@ void main() {
           ],
         ),
         store: store,
-        clock: _FakeMonotonicClock(5000),
+        clock: FakeMonotonicClock(value: 5000),
       );
       expect(result, isA<BackgroundSyncSuccess>());
       expect(result.isSuccess, isTrue);
@@ -75,13 +75,13 @@ void main() {
       final result = await runBackgroundSync(
         config: _offlineConfig(
           sources: [
-            _FakeSource(
+            FakeSource(
               idValue: 'a',
               groupIdValue: 'g1',
               utc: consensusUtc,
               shouldThrow: true,
             ),
-            _FakeSource(
+            FakeSource(
               idValue: 'b',
               groupIdValue: 'g2',
               utc: consensusUtc,
@@ -90,7 +90,7 @@ void main() {
           ],
         ),
         store: store,
-        clock: _FakeMonotonicClock(5000),
+        clock: FakeMonotonicClock(value: 5000),
         retryDelays: const [],
       );
       expect(result, isA<BackgroundSyncFailure>());
@@ -104,12 +104,12 @@ void main() {
         config: _offlineConfig(
           persistState: false,
           sources: [
-            _FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
-            _FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
+            FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
+            FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
           ],
         ),
         store: store,
-        clock: _FakeMonotonicClock(5000),
+        clock: FakeMonotonicClock(value: 5000),
       );
       expect(result, isA<BackgroundSyncSuccess>());
       expect(await store.load(), isNull);
@@ -136,8 +136,8 @@ void main() {
         final result = await runBackgroundSync(
           config: _offlineConfig(
             sources: [
-              _FakeSource(idValue: 'stub-a', groupIdValue: 'g1', utc: freshUtc),
-              _FakeSource(
+              FakeSource(idValue: 'stub-a', groupIdValue: 'g1', utc: freshUtc),
+              FakeSource(
                 idValue: 'stub-b',
                 groupIdValue: 'g2',
                 utc: freshUtc.add(const Duration(milliseconds: 8)),
@@ -145,7 +145,7 @@ void main() {
             ],
           ),
           store: store,
-          clock: _FakeMonotonicClock(7000),
+          clock: FakeMonotonicClock(value: 7000),
         );
 
         expect(result, isA<BackgroundSyncSuccess>());
@@ -177,13 +177,13 @@ void main() {
       final result = await runBackgroundSync(
         config: _offlineConfig(
           sources: [
-            _FakeSource(
+            FakeSource(
               idValue: 'a',
               groupIdValue: 'g1',
               utc: staleUtc,
               shouldThrow: true,
             ),
-            _FakeSource(
+            FakeSource(
               idValue: 'b',
               groupIdValue: 'g2',
               utc: staleUtc,
@@ -192,7 +192,7 @@ void main() {
           ],
         ),
         store: store,
-        clock: _FakeMonotonicClock(7000),
+        clock: FakeMonotonicClock(value: 7000),
         retryDelays: const [],
       );
 
@@ -213,7 +213,7 @@ void main() {
           customRootCerts: [1, 2, 3],
         ),
         store: store,
-        clock: _FakeMonotonicClock(5000),
+        clock: FakeMonotonicClock(value: 5000),
       );
       expect(result, isA<BackgroundSyncFailure>());
       expect(
@@ -237,13 +237,13 @@ void main() {
         final store = InMemoryAnchorStorage();
         // Both sources fail on the first attempt (quorum failure), then
         // succeed — mimicking the settled-radio second attempt.
-        final a = _FakeSource(
+        final a = FakeSource(
           idValue: 'a',
           groupIdValue: 'g1',
           utc: consensusUtc,
           failuresBeforeSuccess: 1,
         );
-        final b = _FakeSource(
+        final b = FakeSource(
           idValue: 'b',
           groupIdValue: 'g2',
           utc: consensusUtc.add(const Duration(milliseconds: 5)),
@@ -252,7 +252,7 @@ void main() {
         final result = await runBackgroundSync(
           config: _offlineConfig(sources: [a, b]),
           store: store,
-          clock: _FakeMonotonicClock(5000),
+          clock: FakeMonotonicClock(value: 5000),
           retryDelays: const [Duration.zero],
         );
         expect(result, isA<BackgroundSyncSuccess>());
@@ -264,13 +264,13 @@ void main() {
       test(
         'exhausts the retry schedule and reports the last failure',
         () async {
-          final a = _FakeSource(
+          final a = FakeSource(
             idValue: 'a',
             groupIdValue: 'g1',
             utc: consensusUtc,
             shouldThrow: true,
           );
-          final b = _FakeSource(
+          final b = FakeSource(
             idValue: 'b',
             groupIdValue: 'g2',
             utc: consensusUtc,
@@ -278,7 +278,7 @@ void main() {
           );
           final result = await runBackgroundSync(
             config: _offlineConfig(persistState: false, sources: [a, b]),
-            clock: _FakeMonotonicClock(5000),
+            clock: FakeMonotonicClock(value: 5000),
             retryDelays: const [Duration.zero, Duration.zero],
           );
           expect(result, isA<BackgroundSyncFailure>());
@@ -305,7 +305,7 @@ void main() {
             usePlatformTrust: true,
             customRootCerts: [1, 2, 3],
           ),
-          clock: _FakeMonotonicClock(5000),
+          clock: FakeMonotonicClock(value: 5000),
           retryDelays: const [Duration(seconds: 30)],
         );
         sw.stop();
@@ -334,8 +334,8 @@ void main() {
       final consensusUtc = DateTime.utc(2026, 3, 1, 12);
 
       List<TimeSource> quorumFakes() => [
-        _FakeSource(idValue: 'fake-a', groupIdValue: 'g1', utc: consensusUtc),
-        _FakeSource(
+        FakeSource(idValue: 'fake-a', groupIdValue: 'g1', utc: consensusUtc),
+        FakeSource(
           idValue: 'fake-b',
           groupIdValue: 'g2',
           utc: consensusUtc.add(const Duration(milliseconds: 5)),
@@ -352,7 +352,7 @@ void main() {
               ntsServers: const ['nts.example.test'],
               sources: quorumFakes(),
             ),
-            clock: _FakeMonotonicClock(5000),
+            clock: FakeMonotonicClock(value: 5000),
             ntsInit: () async => initCalls++,
           );
           // The fakes still form quorum; the key assertion is that the
@@ -367,7 +367,7 @@ void main() {
         var initCalls = 0;
         final result = await runBackgroundSync(
           config: _offlineConfig(persistState: false, sources: quorumFakes()),
-          clock: _FakeMonotonicClock(5000),
+          clock: FakeMonotonicClock(value: 5000),
           ntsInit: () async => initCalls++,
         );
         // Zero-overhead-when-unused: no ntsServers means no bootstrap.
@@ -384,7 +384,7 @@ void main() {
             sources: quorumFakes(),
           ),
           store: store,
-          clock: _FakeMonotonicClock(5000),
+          clock: FakeMonotonicClock(value: 5000),
           // A non-StateError (or a StateError whose message does not name
           // flutter_rust_bridge) is a real init failure: the bootstrap must
           // strip ntsServers rather than abort the whole cycle.
@@ -402,7 +402,7 @@ void main() {
             sources: quorumFakes(),
           ),
           store: store,
-          clock: _FakeMonotonicClock(5000),
+          clock: FakeMonotonicClock(value: 5000),
           // Mirrors package:nts's process-wide double-init panic wording;
           // the shared bootstrap must swallow it so a foreground init
           // followed by a background fire in the same process does not
@@ -580,12 +580,12 @@ void main() {
           config: _offlineConfig(
             persistState: false,
             sources: [
-              _FakeSource(
+              FakeSource(
                 idValue: 'fake-a',
                 groupIdValue: 'g1',
                 utc: consensusUtc,
               ),
-              _FakeSource(
+              FakeSource(
                 idValue: 'fake-b',
                 groupIdValue: 'g2',
                 utc: consensusUtc.add(const Duration(milliseconds: 5)),
@@ -609,13 +609,13 @@ void main() {
         config: _offlineConfig(
           persistState: false,
           sources: [
-            _FakeSource(
+            FakeSource(
               idValue: 'a',
               groupIdValue: 'g1',
               utc: consensusUtc,
               shouldThrow: true,
             ),
-            _FakeSource(
+            FakeSource(
               idValue: 'b',
               groupIdValue: 'g2',
               utc: consensusUtc,
@@ -667,8 +667,8 @@ void main() {
         config: _offlineConfig(
           persistState: false,
           sources: [
-            _FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
-            _FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
+            FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
+            FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
           ],
         ),
       );
@@ -691,13 +691,13 @@ void main() {
         config: _offlineConfig(
           persistState: false,
           sources: [
-            _FakeSource(
+            FakeSource(
               idValue: 'a',
               groupIdValue: 'g1',
               utc: consensusUtc,
               shouldThrow: true,
             ),
-            _FakeSource(
+            FakeSource(
               idValue: 'b',
               groupIdValue: 'g2',
               utc: consensusUtc,
@@ -738,8 +738,8 @@ void main() {
         config: _offlineConfig(
           persistState: false,
           sources: [
-            _FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
-            _FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
+            FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
+            FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
           ],
         ),
         onResult: (r) async {
@@ -761,13 +761,13 @@ void main() {
         config: _offlineConfig(
           persistState: false,
           sources: [
-            _FakeSource(
+            FakeSource(
               idValue: 'a',
               groupIdValue: 'g1',
               utc: consensusUtc,
               shouldThrow: true,
             ),
-            _FakeSource(
+            FakeSource(
               idValue: 'b',
               groupIdValue: 'g2',
               utc: consensusUtc,
@@ -788,8 +788,8 @@ void main() {
         config: _offlineConfig(
           persistState: false,
           sources: [
-            _FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
-            _FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
+            FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
+            FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
           ],
         ),
         onResult: (_) async => throw StateError('observer exploded'),
@@ -1125,59 +1125,6 @@ TrustedTimeConfig _offlineConfig({
   persistState: persistState,
   additionalSources: sources,
 );
-
-class _FakeMonotonicClock implements MonotonicClock {
-  _FakeMonotonicClock(this.value);
-  final int value;
-  @override
-  Future<int> uptimeMs() async => value;
-  @override
-  Future<String?> getBootId() async => 'boot-test';
-}
-
-/// A deterministic [TimeSource] centred on a fixed UTC instant with a
-/// ±15ms uncertainty interval, optionally scripted to throw — always
-/// ([shouldThrow]) or for the first [failuresBeforeSuccess] queries only
-/// (modelling a transient outage that recovers, e.g. a just-woken radio).
-class _FakeSource implements TimeSource {
-  _FakeSource({
-    required this.idValue,
-    required this.groupIdValue,
-    required this.utc,
-    this.shouldThrow = false,
-    this.failuresBeforeSuccess = 0,
-  });
-
-  final String idValue;
-  final String groupIdValue;
-  final DateTime utc;
-  final bool shouldThrow;
-  final int failuresBeforeSuccess;
-
-  /// Total [getTime] invocations, across engine instances.
-  int calls = 0;
-
-  @override
-  String get id => idValue;
-
-  @override
-  String get groupId => groupIdValue;
-
-  @override
-  Future<TimeSample> getTime() async {
-    calls++;
-    if (shouldThrow || calls <= failuresBeforeSuccess) {
-      throw Exception('source down');
-    }
-    final mid = utc.millisecondsSinceEpoch;
-    return TimeSample(
-      interval: TimeInterval(startMs: mid - 15, endMs: mid + 15),
-      sourceId: idValue,
-      groupId: groupIdValue,
-      delayMs: 30,
-    );
-  }
-}
 
 @pragma('vm:entry-point')
 void _registerableTopLevelCallback() {}

@@ -9,6 +9,9 @@ import 'package:trusted_time/src/sync_engine.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
 
+import 'support/fake_observers.dart';
+import 'support/fake_sources.dart';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -162,7 +165,7 @@ void main() {
         // cycle (whose onSyncStarted predates the registration).
         await TrustedTime.firstSyncSettled;
 
-        final probe = _SyncStartedProbe();
+        final probe = SyncStartedProbe();
         TrustedTime.registerObserver(probe);
         addTearDown(() => TrustedTime.unregisterObserver(probe));
 
@@ -205,7 +208,7 @@ void main() {
         // (whose onSyncStarted predates the probe registration).
         await TrustedTime.firstSyncSettled;
 
-        final probe = _SyncStartedProbe();
+        final probe = SyncStartedProbe();
         TrustedTime.registerObserver(probe);
         addTearDown(() => TrustedTime.unregisterObserver(probe));
 
@@ -658,8 +661,8 @@ void main() {
           ntsServers: const [],
           persistState: false,
           additionalSources: [
-            _FailingSource(id: 'ntp:a', groupId: 'g1'),
-            _FailingSource(id: 'https:b', groupId: 'g2'),
+            FailingSource(id: 'ntp:a', groupId: 'g1'),
+            FailingSource(id: 'https:b', groupId: 'g2'),
           ],
         ),
       );
@@ -709,7 +712,7 @@ void main() {
       // their persistence-free behaviour.
       addTearDown(installDefaultChannelHandlers);
 
-      final box = _MidpointBox(
+      final box = MidpointBox(
         DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
       );
       await TrustedTime.initialize(
@@ -717,8 +720,8 @@ void main() {
           ntpServers: const [],
           ntsServers: const [],
           additionalSources: [
-            _BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
-            _BoxedSource(box, id: 'https:b', groupId: 'g2'),
+            BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
+            BoxedSource(box, id: 'https:b', groupId: 'g2'),
           ],
         ),
       );
@@ -801,10 +804,10 @@ void main() {
     // before the first test in this group executes.
     setUp(TrustedTime.resetOverride);
 
-    _MidpointBox freshBox() =>
-        _MidpointBox(DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch);
+    MidpointBox freshBox() =>
+        MidpointBox(DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch);
 
-    Future<void> initWithAnchor(_MidpointBox box) async {
+    Future<void> initWithAnchor(MidpointBox box) async {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           ntpServers: const [],
@@ -812,8 +815,8 @@ void main() {
           persistState: false,
           earlyExit: false,
           additionalSources: [
-            _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
-            _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
+            BoxedSource(box, id: 'nts:a', groupId: 'g1'),
+            BoxedSource(box, id: 'nts:b', groupId: 'g2'),
           ],
         ),
       );
@@ -828,8 +831,8 @@ void main() {
       await TrustedTime.firstSyncSettled;
     }
 
-    _SyncStartedProbe registerProbe() {
-      final probe = _SyncStartedProbe();
+    SyncStartedProbe registerProbe() {
+      final probe = SyncStartedProbe();
       TrustedTime.registerObserver(probe);
       addTearDown(() => TrustedTime.unregisterObserver(probe));
       return probe;
@@ -999,8 +1002,8 @@ void main() {
           earlyExit: false,
           refreshInterval: Duration.zero,
           additionalSources: [
-            _BoxedSource(box, id: 'nts:a', groupId: 'g1'),
-            _BoxedSource(box, id: 'nts:b', groupId: 'g2'),
+            BoxedSource(box, id: 'nts:a', groupId: 'g1'),
+            BoxedSource(box, id: 'nts:b', groupId: 'g2'),
           ],
         ),
       );
@@ -1065,8 +1068,8 @@ void main() {
           persistState: false,
           earlyExit: false,
           additionalSources: [
-            _GatedSource(gate, id: 'nts:a', groupId: 'g1', entered: entered),
-            _GatedSource(gate, id: 'nts:b', groupId: 'g2'),
+            GatedSource(gate, id: 'nts:a', groupId: 'g1', entered: entered),
+            GatedSource(gate, id: 'nts:b', groupId: 'g2'),
           ],
         ),
       );
@@ -1171,9 +1174,9 @@ void main() {
     // against.
     tearDown(installDefaultChannelHandlers);
 
-    Future<_ProbeCounter> initWithPersistedAnchor() async {
-      final counter = _ProbeCounter();
-      final box = _MidpointBox(
+    Future<ProbeCounter> initWithPersistedAnchor() async {
+      final counter = ProbeCounter();
+      final box = MidpointBox(
         DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
       );
       await TrustedTime.initialize(
@@ -1182,8 +1185,18 @@ void main() {
           ntsServers: const [],
           earlyExit: false,
           additionalSources: [
-            _CountingSource(box, id: 'ntp:a', groupId: 'g1', counter: counter),
-            _CountingSource(box, id: 'ntp:b', groupId: 'g2', counter: counter),
+            BoxedCountingSource(
+              box,
+              id: 'ntp:a',
+              groupId: 'g1',
+              counter: counter,
+            ),
+            BoxedCountingSource(
+              box,
+              id: 'ntp:b',
+              groupId: 'g2',
+              counter: counter,
+            ),
           ],
         ),
       );
@@ -1273,7 +1286,7 @@ void main() {
     tearDown(installDefaultChannelHandlers);
 
     Future<void> initWarmRestored() async {
-      final box = _MidpointBox(
+      final box = MidpointBox(
         DateTime.utc(2024, 6, 15, 12).millisecondsSinceEpoch,
       );
       await TrustedTime.initialize(
@@ -1282,8 +1295,8 @@ void main() {
           ntsServers: const [],
           earlyExit: false,
           additionalSources: [
-            _BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
-            _BoxedSource(box, id: 'ntp:b', groupId: 'g2'),
+            BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
+            BoxedSource(box, id: 'ntp:b', groupId: 'g2'),
           ],
         ),
       );
@@ -1637,8 +1650,8 @@ void main() {
       await TrustedTimeImpl.init(
         config.copyWith(
           additionalSources: [
-            _GatedSource(gate, id: 'nts:a', groupId: 'g1'),
-            _GatedSource(gate, id: 'nts:b', groupId: 'g2'),
+            GatedSource(gate, id: 'nts:a', groupId: 'g1'),
+            GatedSource(gate, id: 'nts:b', groupId: 'g2'),
           ],
         ),
       );
@@ -1668,8 +1681,8 @@ void main() {
       await TrustedTimeImpl.init(
         config.copyWith(
           additionalSources: [
-            _FailingSource(id: 'nts:a', groupId: 'g1'),
-            _FailingSource(id: 'nts:b', groupId: 'g2'),
+            FailingSource(id: 'nts:a', groupId: 'g1'),
+            FailingSource(id: 'nts:b', groupId: 'g2'),
           ],
         ),
       );
@@ -1690,8 +1703,8 @@ void main() {
       final impl = await TrustedTimeImpl.init(
         config.copyWith(
           additionalSources: [
-            _GatedSource(gate, id: 'nts:a', groupId: 'g1'),
-            _GatedSource(gate, id: 'nts:b', groupId: 'g2'),
+            GatedSource(gate, id: 'nts:a', groupId: 'g1'),
+            GatedSource(gate, id: 'nts:b', groupId: 'g2'),
           ],
         ),
       );
@@ -1710,7 +1723,7 @@ void main() {
       // flight must prevent _performSync from ever querying a source
       // or arming timers on the torn-down engine.
       fakeAsync((async) {
-        final counter = _ProbeCounter();
+        final counter = ProbeCounter();
         TrustedTimeImpl? impl;
         unawaited(
           TrustedTimeImpl.init(
@@ -1745,13 +1758,13 @@ void main() {
       await TrustedTimeImpl.init(
         config.copyWith(
           additionalSources: [
-            _GatedThenBoxedSource(
+            GatedThenBoxedSource(
               () => firstCycleDone,
               gate,
               id: 'nts:a',
               groupId: 'g1',
             ),
-            _GatedThenBoxedSource(
+            GatedThenBoxedSource(
               () => firstCycleDone,
               gate,
               id: 'nts:b',
@@ -1805,7 +1818,7 @@ class _SlowWarmCountingSource implements TimeSource, Warmable {
     required this.groupId,
   });
 
-  final _ProbeCounter counter;
+  final ProbeCounter counter;
   @override
   final String id;
   @override
@@ -1826,89 +1839,6 @@ class _SlowWarmCountingSource implements TimeSource, Warmable {
   }
 }
 
-/// Minimal [SyncObserver] that just counts onSyncStarted invocations,
-/// used to verify the proxy observer fan-out works on the first init.
-class _SyncStartedProbe implements SyncObserver {
-  int startCount = 0;
-
-  @override
-  void onSyncStarted() => startCount++;
-
-  @override
-  void onSampleReceived(TimeSample sample) {}
-
-  @override
-  void onSourceFailed(String sourceId, Object error) {}
-
-  @override
-  void onConsensusReached(ConsensusResult result) {}
-
-  @override
-  void onMetricsReported(SyncMetrics metrics) {}
-
-  @override
-  void onSyncFailed(Object error) {}
-}
-
-/// Mutable midpoint shared across sync cycles so a test can move
-/// "network time" between cycles.
-class _MidpointBox {
-  _MidpointBox(this.midpointMs);
-  int midpointMs;
-}
-
-/// Shared getTime() tally so a test can count how many queries actually
-/// executed independently of which ranked source the engine selected.
-class _ProbeCounter {
-  int count = 0;
-}
-
-/// A [_BoxedSource] variant that tallies every getTime() call into a
-/// shared [_ProbeCounter].
-class _CountingSource implements TimeSource {
-  _CountingSource(
-    this._box, {
-    required this.id,
-    required this.groupId,
-    required this.counter,
-  });
-
-  final _MidpointBox _box;
-  @override
-  final String id;
-  @override
-  final String groupId;
-  final _ProbeCounter counter;
-  static const int halfWidthMs = 10;
-
-  @override
-  Future<TimeSample> getTime() async {
-    counter.count++;
-    return TimeSample(
-      interval: TimeInterval(
-        startMs: _box.midpointMs - halfWidthMs,
-        endMs: _box.midpointMs + halfWidthMs,
-      ),
-      sourceId: id,
-      groupId: groupId,
-    );
-  }
-}
-
-/// A [TimeSource] whose every query throws, driving the engine into a
-/// quorum failure — the transient classification path.
-class _FailingSource implements TimeSource {
-  _FailingSource({required this.id, required this.groupId});
-
-  @override
-  final String id;
-  @override
-  final String groupId;
-
-  @override
-  Future<TimeSample> getTime() async => throw Exception('unreachable host');
-}
-
 /// A [TimeSource] whose [warm] never completes, to exercise the
 /// bootstrap warm-await bound: a hung handshake must not stall
 /// initialize() past [SyncEngine.warmBarrierCap].
@@ -1923,100 +1853,4 @@ class _HungWarmSource implements TimeSource, Warmable {
 
   @override
   Future<TimeSample> getTime() => Completer<TimeSample>().future;
-}
-
-/// A [TimeSource] blocked on an external gate, letting a test hold the
-/// first sync cycle in flight and release it deterministically.
-///
-/// [entered] (optional) resolves when [getTime] is first invoked. In a
-/// cycle, `onSyncStarted` strictly precedes the source queries and the
-/// impl's in-flight guard is armed before the engine's `sync()` is
-/// awaited — so a test awaiting [entered] knows both have happened.
-class _GatedSource implements TimeSource {
-  _GatedSource(
-    this._gate, {
-    required this.id,
-    required this.groupId,
-    this.entered,
-  });
-
-  final Completer<void> _gate;
-  final Completer<void>? entered;
-  @override
-  final String id;
-  @override
-  final String groupId;
-  static const int halfWidthMs = 10;
-
-  @override
-  Future<TimeSample> getTime() async {
-    if (entered != null && !entered!.isCompleted) entered!.complete();
-    await _gate.future;
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    return TimeSample(
-      interval: TimeInterval(
-        startMs: nowMs - halfWidthMs,
-        endMs: nowMs + halfWidthMs,
-      ),
-      sourceId: id,
-      groupId: groupId,
-    );
-  }
-}
-
-/// A [TimeSource] that answers immediately until the flag flips, then
-/// blocks on the gate — so a test can establish an anchor with the
-/// first cycle and hold a *subsequent* cycle in flight.
-class _GatedThenBoxedSource implements TimeSource {
-  _GatedThenBoxedSource(
-    this._gateActive,
-    this._gate, {
-    required this.id,
-    required this.groupId,
-  });
-
-  final bool Function() _gateActive;
-  final Completer<void> _gate;
-  @override
-  final String id;
-  @override
-  final String groupId;
-  static const int halfWidthMs = 10;
-
-  @override
-  Future<TimeSample> getTime() async {
-    if (_gateActive()) await _gate.future;
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    return TimeSample(
-      interval: TimeInterval(
-        startMs: nowMs - halfWidthMs,
-        endMs: nowMs + halfWidthMs,
-      ),
-      sourceId: id,
-      groupId: groupId,
-    );
-  }
-}
-
-/// A [TimeSource] that reports an interval centred on a [_MidpointBox]
-/// so consensus can be driven deterministically.
-class _BoxedSource implements TimeSource {
-  _BoxedSource(this._box, {required this.id, required this.groupId});
-
-  final _MidpointBox _box;
-  @override
-  final String id;
-  @override
-  final String groupId;
-  static const int halfWidthMs = 10;
-
-  @override
-  Future<TimeSample> getTime() async => TimeSample(
-    interval: TimeInterval(
-      startMs: _box.midpointMs - halfWidthMs,
-      endMs: _box.midpointMs + halfWidthMs,
-    ),
-    sourceId: id,
-    groupId: groupId,
-  );
 }
