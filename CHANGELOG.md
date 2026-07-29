@@ -243,6 +243,22 @@
 
 ### Added
 
+- **`NtpServerInfo`, `NtpServerTier`, `NtpLeapPolicy`, and
+  `config.ntpInventory`.** The curated inventory carries per-host
+  metadata rather than bare strings: the curation tier a host was
+  admitted under, the stratum and autonomous system a live probe
+  observed, and how firmly its leap-second behaviour is established.
+  Source selection needs the tier to know which hosts are
+  self-localizing, and the group id to avoid drawing a quorum that
+  counts one operator eleven times; both were previously recoverable
+  only from a doc comment. `ntpServers` remains the hostname view of
+  the same data.
+
+  Measured RTT and resolved IP are deliberately absent. An RTT from
+  the probe's UK vantage is a misleading prior for a device elsewhere,
+  and a resolved address is stale as soon as an operator renumbers —
+  both are properties of a query rather than of a host.
+
 - **Durable per-source quality stats** (`SourceQualityTracker`): the
   smoothed source metrics — EWMA RTT (from measured `TimeSample.delayMs`),
   EWMA in-cycle burst jitter, EWMA success rate, last-probed timestamp,

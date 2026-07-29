@@ -122,7 +122,7 @@ await TrustedTime.initialize(
 );
 ```
 
-The plain-NTP host list is not configurable: the library ships a fixed, curated inventory of 51 verified hosts (see `ntpServers` in the configuration reference below).
+The plain-NTP host list is not configurable: the library ships a fixed, curated inventory of 51 verified hosts (see `ntpServers` in the configuration reference below). `config.ntpInventory` exposes each host's tier, observed stratum and autonomous system, and leap-second evidence via `NtpServerInfo`.
 
 ### Get the current time
 
@@ -326,7 +326,8 @@ void main() {
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `ntpServers` | `List<String>` | curated 51-host inventory | **Read-only.** The library's fixed NTP host inventory, verified by live probe. No host is a documented leap-second smearer — Google, AWS, and Meta are excluded on published-smear evidence, since a smeared source diverges from stepping sources by up to a full second around a leap event |
+| `ntpServers` | `List<String>` | curated 51-host inventory | **Read-only.** Hostnames from the library's fixed NTP inventory, verified by live probe. No host is a documented leap-second smearer — Google, AWS, and Meta are excluded on published-smear evidence, since a smeared source diverges from stepping sources by up to a full second around a leap event |
+| `ntpInventory` | `List<NtpServerInfo>` | curated 51-host inventory | **Read-only.** The same inventory with per-host metadata: `tier` (anycast / unicast stratum 1 / unicast stratum 2), `observedStratum`, `observedGroupId`, and `leapPolicy` |
 | `ntpBurstCount` | `int` | `8` | Sequential SNTP exchanges per NTP source per sync; the lowest-delay sample is kept |
 | `ntsServers` | `List<String>` | `time.cloudflare.com`, `nts.netnod.se` | NTS server hostnames |
 | `ntsPort` | `int` | `4460` | NTS-KE port |

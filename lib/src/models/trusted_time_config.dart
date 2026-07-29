@@ -3,6 +3,7 @@ import 'package:nts/nts.dart' as nts;
 
 import '../data/ntp_inventory.dart';
 import '../domain/time_source.dart';
+import 'ntp_server_info.dart';
 
 @immutable
 /// Configuration parameters for the [TrustedTime] engine.
@@ -112,7 +113,17 @@ final class TrustedTimeConfig {
   /// remaining public servers, which run stock `ntpd`/`chrony`.
   ///
   /// Empty when [disableNtpForTesting] is set.
+  ///
+  /// This is the hostname view; [ntpInventory] carries each host's
+  /// tier, observed stratum and autonomous system, and leap-second
+  /// evidence.
   List<String> get ntpServers =>
+      disableNtpForTesting ? const [] : curatedNtpHostnames;
+
+  /// The curated inventory behind [ntpServers], with per-host metadata.
+  ///
+  /// Empty when [disableNtpForTesting] is set.
+  List<NtpServerInfo> get ntpInventory =>
       disableNtpForTesting ? const [] : curatedNtpInventory;
 
   /// The list of Network Time Security (NTS) servers used for cryptographically

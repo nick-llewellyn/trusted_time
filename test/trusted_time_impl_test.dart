@@ -1,5 +1,4 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/data/ntp_inventory.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
 

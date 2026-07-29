@@ -6,7 +6,6 @@
 //   time_sample_test.dart TimeSample
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:trusted_time/src/data/ntp_inventory.dart';
 import 'package:trusted_time/trusted_time.dart';
 
 void main() {
@@ -153,8 +152,18 @@ void main() {
   group('TrustedTimeConfig default source lists', () {
     test('ntpServers is the curated inventory', () {
       const config = TrustedTimeConfig();
-      expect(config.ntpServers, same(curatedNtpInventory));
+      expect(config.ntpInventory, same(curatedNtpInventory));
       expect(config.ntpServers, hasLength(51));
+    });
+
+    test('ntpServers is the hostname view of ntpInventory', () {
+      // The engine queries by name; the metadata drives selection.
+      // These two must not drift apart.
+      const config = TrustedTimeConfig();
+      expect(
+        config.ntpServers,
+        config.ntpInventory.map((e) => e.host).toList(),
+      );
     });
 
     test('the inventory excludes every documented smearing operator', () {
@@ -163,7 +172,7 @@ void main() {
       // Google, AWS, and Meta all publish their smear windows; they
       // were probed and dropped on that evidence (trusted_time-5fz).
       expect(
-        curatedNtpInventory,
+        curatedNtpInventory.map((e) => e.host),
         isNot(
           anyElement(
             anyOf(contains('google'), contains('aws'), contains('facebook')),
@@ -176,14 +185,40 @@ void main() {
       // A repeated host would inflate a quorum with one server's
       // opinion counted twice.
       expect(
-        curatedNtpInventory.toSet(),
+        curatedNtpInventory.map((e) => e.host).toSet(),
         hasLength(curatedNtpInventory.length),
       );
+    });
+
+    test('every entry carries a resolved group id', () {
+      // 'asn-unknown' is the probe's sentinel for a host whose
+      // autonomous system could not be established. An entry carrying
+      // it would silently escape the diversity accounting.
+      for (final entry in curatedNtpInventory) {
+        expect(
+          entry.observedGroupId,
+          matches(RegExp(r'^as[0-9]+$')),
+          reason: '${entry.host} has an unusable group id',
+        );
+      }
+    });
+
+    test('the anycast core spans the tiers it claims', () {
+      // mvq partitions on tier: the anycast core is self-localizing
+      // and always queried, the unicast hosts are the explore pool.
+      final byTier = <NtpServerTier, int>{};
+      for (final entry in curatedNtpInventory) {
+        byTier[entry.tier] = (byTier[entry.tier] ?? 0) + 1;
+      }
+      expect(byTier[NtpServerTier.anycast], 10);
+      expect(byTier[NtpServerTier.unicastStratum1], 34);
+      expect(byTier[NtpServerTier.unicastStratum2], 7);
     });
 
     test('disableNtpForTesting empties the NTP pool', () {
       const config = TrustedTimeConfig(disableNtpForTesting: true);
       expect(config.ntpServers, isEmpty);
+      expect(config.ntpInventory, isEmpty);
     });
 
     test('ntsServers default to two anycast anchors from distinct '
