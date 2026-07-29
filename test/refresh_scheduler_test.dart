@@ -12,19 +12,26 @@ void main() {
     // is already running, so the callback may never reach the code that
     // would clear the field.
 
+    // Every case disposes inside the fakeAsync zone rather than via
+    // addTearDown: a tear-down runs after the zone has exited, so any
+    // timer still armed at that point has already leaked. Disposing
+    // in-zone also makes "nothing left armed" assertable.
+
     test('a fired retry timer clears retryTimerActive', () {
       fakeAsync((async) {
         final scheduler = RefreshScheduler(
           initialInterval: const Duration(minutes: 5),
           onTick: () {},
         );
-        addTearDown(scheduler.dispose);
 
         scheduler.scheduleRetry(const Duration(seconds: 2));
         expect(scheduler.retryTimerActive, isTrue);
 
         async.elapse(const Duration(seconds: 2));
         expect(scheduler.retryTimerActive, isFalse);
+
+        scheduler.dispose();
+        expect(async.pendingTimers, isEmpty);
       });
     });
 
@@ -39,13 +46,15 @@ void main() {
           initialInterval: const Duration(minutes: 5),
           onTick: () => ticks++,
         );
-        addTearDown(scheduler.dispose);
 
         scheduler.scheduleRetry(const Duration(seconds: 2));
         async.elapse(const Duration(seconds: 2));
 
         expect(ticks, 1);
         expect(scheduler.retryTimerActive, isFalse);
+
+        scheduler.dispose();
+        expect(async.pendingTimers, isEmpty);
       });
     });
 
@@ -64,12 +73,17 @@ void main() {
             scheduler.scheduleRefresh();
           },
         );
-        addTearDown(scheduler.dispose);
 
         scheduler.scheduleRefresh();
         async.elapse(const Duration(minutes: 15));
 
         expect(ticks, 3);
+
+        // onTick re-arms, so a timer is still pending here by design.
+        // Dispose in-zone so it does not outlive the zone.
+        expect(async.pendingTimers, hasLength(1));
+        scheduler.dispose();
+        expect(async.pendingTimers, isEmpty);
       });
     });
 
