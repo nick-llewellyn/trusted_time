@@ -83,7 +83,7 @@ void main() {
         config: const TrustedTimeConfig(
           minimumQuorum: 2,
           minGroupCount: 1,
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
         clock: FakeMonotonicClock(),
@@ -122,7 +122,7 @@ void main() {
           config: const TrustedTimeConfig(
             minimumQuorum: 2,
             minGroupCount: 1,
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
           ).copyWith(additionalSources: [s1, s2]),
           clock: FakeMonotonicClock(),
@@ -170,7 +170,7 @@ void main() {
         config: const TrustedTimeConfig(
           minimumQuorum: 3,
           minGroupCount: 1,
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2, s3]),
         clock: FakeMonotonicClock(),
@@ -216,7 +216,7 @@ void main() {
         config: const TrustedTimeConfig(
           minimumQuorum: 2,
           minGroupCount: 1,
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
         clock: FakeMonotonicClock(),
@@ -253,7 +253,7 @@ void main() {
         config: const TrustedTimeConfig(
           minimumQuorum: 2,
           minGroupCount: 1,
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
         clock: FakeMonotonicClock(),
@@ -297,7 +297,7 @@ void main() {
         config: const TrustedTimeConfig(
           minimumQuorum: 2,
           minGroupCount: 1,
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
         ).copyWith(additionalSources: [s1, s2]),
         clock: FakeMonotonicClock.justBooted(),

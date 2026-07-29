@@ -163,7 +163,7 @@ void main() {
       // where this exact config throws TrustedTimeSecurityException.
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
           persistState: false,
           requireSleepAwareProjection: true,

@@ -6,6 +6,7 @@
 //   time_sample_test.dart TimeSample
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/data/ntp_inventory.dart';
 import 'package:trusted_time/trusted_time.dart';
 
 void main() {
@@ -150,18 +151,39 @@ void main() {
   });
 
   group('TrustedTimeConfig default source lists', () {
-    test('ntpServers default to three stepping operators', () {
-      // Leap-second policy: every default host steps. time.google.com
-      // (smearing) was deliberately removed — a smeared source
-      // diverges from stepping sources by up to a full second around
-      // a leap event.
+    test('ntpServers is the curated inventory', () {
       const config = TrustedTimeConfig();
-      expect(config.ntpServers, [
-        'pool.ntp.org',
-        'time.apple.com',
-        'time.windows.com',
-      ]);
-      expect(config.ntpServers, isNot(contains('time.google.com')));
+      expect(config.ntpServers, same(curatedNtpInventory));
+      expect(config.ntpServers, hasLength(51));
+    });
+
+    test('the inventory excludes every documented smearing operator', () {
+      // A smeared source diverges from stepping sources by up to a
+      // full second around a leap event and can poison the consensus.
+      // Google, AWS, and Meta all publish their smear windows; they
+      // were probed and dropped on that evidence (trusted_time-5fz).
+      expect(
+        curatedNtpInventory,
+        isNot(
+          anyElement(
+            anyOf(contains('google'), contains('aws'), contains('facebook')),
+          ),
+        ),
+      );
+    });
+
+    test('the inventory has no duplicate hosts', () {
+      // A repeated host would inflate a quorum with one server's
+      // opinion counted twice.
+      expect(
+        curatedNtpInventory.toSet(),
+        hasLength(curatedNtpInventory.length),
+      );
+    });
+
+    test('disableNtpForTesting empties the NTP pool', () {
+      const config = TrustedTimeConfig(disableNtpForTesting: true);
+      expect(config.ntpServers, isEmpty);
     });
 
     test('ntsServers default to two anycast anchors from distinct '

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/data/ntp_inventory.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
 
@@ -109,7 +110,7 @@ void main() {
         // breaks the proxy entirely.
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
             persistState: false,
           ),
@@ -154,7 +155,7 @@ void main() {
         // produce three observable `onSyncStarted` events.
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
             persistState: false,
           ),
@@ -222,7 +223,7 @@ void main() {
         // TrustedTime.initialize, so the exact instance we pass in is
         // what gets stashed on TrustedTimeImpl._config.
         const config = TrustedTimeConfig(
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
           refreshInterval: Duration(minutes: 7),
           minimumQuorum: 3,
@@ -257,13 +258,11 @@ void main() {
       // object identities. Equality must therefore come from the new
       // operator==/hashCode, not from `identical`.
       final a = TrustedTimeConfig(
-        ntpServers: const ['pool.ntp.org'],
         ntsServers: const ['time.cloudflare.com'],
         refreshInterval: const Duration(minutes: 5),
         minimumQuorum: 3,
       );
       final b = TrustedTimeConfig(
-        ntpServers: const ['pool.ntp.org'],
         ntsServers: const ['time.cloudflare.com'],
         refreshInterval: const Duration(minutes: 5),
         minimumQuorum: 3,
@@ -296,7 +295,6 @@ void main() {
 
     test('toString surfaces the source pools and quorum knobs', () {
       final config = TrustedTimeConfig(
-        ntpServers: const ['pool.ntp.org'],
         ntsServers: const ['time.cloudflare.com', 'mmo1.nts.netnod.se'],
         minimumQuorum: 4,
         refreshInterval: const Duration(minutes: 2),
@@ -304,7 +302,9 @@ void main() {
       final text = config.toString();
 
       expect(text, startsWith('TrustedTimeConfig('));
-      expect(text, contains('ntpServers: [pool.ntp.org]'));
+      // Summarised, not enumerated: the curated inventory is fixed and
+      // 51 entries long.
+      expect(text, contains('ntpServers: ${curatedNtpInventory.length} hosts'));
       expect(
         text,
         contains('ntsServers: [time.cloudflare.com, mmo1.nts.netnod.se]'),

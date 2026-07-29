@@ -93,8 +93,11 @@ Notes on previously-listed divergences:
   NTP-removal decision in the light of new 2026-05-09 stress-run
   evidence about structural NTS-KE deployment gaps. NTP is reinstated
   as a tiered, admission-gated precision contributor; the
-  `package:ntp` dependency and `ntpServers` config field are
-  intentionally retained per ADR 0007.
+  `package:ntp` dependency is intentionally retained per ADR 0007.
+  `ntpServers` is no longer a config field — the host list is now a
+  fixed curated inventory in `lib/src/data/ntp_inventory.dart`,
+  exposed read-only — but NTP itself remains a contributor, which is
+  what ADR 0007 decided.
 - **ADR 0005**'s "Divergence" table row that inherited ADR 0003's
   NTP-removal claim is no longer a divergence for the same reason
   (the underlying decision has been superseded). The row's text is

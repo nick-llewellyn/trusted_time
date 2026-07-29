@@ -23,7 +23,7 @@ SyncEngine _engineFor(
       // Wait for every source each cycle so admission is deterministic and
       // does not depend on which sample wins the early-exit race.
       earlyExit: false,
-      ntpServers: [],
+      disableNtpForTesting: true,
       ntsServers: [],
     ).copyWith(additionalSources: sources),
     clock: clock ?? FakeMonotonicClock(),

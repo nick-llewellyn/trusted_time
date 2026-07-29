@@ -13,7 +13,7 @@ TrustedTimeConfig offlineConfig({
   bool persistState = true,
   List<String> ntsServers = const [],
 }) => TrustedTimeConfig(
-  ntpServers: const [],
+  disableNtpForTesting: true,
   ntsServers: ntsServers,
   minimumQuorum: 2,
   persistState: persistState,

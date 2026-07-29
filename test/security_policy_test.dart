@@ -79,7 +79,7 @@ void main() {
     Future<void> initWith(List<TimeSource> sources) async {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          ntpServers: const [],
+          disableNtpForTesting: true,
           ntsServers: const [],
           persistState: false,
           minimumQuorum: 2,
@@ -187,7 +187,7 @@ void main() {
     }) async {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          ntpServers: const [],
+          disableNtpForTesting: true,
           ntsServers: const [],
           persistState: persistState,
           minimumQuorum: 2,

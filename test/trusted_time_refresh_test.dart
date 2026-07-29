@@ -37,7 +37,7 @@ void main() {
     Future<void> initEmpty() async {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
           persistState: false,
           refreshInterval: Duration(minutes: 5),
@@ -174,7 +174,7 @@ void main() {
       // recovery retries stay armed.
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          ntpServers: const [],
+          disableNtpForTesting: true,
           ntsServers: const [],
           persistState: false,
           additionalSources: [
@@ -199,7 +199,7 @@ void main() {
         // contexts). The retry timer must stay unarmed.
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
             persistState: false,
           ),
@@ -234,7 +234,7 @@ void main() {
       );
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          ntpServers: const [],
+          disableNtpForTesting: true,
           ntsServers: const [],
           additionalSources: [
             BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
@@ -307,7 +307,7 @@ void main() {
       );
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          ntpServers: const [],
+          disableNtpForTesting: true,
           ntsServers: const [],
           earlyExit: false,
           additionalSources: [
