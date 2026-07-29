@@ -9,109 +9,11 @@ import '../exceptions.dart';
 import '../models.dart';
 import '../monotonic_clock.dart';
 import 'nts_auth_level.dart';
+import 'nts_burst_reducer.dart';
+import 'registrable_domain.dart';
 
-/// Collapses the successful samples of one [NtsSource] query burst
-/// into the single sample handed to the consensus.
-///
-/// Invoked with a non-empty list; every sample comes from the same
-/// host within one [NtsSource.getTime] call, so cross-source
-/// comparability is not a concern. The returned sample **must be one
-/// of the input instances** (an element of `samples`, compared by
-/// identity): [NtsSource] maps the winner back to its raw attempt to
-/// attribute the server stratum, and a copied or derived instance
-/// breaks that mapping — stratum reporting is then skipped for the
-/// burst (asserted in debug builds).
-typedef NtsBurstReducer = TimeSample Function(List<TimeSample> samples);
-
-/// Default [NtsBurstReducer]: keeps the sample with the smallest
-/// measured delay ([TimeSample.delayMs] — the network-only peer delay
-/// δ for samples carrying the 7.1 clock-filter fields, else the whole
-/// round trip).
-///
-/// The minimum measured delay is the tightest, least path-asymmetric
-/// estimate in the burst — the burst-and-pick-min strategy
-/// `package:nts` documents. Every sync cycle relies on this reduction:
-/// each [NtsSource.getTime] call collapses its burst through it before
-/// the sample reaches the consensus.
-/// The comparison key is [TimeSample.delayMs] when measured, else
-/// `2 × uncertaintyMs` (the interval half-width is ≈ δ/2, so doubling
-/// keeps the key in delay units). For NTS samples carrying the 7.1
-/// clock-filter fields, [TimeSample.delayMs] is the RFC 5905 peer
-/// delay δ (round trip minus server processing time), so the key
-/// excludes server-side latency and selects on pure network delay;
-/// pre-7.1 samples carry the whole RTT there and reduce exactly as
-/// before. All samples in a burst come from one source, so the key is
-/// internally consistent even when δ is unmeasured.
-TimeSample lowestRttReducer(List<TimeSample> samples) {
-  assert(samples.isNotEmpty, 'reducer requires at least one sample');
-  var best = samples.first;
-  for (final s in samples.skip(1)) {
-    if (_rttKey(s) < _rttKey(best)) best = s;
-  }
-  return best;
-}
-
-int _rttKey(TimeSample sample) => sample.delayMs ?? (2 * sample.uncertaintyMs);
-
-/// Multi-label public suffixes relevant to plausible time-server
-/// hostnames — a deliberately tiny embedded subset of the Public
-/// Suffix List (mini-PSL), so registrable-domain extraction needs no
-/// dependency.
-///
-/// Only suffixes where the *registrable* domain sits three labels
-/// deep need an entry (e.g. `cam.ac.uk` under `ac.uk`,
-/// `neu.edu.cn` under `edu.cn`); every other hostname falls through
-/// to the last-two-labels default. A suffix missing from this set is
-/// fail-safe in the direction that matters: the extractor then
-/// groups at the second level, merging *more* hosts into one group
-/// and thus under-counting diversity — the same never-inflate policy
-/// as the NTP tier's `asn-unknown` sentinel.
-const Set<String> _multiLabelPublicSuffixes = {
-  // United Kingdom
-  'ac.uk', 'co.uk', 'gov.uk', 'org.uk', 'net.uk',
-  // China
-  'edu.cn', 'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'ac.cn',
-  // Brazil (note: `ntp.br` itself is registrable, so it has no entry)
-  'com.br', 'net.br', 'org.br', 'edu.br', 'gov.br',
-  // Australia
-  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au',
-  // Japan
-  'co.jp', 'ne.jp', 'or.jp', 'ac.jp', 'go.jp',
-  // New Zealand
-  'co.nz', 'net.nz', 'org.nz', 'ac.nz', 'govt.nz',
-  // South Africa
-  'co.za', 'ac.za', 'org.za',
-  // India
-  'co.in', 'net.in', 'org.in', 'ac.in', 'gov.in', 'edu.in',
-  // South Korea
-  'co.kr', 'ac.kr', 're.kr',
-};
-
-/// Extracts the registrable domain (public suffix + one label) from
-/// [host], using the embedded [_multiLabelPublicSuffixes] mini-PSL.
-///
-/// `gbg1.nts.netnod.se` → `netnod.se`; `ntp0.cam.ac.uk` →
-/// `cam.ac.uk`; `ntp.neu.edu.cn` → `neu.edu.cn`. Hostnames with two
-/// or fewer labels (including a bare TLD or a single label) are
-/// returned lowercased. Empty labels — a trailing root dot in
-/// FQDN form (`example.com.`) or stray consecutive dots — are
-/// dropped before extraction, so `example.com.` groups with
-/// `example.com` rather than minting a malformed `com.` group. IP
-/// literals get no special handling — they pass through the same
-/// label logic, which is harmless: grouping collapses rather than
-/// splits.
-String _registrableDomain(String host) {
-  final labels = host
-      .toLowerCase()
-      .split('.')
-      .where((label) => label.isNotEmpty)
-      .toList();
-  if (labels.length <= 2) return labels.join('.');
-  final lastTwo = labels.sublist(labels.length - 2).join('.');
-  final take = _multiLabelPublicSuffixes.contains(lastTwo) ? 3 : 2;
-  if (labels.length <= take) return labels.join('.');
-  return labels.sublist(labels.length - take).join('.');
-}
+export 'nts_auth_level.dart' show authLevelForTrustBackend;
+export 'nts_burst_reducer.dart' show NtsBurstReducer, lowestRttReducer;
 
 /// RFC 8915-compliant NTS (Network Time Security) time source.
 ///
@@ -327,7 +229,7 @@ final class NtsSource implements TimeSource, Warmable {
   /// unlike the NTP tier's ASN lookup this grouping needs no network
   /// I/O and cannot be skewed by resolver or vantage-point effects.
   @override
-  String get groupId => _registrableDomain(_host);
+  String get groupId => registrableDomain(_host);
 
   /// Whether this source is cryptographically secure.
   /// Returns `true` — this implementation uses proper RFC 8915 AEAD
@@ -552,7 +454,7 @@ final class NtsSource implements TimeSource, Warmable {
     // leave jitter null rather than reporting a misleading 0. Attached
     // as a copy after the identity lookup above so the reducer
     // contract (winner must be an input instance) is preserved.
-    final jitterMs = _burstJitterMs(samples);
+    final jitterMs = burstJitterMs(samples);
     if (jitterMs == null) return winner;
     return TimeSample(
       interval: winner.interval,
@@ -566,24 +468,6 @@ final class NtsSource implements TimeSource, Warmable {
       stratum: winner.stratum,
       jitterMs: jitterMs,
     );
-  }
-
-  /// Spread (max − min) of [TimeSample.delayMs] across the burst's
-  /// successful attempts, or null when fewer than two attempts carry a
-  /// measured delay.
-  static int? _burstJitterMs(List<TimeSample> samples) {
-    int? minDelay;
-    int? maxDelay;
-    var measured = 0;
-    for (final s in samples) {
-      final d = s.delayMs;
-      if (d == null) continue;
-      measured++;
-      if (minDelay == null || d < minDelay) minDelay = d;
-      if (maxDelay == null || d > maxDelay) maxDelay = d;
-    }
-    if (measured < 2) return null;
-    return maxDelay! - minDelay!;
   }
 
   /// Converts one successful raw query result into the [TimeSample]
@@ -708,38 +592,4 @@ final class _BurstSuccess {
 
   final nts.NtsTimeSample raw;
   final int receivedAtMs;
-}
-
-/// Maps the trust-anchor backend that authenticated an NTS handshake to
-/// the [NtsAuthLevel] recorded on the resulting [TimeSample].
-///
-/// [NtsAuthLevel.verified] is reserved for library-controlled trust
-/// stores — [nts.TrustBackend.webpkiRoots] (bundled roots) and
-/// [nts.TrustBackend.custom] (caller-supplied roots) — where a
-/// corporate-injected or MDM-installed CA cannot reach the validation
-/// path. Platform-mediated paths ([nts.TrustBackend.platform] and the
-/// Android-only [nts.TrustBackend.platformWithHybridFallback]) and the
-/// defensive `null` case map to [NtsAuthLevel.none]: the TLS handshake
-/// succeeded, but its authenticity is not end-to-end verifiable from the
-/// library, so the sample must never anchor the consensus truth box.
-///
-/// `platformWithHybridFallback` maps to `none` even though the bundle
-/// was the authoritative anchor for that particular chain — the *path*
-/// still runs through platform machinery, and the contract requires the
-/// conservative classification.
-///
-/// Exposed via [visibleForTesting] for the mapping-table coverage in
-/// `test/nts_source_test.dart`; it is not part of the public API. See
-/// `doc/design/tiered-trust-implementation.md` section 3.2.
-@visibleForTesting
-NtsAuthLevel authLevelForTrustBackend(nts.TrustBackend? backend) {
-  switch (backend) {
-    case nts.TrustBackend.webpkiRoots:
-    case nts.TrustBackend.custom:
-      return NtsAuthLevel.verified;
-    case nts.TrustBackend.platform:
-    case nts.TrustBackend.platformWithHybridFallback:
-    case null:
-      return NtsAuthLevel.none;
-  }
 }
