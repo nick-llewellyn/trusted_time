@@ -70,7 +70,7 @@ class BackgroundChannel {
       await _invoke(interval);
     } else {
       _desktopTimer?.cancel();
-      _desktopTimer = Timer.periodic(interval, (_) => _onSync());
+      _desktopTimer = Timer.periodic(interval, (_) => unawaited(_onSync()));
     }
   }
 
