@@ -1,35 +1,23 @@
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
 import 'package:trusted_time/src/background_sync.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
 import 'package:trusted_time/src/models.dart';
-import 'package:trusted_time/src/trusted_time_impl.dart';
-import 'package:trusted_time/trusted_time.dart' as public_api;
 
 import 'support/fake_clocks.dart';
 import 'support/fake_sources.dart';
+import 'support/offline_config.dart';
 
 /// Coverage for the headless background-sync unit-of-work
-/// ([runBackgroundSync]), its public-API wrapper
-/// (`TrustedTime.runBackgroundSync` / `registerBackgroundCallback`), and
-/// the `TrustedTime.enableBackgroundSync` scheduling contract (native
-/// interval clamping and the desktop in-isolate timer fallback).
+/// ([runBackgroundSync]) at the `src` level: anchor persistence, failure
+/// semantics, and the per-platform retry schedule.
 ///
-/// **Scope**: these tests pin the Dart-side contract — anchor persistence,
-/// failure semantics, callback-handle registration, and the
-/// `notifyBackgroundComplete` channel signal. They do **not** drive the
-/// real OS scheduler because that requires a device and is
-/// platform-specific. To exercise the real OS scheduler manually:
-///
-/// - Android: `adb shell cmd jobscheduler run -f [package] [jobId]`
-///   against a debug-built host app, then inspect logs for the
-///   `notifyBackgroundComplete` channel call.
-/// - iOS: in Xcode with the simulator paused, run
-///   `e -l objc -- (void)[[BGTaskScheduler sharedScheduler]
-///   _simulateLaunchForTaskWithIdentifier:@"com.trustedtime.backgroundsync"]`
-///   and observe the headless engine spinning up.
+/// The public-API wrappers around this unit of work live in
+/// `trusted_time_background_test.dart` (callback registration and
+/// `TrustedTime.runBackgroundSync`) and
+/// `trusted_time_scheduling_test.dart` (stop-reason reporting and
+/// `TrustedTime.enableBackgroundSync`).
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -39,7 +27,7 @@ void main() {
     test('persists fresh anchor when sync succeeds', () async {
       final store = InMemoryAnchorStorage();
       final result = await runBackgroundSync(
-        config: _offlineConfig(
+        config: offlineConfig(
           sources: [
             FakeSource(
               idValue: 'fake-a',
@@ -73,7 +61,7 @@ void main() {
     test('returns failure when quorum is not reached', () async {
       final store = InMemoryAnchorStorage();
       final result = await runBackgroundSync(
-        config: _offlineConfig(
+        config: offlineConfig(
           sources: [
             FakeSource(
               idValue: 'a',
@@ -101,7 +89,7 @@ void main() {
     test('skips persistence when persistState is false', () async {
       final store = InMemoryAnchorStorage();
       final result = await runBackgroundSync(
-        config: _offlineConfig(
+        config: offlineConfig(
           persistState: false,
           sources: [
             FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
@@ -134,7 +122,7 @@ void main() {
         await store.save(stale);
 
         final result = await runBackgroundSync(
-          config: _offlineConfig(
+          config: offlineConfig(
             sources: [
               FakeSource(idValue: 'stub-a', groupIdValue: 'g1', utc: freshUtc),
               FakeSource(
@@ -175,7 +163,7 @@ void main() {
       await store.save(original);
 
       final result = await runBackgroundSync(
-        config: _offlineConfig(
+        config: offlineConfig(
           sources: [
             FakeSource(
               idValue: 'a',
@@ -250,7 +238,7 @@ void main() {
           failuresBeforeSuccess: 1,
         );
         final result = await runBackgroundSync(
-          config: _offlineConfig(sources: [a, b]),
+          config: offlineConfig(sources: [a, b]),
           store: store,
           clock: FakeMonotonicClock(value: 5000),
           retryDelays: const [Duration.zero],
@@ -277,7 +265,7 @@ void main() {
             shouldThrow: true,
           );
           final result = await runBackgroundSync(
-            config: _offlineConfig(persistState: false, sources: [a, b]),
+            config: offlineConfig(persistState: false, sources: [a, b]),
             clock: FakeMonotonicClock(value: 5000),
             retryDelays: const [Duration.zero, Duration.zero],
           );
@@ -347,7 +335,7 @@ void main() {
         () async {
           var initCalls = 0;
           final result = await runBackgroundSync(
-            config: _offlineConfig(
+            config: offlineConfig(
               persistState: false,
               ntsServers: const ['nts.example.test'],
               sources: quorumFakes(),
@@ -366,7 +354,7 @@ void main() {
       test('skips the NTS runtime when ntsServers is empty', () async {
         var initCalls = 0;
         final result = await runBackgroundSync(
-          config: _offlineConfig(persistState: false, sources: quorumFakes()),
+          config: offlineConfig(persistState: false, sources: quorumFakes()),
           clock: FakeMonotonicClock(value: 5000),
           ntsInit: () async => initCalls++,
         );
@@ -379,7 +367,7 @@ void main() {
           'succeeds via other sources', () async {
         final store = InMemoryAnchorStorage();
         final result = await runBackgroundSync(
-          config: _offlineConfig(
+          config: offlineConfig(
             ntsServers: const ['nts.example.test'],
             sources: quorumFakes(),
           ),
@@ -397,7 +385,7 @@ void main() {
       test('treats an already-initialised StateError as success', () async {
         final store = InMemoryAnchorStorage();
         final result = await runBackgroundSync(
-          config: _offlineConfig(
+          config: offlineConfig(
             ntsServers: const ['nts.example.test'],
             sources: quorumFakes(),
           ),
@@ -455,676 +443,4 @@ void main() {
       });
     });
   });
-
-  group('TrustedTime.registerBackgroundCallback', () {
-    const channel = MethodChannel('trusted_time/background');
-    final calls = <MethodCall>[];
-
-    setUp(() {
-      calls.clear();
-      // The default test platform is host-dependent (macOS for the local
-      // test runner) which short-circuits registerBackgroundCallback as a
-      // no-op. Pin to Android so the channel-call branch is exercised;
-      // individual tests below override this where they specifically
-      // assert the non-mobile no-op path.
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
-            calls.add(call);
-            return null;
-          });
-    });
-
-    tearDown(() {
-      debugDefaultTargetPlatformOverride = null;
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, null);
-    });
-
-    test('forwards the callback handle to the native channel', () async {
-      await public_api.TrustedTime.registerBackgroundCallback(
-        _registerableTopLevelCallback,
-      );
-      expect(calls, hasLength(1));
-      expect(calls.single.method, 'setBackgroundCallbackHandle');
-      expect(calls.single.arguments, isA<Map>());
-      expect((calls.single.arguments as Map)['handle'], isA<int>());
-    });
-
-    test(
-      'throws ArgumentError when callback handle cannot be resolved',
-      () async {
-        // Nested (non-top-level) functions cannot be resolved to a callback
-        // handle by the Dart VM, so [PluginUtilities.getCallbackHandle]
-        // returns null. The `@pragma('vm:entry-point')` annotation is a
-        // separate, build-time concern not exercised here.
-        void localCallback() {}
-        expect(
-          () =>
-              public_api.TrustedTime.registerBackgroundCallback(localCallback),
-          throwsArgumentError,
-        );
-      },
-    );
-
-    test('swallows MissingPluginException when channel is unmocked', () async {
-      // Simulate a host that calls registration before the native plugin
-      // is available: clearing the mock handler installed in setUp causes
-      // invokeMethod to throw MissingPluginException, which
-      // [TrustedTime.registerBackgroundCallback] must swallow so shared
-      // startup code can call it unconditionally.
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, null);
-      await expectLater(
-        public_api.TrustedTime.registerBackgroundCallback(
-          _registerableTopLevelCallback,
-        ),
-        completes,
-      );
-    });
-
-    test('is a no-op on non-Android/iOS platforms (no channel call, '
-        'no ArgumentError for unresolvable callbacks)', () async {
-      // Override the per-group Android pin: pretend we're running on
-      // desktop so the platform short-circuit fires before
-      // PluginUtilities.getCallbackHandle is consulted. A closure (which
-      // would normally throw ArgumentError) must complete normally and
-      // the channel must receive zero calls because there is no OS
-      // scheduler to read the persisted handle on these platforms.
-      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
-      void localCallback() {}
-      await expectLater(
-        public_api.TrustedTime.registerBackgroundCallback(localCallback),
-        completes,
-      );
-      expect(calls, isEmpty);
-    });
-  });
-
-  group('TrustedTime.runBackgroundSync', () {
-    const channel = MethodChannel('trusted_time/background');
-    const monotonicChannel = MethodChannel('trusted_time/monotonic');
-    final consensusUtc = DateTime.utc(2026, 1, 15, 10);
-    final calls = <MethodCall>[];
-
-    setUp(() {
-      calls.clear();
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
-            calls.add(call);
-            return null;
-          });
-      // The public API wires the real PlatformMonotonicClock into the
-      // engine (no injection seam by design), so the monotonic channel
-      // must answer getUptimeMs for the sync to reach consensus.
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(monotonicChannel, (call) async {
-            if (call.method == 'getUptimeMs') return 5000;
-            return null;
-          });
-    });
-
-    tearDown(() {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, null);
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(monotonicChannel, null);
-    });
-
-    test(
-      'notifies native of completion with success=true on a passing run',
-      () async {
-        final result = await public_api.TrustedTime.runBackgroundSync(
-          // persistState=false so the run does not touch real
-          // flutter_secure_storage from the test process.
-          config: _offlineConfig(
-            persistState: false,
-            sources: [
-              FakeSource(
-                idValue: 'fake-a',
-                groupIdValue: 'g1',
-                utc: consensusUtc,
-              ),
-              FakeSource(
-                idValue: 'fake-b',
-                groupIdValue: 'g2',
-                utc: consensusUtc.add(const Duration(milliseconds: 5)),
-              ),
-            ],
-          ),
-        );
-        expect(result.isSuccess, isTrue);
-        expect(calls, hasLength(1));
-        expect(calls.single.method, 'notifyBackgroundComplete');
-        final args = calls.single.arguments as Map;
-        expect(args['success'], isTrue);
-        expect(args.containsKey('reason'), isFalse);
-        expect(args.containsKey('retryable'), isFalse);
-      },
-    );
-
-    test('notifies native of completion with success=false and reason on '
-        'a failing run', () async {
-      final result = await public_api.TrustedTime.runBackgroundSync(
-        config: _offlineConfig(
-          persistState: false,
-          sources: [
-            FakeSource(
-              idValue: 'a',
-              groupIdValue: 'g1',
-              utc: consensusUtc,
-              shouldThrow: true,
-            ),
-            FakeSource(
-              idValue: 'b',
-              groupIdValue: 'g2',
-              utc: consensusUtc,
-              shouldThrow: true,
-            ),
-          ],
-        ),
-        retryDelays: const [],
-      );
-      expect(result.isSuccess, isFalse);
-      expect(calls, hasLength(1));
-      expect(calls.single.method, 'notifyBackgroundComplete');
-      final args = calls.single.arguments as Map;
-      expect(args['success'], isFalse);
-      expect(args['reason'], isA<String>());
-      expect((args['reason'] as String).isNotEmpty, isTrue);
-      // Transient (quorum) failure: the Android worker should keep
-      // Result.retry() semantics for this interval.
-      expect(args['retryable'], isTrue);
-    });
-
-    test('notifies native with retryable=false for a non-transient '
-        'failure', () async {
-      // Invalid trust config throws ArgumentError inside the engine —
-      // the classification that must reach the native worker so it
-      // returns Result.failure() instead of Result.retry().
-      final result = await public_api.TrustedTime.runBackgroundSync(
-        config: const public_api.TrustedTimeConfig(
-          usePlatformTrust: true,
-          customRootCerts: [1, 2, 3],
-        ),
-        retryDelays: const [],
-      );
-      expect(result.isSuccess, isFalse);
-      expect(calls, hasLength(1));
-      final args = calls.single.arguments as Map;
-      expect(args['success'], isFalse);
-      expect(args['retryable'], isFalse);
-    });
-
-    test('swallows MissingPluginException when channel is unmocked', () async {
-      // The default mock from setUp() is overridden with `null` here so
-      // method-channel calls raise MissingPluginException (the realistic
-      // desktop behaviour). The public API must still return the
-      // sync result instead of propagating the channel error.
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, null);
-      final result = await public_api.TrustedTime.runBackgroundSync(
-        config: _offlineConfig(
-          persistState: false,
-          sources: [
-            FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
-            FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
-          ],
-        ),
-      );
-      expect(result.isSuccess, isTrue);
-    });
-
-    test('honors overrideForTesting: returns synthetic success without '
-        'network I/O or channel traffic', () async {
-      // Active mock must short-circuit the headless entrypoint identically
-      // to enableBackgroundSync / registerBackgroundCallback. A failing
-      // additionalSources list is wired in to prove the real sync engine
-      // is never reached: if the override path were missed, every source
-      // would throw and the result would be BackgroundSyncFailure.
-      final mockTime = DateTime.utc(2026, 6, 1, 12);
-      final mock = public_api.TrustedTimeMock(initial: mockTime);
-      public_api.TrustedTime.overrideForTesting(mock);
-      addTearDown(public_api.TrustedTime.resetOverride);
-
-      final result = await public_api.TrustedTime.runBackgroundSync(
-        config: _offlineConfig(
-          persistState: false,
-          sources: [
-            FakeSource(
-              idValue: 'a',
-              groupIdValue: 'g1',
-              utc: consensusUtc,
-              shouldThrow: true,
-            ),
-            FakeSource(
-              idValue: 'b',
-              groupIdValue: 'g2',
-              utc: consensusUtc,
-              shouldThrow: true,
-            ),
-          ],
-        ),
-      );
-
-      expect(result, isA<BackgroundSyncSuccess>());
-      expect(result.isSuccess, isTrue);
-      final success = result as BackgroundSyncSuccess;
-      expect(success.anchor.networkUtcMs, mockTime.millisecondsSinceEpoch);
-      expect(success.anchor.wallMs, mockTime.millisecondsSinceEpoch);
-      expect(success.elapsed, Duration.zero);
-      // Channel must see zero traffic — the override path skips the
-      // notifyBackgroundComplete signal entirely (matching how
-      // enableBackgroundSync / registerBackgroundCallback short-circuit
-      // before any platform-channel call).
-      expect(calls, isEmpty);
-    });
-
-    test('awaits onResult before sending notifyBackgroundComplete', () async {
-      // The teardown-race contract: work done inside onResult must be
-      // fully complete before the native completion signal is sent,
-      // because the Android worker destroys the headless engine on
-      // receipt of that signal. Ordering is pinned by recording events
-      // from both the hook and the channel mock into one list.
-      final events = <String>[];
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
-            events.add('channel:${call.method}');
-            return null;
-          });
-
-      TrustedTimeBackgroundResult? observed;
-      final result = await public_api.TrustedTime.runBackgroundSync(
-        config: _offlineConfig(
-          persistState: false,
-          sources: [
-            FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
-            FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
-          ],
-        ),
-        onResult: (r) async {
-          // A real event-loop turn, mimicking async file I/O in the hook.
-          await Future<void>.delayed(Duration.zero);
-          observed = r;
-          events.add('hook:onResult');
-        },
-      );
-
-      expect(result.isSuccess, isTrue);
-      expect(observed, same(result));
-      expect(events, ['hook:onResult', 'channel:notifyBackgroundComplete']);
-    });
-
-    test('onResult receives the failure result on a failing run', () async {
-      TrustedTimeBackgroundResult? observed;
-      final result = await public_api.TrustedTime.runBackgroundSync(
-        config: _offlineConfig(
-          persistState: false,
-          sources: [
-            FakeSource(
-              idValue: 'a',
-              groupIdValue: 'g1',
-              utc: consensusUtc,
-              shouldThrow: true,
-            ),
-            FakeSource(
-              idValue: 'b',
-              groupIdValue: 'g2',
-              utc: consensusUtc,
-              shouldThrow: true,
-            ),
-          ],
-        ),
-        onResult: (r) async => observed = r,
-        retryDelays: const [],
-      );
-      expect(result, isA<BackgroundSyncFailure>());
-      expect(observed, same(result));
-    });
-
-    test('a throwing onResult hook is swallowed: sync outcome and '
-        'completion signal are unaffected', () async {
-      final result = await public_api.TrustedTime.runBackgroundSync(
-        config: _offlineConfig(
-          persistState: false,
-          sources: [
-            FakeSource(idValue: 'a', groupIdValue: 'g1', utc: consensusUtc),
-            FakeSource(idValue: 'b', groupIdValue: 'g2', utc: consensusUtc),
-          ],
-        ),
-        onResult: (_) async => throw StateError('observer exploded'),
-      );
-      expect(result.isSuccess, isTrue);
-      // The completion signal must still be sent, with the sync's own
-      // outcome — not the observer's failure.
-      expect(calls, hasLength(1));
-      expect(calls.single.method, 'notifyBackgroundComplete');
-      expect((calls.single.arguments as Map)['success'], isTrue);
-    });
-
-    test('onResult observes the synthetic result under an active '
-        'TrustedTimeMock override', () async {
-      final mockTime = DateTime.utc(2026, 6, 1, 12);
-      final mock = public_api.TrustedTimeMock(initial: mockTime);
-      public_api.TrustedTime.overrideForTesting(mock);
-      addTearDown(public_api.TrustedTime.resetOverride);
-
-      TrustedTimeBackgroundResult? observed;
-      final result = await public_api.TrustedTime.runBackgroundSync(
-        onResult: (r) async => observed = r,
-      );
-      expect(observed, same(result));
-      expect(observed, isA<BackgroundSyncSuccess>());
-      // Still zero channel traffic on the override path.
-      expect(calls, isEmpty);
-    });
-  });
-
-  group('TrustedTime.getBackgroundStopReason', () {
-    const channel = MethodChannel('trusted_time/background');
-
-    tearDown(() {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, null);
-    });
-
-    test('maps a platform reply onto BackgroundSyncStopInfo', () async {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
-            expect(call.method, 'getBackgroundStopReason');
-            return {'state': 'ENQUEUED', 'stopReason': 3};
-          });
-
-      final info = await public_api.TrustedTime.getBackgroundStopReason();
-      expect(info, isNotNull);
-      expect(info!.state, 'ENQUEUED');
-      expect(info.stopReason, 3);
-      expect(info.stopReasonName, 'TIMEOUT');
-    });
-
-    test('maps the iOS expiration-breadcrumb reply shape', () async {
-      // iOS reports a previous BGTask expiration as state=EXPIRED(<iso>)
-      // with the TIMEOUT stop reason (see TrustedTimePlugin.swift's
-      // getBackgroundStopReason branch); the Dart mapping is
-      // shape-agnostic and must carry both values through unchanged.
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
-            expect(call.method, 'getBackgroundStopReason');
-            return {'state': 'EXPIRED(2026-07-07T17:14:05Z)', 'stopReason': 3};
-          });
-
-      final info = await public_api.TrustedTime.getBackgroundStopReason();
-      expect(info, isNotNull);
-      expect(info!.state, 'EXPIRED(2026-07-07T17:14:05Z)');
-      expect(info.stopReasonName, 'TIMEOUT');
-    });
-
-    test('returns null when the platform reports no scheduled work', () async {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async => null);
-
-      expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
-    });
-
-    test('returns null instead of surfacing platform errors', () async {
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
-            throw PlatformException(code: 'STOP_REASON_UNAVAILABLE');
-          });
-
-      expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
-    });
-
-    test('returns null when the channel is unmocked (no platform)', () async {
-      expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
-    });
-
-    test(
-      'returns null when the platform reply has an unexpected shape',
-      () async {
-        // A List where a Map is expected makes invokeMapMethod's internal
-        // cast throw a TypeError; the best-effort contract requires that
-        // to surface as null rather than escaping to the caller.
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(channel, (call) async => [1, 2, 3]);
-
-        expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
-      },
-    );
-
-    test('returns null under an active TrustedTimeMock override', () async {
-      final mock = public_api.TrustedTimeMock(initial: DateTime.utc(2026));
-      public_api.TrustedTime.overrideForTesting(mock);
-      addTearDown(public_api.TrustedTime.resetOverride);
-      var channelTouched = false;
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
-            channelTouched = true;
-            return {'state': 'ENQUEUED', 'stopReason': 0};
-          });
-
-      expect(await public_api.TrustedTime.getBackgroundStopReason(), isNull);
-      expect(channelTouched, isFalse);
-    });
-
-    test('stopReasonName covers WorkManager sentinels and unknowns', () {
-      const notStopped = BackgroundSyncStopInfo(
-        state: 'ENQUEUED',
-        stopReason: -256,
-      );
-      expect(notStopped.stopReasonName, 'NOT_STOPPED');
-      const unknown = BackgroundSyncStopInfo(
-        state: 'ENQUEUED',
-        stopReason: -512,
-      );
-      expect(unknown.stopReasonName, 'UNKNOWN');
-      const future = BackgroundSyncStopInfo(state: 'RUNNING', stopReason: 42);
-      expect(future.stopReasonName, 'STOP_REASON_42');
-    });
-  });
-
-  group('TrustedTime.enableBackgroundSync', () {
-    const bgChannel = MethodChannel('trusted_time/background');
-    const monotonicChannel = MethodChannel('trusted_time/monotonic');
-    final calls = <MethodCall>[];
-
-    setUp(() async {
-      calls.clear();
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(bgChannel, (call) async {
-            calls.add(call);
-            return null;
-          });
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(monotonicChannel, (call) async {
-            if (call.method == 'getUptimeMs') return 1000;
-            return null;
-          });
-      // A live engine is required so the public wrapper can reach
-      // TrustedTimeImpl.instance. Empty source pools keep the bootstrap
-      // sync network-free (it fails quorum, which initialize tolerates),
-      // and backgroundSyncInterval stays null so no scheduling happens
-      // until the test drives it explicitly.
-      await public_api.TrustedTime.initialize(
-        config: const public_api.TrustedTimeConfig(
-          ntpServers: [],
-          ntsServers: [],
-          persistState: false,
-        ),
-      );
-      calls.clear();
-    });
-
-    tearDown(() {
-      debugDefaultTargetPlatformOverride = null;
-      TrustedTimeImpl.instance.dispose();
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(bgChannel, null);
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(monotonicChannel, null);
-    });
-
-    test(
-      'forwards intervalMinutes to the native scheduler on Android',
-      () async {
-        debugDefaultTargetPlatformOverride = TargetPlatform.android;
-
-        await public_api.TrustedTime.enableBackgroundSync(
-          interval: const Duration(hours: 24),
-        );
-
-        expect(calls, hasLength(1));
-        expect(calls.single.method, 'enableBackgroundSync');
-        expect(calls.single.arguments, {'intervalMinutes': 24 * 60});
-        expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
-      },
-    );
-
-    test('routes iOS through the native scheduler as well', () async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
-
-      await public_api.TrustedTime.enableBackgroundSync(
-        interval: const Duration(hours: 12),
-      );
-
-      expect(calls, hasLength(1));
-      expect(calls.single.method, 'enableBackgroundSync');
-      expect(calls.single.arguments, {'intervalMinutes': 12 * 60});
-      expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
-    });
-
-    test('forwards a sub-hour interval at minute resolution (above the '
-        'floor)', () async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-
-      await public_api.TrustedTime.enableBackgroundSync(
-        interval: const Duration(minutes: 30),
-      );
-
-      expect(calls.single.arguments, {'intervalMinutes': 30});
-    });
-
-    test('rounds leftover seconds up to the next whole minute', () async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-
-      await public_api.TrustedTime.enableBackgroundSync(
-        interval: const Duration(minutes: 15, seconds: 59),
-      );
-
-      // Truncation would yield 15 and schedule *more* frequently than
-      // requested; battery-sensitive OS work must round up instead.
-      expect(calls.single.arguments, {'intervalMinutes': 16});
-    });
-
-    test('clamps intervals below the 15-minute WorkManager floor', () async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-
-      await public_api.TrustedTime.enableBackgroundSync(
-        interval: const Duration(minutes: 10),
-      );
-
-      expect(calls.single.arguments, {'intervalMinutes': 15});
-    });
-
-    test('clamps intervals above one week down to 168 hours worth of '
-        'minutes', () async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-
-      await public_api.TrustedTime.enableBackgroundSync(
-        interval: const Duration(hours: 400),
-      );
-
-      expect(calls.single.arguments, {'intervalMinutes': 168 * 60});
-    });
-
-    test('arms an in-isolate periodic timer on desktop with no channel '
-        'traffic', () async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
-
-      await public_api.TrustedTime.enableBackgroundSync(
-        interval: const Duration(hours: 1),
-      );
-
-      expect(calls, isEmpty);
-      final firstTimer = TrustedTimeImpl.instance.debugDesktopBgTimer;
-      expect(firstTimer, isNotNull);
-      expect(firstTimer!.isActive, isTrue);
-
-      // Re-enabling replaces (not stacks) the timer and stays channel-free:
-      // the first timer must be cancelled and a distinct one armed.
-      await public_api.TrustedTime.enableBackgroundSync(
-        interval: const Duration(hours: 2),
-      );
-      expect(calls, isEmpty);
-      final secondTimer = TrustedTimeImpl.instance.debugDesktopBgTimer;
-      expect(secondTimer, isNotNull);
-      expect(secondTimer, isNot(same(firstTimer)));
-      expect(firstTimer.isActive, isFalse);
-      expect(secondTimer!.isActive, isTrue);
-    });
-
-    test(
-      'swallows native scheduler errors instead of surfacing them',
-      () async {
-        debugDefaultTargetPlatformOverride = TargetPlatform.android;
-        var schedulerInvoked = false;
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-            .setMockMethodCallHandler(bgChannel, (call) async {
-              schedulerInvoked = true;
-              throw PlatformException(code: 'SCHEDULER_UNAVAILABLE');
-            });
-
-        await expectLater(
-          public_api.TrustedTime.enableBackgroundSync(
-            interval: const Duration(hours: 24),
-          ),
-          completes,
-        );
-
-        // Distinguishes "error swallowed" from "never tried to schedule":
-        // the native scheduler must have been reached before the error
-        // was absorbed.
-        expect(schedulerInvoked, isTrue);
-      },
-    );
-
-    test('is a no-op under an active test override (no channel call, '
-        'no timer)', () async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      final mock = public_api.TrustedTimeMock(
-        initial: DateTime.utc(2026, 6, 1, 12),
-      );
-      public_api.TrustedTime.overrideForTesting(mock);
-      addTearDown(public_api.TrustedTime.resetOverride);
-
-      await public_api.TrustedTime.enableBackgroundSync(
-        interval: const Duration(hours: 24),
-      );
-
-      expect(calls, isEmpty);
-      expect(TrustedTimeImpl.instance.debugDesktopBgTimer, isNull);
-    });
-  });
 }
-
-/// Builds a network-free config whose only sources are the injected fakes.
-///
-/// [ntsServers] defaults to empty so the config stays fully offline. The
-/// y81 regression tests pass a non-empty list to exercise the NTS bootstrap
-/// gate; the injected fakes still supply quorum, and any real [NtsSource]
-/// built from [ntsServers] is caught per-source by the engine (it throws
-/// "not initialised") without aborting the cycle.
-TrustedTimeConfig _offlineConfig({
-  required List<TimeSource> sources,
-  bool persistState = true,
-  List<String> ntsServers = const [],
-}) => TrustedTimeConfig(
-  ntpServers: const [],
-  ntsServers: ntsServers,
-  minimumQuorum: 2,
-  persistState: persistState,
-  additionalSources: sources,
-);
-
-@pragma('vm:entry-point')
-void _registerableTopLevelCallback() {}
