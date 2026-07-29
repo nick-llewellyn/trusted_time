@@ -85,6 +85,39 @@ class FakeSource implements TimeSource {
   }
 }
 
+/// A [TimeSource] centred on a fixed instant that answers after a
+/// caller-supplied [delay], so tests can script the order in which
+/// sources resolve within a single sync cycle.
+///
+/// The delay is the whole point: passing [Duration.zero] to several
+/// sources lands their samples in the same microtask drain, while
+/// staggered delays interleave them across event-loop turns.
+class RaceConditionSource implements TimeSource {
+  RaceConditionSource(
+    this.id,
+    this.delay,
+    this.utcMs, [
+    this.groupId = 'test-group',
+  ]);
+  @override
+  final String id;
+  final Duration delay;
+  final int utcMs;
+
+  @override
+  final String groupId;
+
+  @override
+  Future<TimeSample> getTime() async {
+    await Future.delayed(delay);
+    return TimeSample(
+      interval: TimeInterval(startMs: utcMs - 10, endMs: utcMs + 10),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
+}
+
 /// A [TimeSource] centred on a fixed instant that tallies its own
 /// [getTime] invocations, so a test can prove how often one particular
 /// source was queried.
