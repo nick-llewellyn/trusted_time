@@ -39,7 +39,12 @@ class RefreshScheduler {
   bool _paused = false;
   bool _disposed = false;
 
-  /// The interval the automatic refresh timer is currently armed with.
+  /// The cadence [scheduleRefresh] arms with.
+  ///
+  /// A schedule value, not a statement that a timer is pending: it
+  /// survives [pause] and [dispose] unchanged, and [setInterval] leaves
+  /// it untouched for a non-positive interval so a later [resume]
+  /// re-arms with the most recent positive cadence.
   Duration get activeInterval => _activeInterval;
 
   /// Whether automatic refresh is enabled.
