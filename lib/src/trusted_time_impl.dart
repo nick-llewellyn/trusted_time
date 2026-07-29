@@ -8,8 +8,8 @@ import 'monotonic_clock.dart';
 import 'sync_cycle.dart';
 import 'sync_engine.dart';
 import 'sources/nts_auth_level.dart';
-import 'infra/app_lifecycle_observer.dart';
 import 'infra/background_channel.dart';
+import 'infra/lifecycle_coordinator.dart';
 import 'infra/proxy_sync_observer.dart';
 import 'infra/sync_observer.dart';
 import 'infra/consensus_cache.dart';
@@ -130,12 +130,6 @@ final class TrustedTimeImpl {
   /// that was torn down before its first cycle concluded).
   final Completer<void> _firstSyncSettled = Completer<void>();
 
-  // Resume anchor-age check: installed at bootstrap wherever a live
-  // widgets binding exists, so returning to the foreground with a
-  // stale (or absent) anchor triggers a full sync immediately instead
-  // of waiting for the next refresh tick.
-  WidgetsBindingObserver? _lifecycleObserver;
-
   /// Synchronous re-entry guard for [_performSync], paired with
   /// [_syncInProgress]. The Completer-based check is the canonical
   /// gate that lets concurrent callers converge on the same
@@ -190,6 +184,16 @@ final class TrustedTimeImpl {
   // and unbound by [dispose].
   late final BackgroundChannel _bgChannel = BackgroundChannel(
     onSync: _performSync,
+  );
+
+  // Owns the resume anchor-age observer's registration: installed at
+  // bootstrap wherever a live widgets binding exists, so returning to
+  // the foreground with a stale (or absent) anchor triggers a full
+  // sync immediately instead of waiting for the next refresh tick.
+  // Forwards every state; the resumed-only policy stays here in
+  // [_handleAppLifecycleState], which reads private engine state.
+  late final LifecycleCoordinator _lifecycle = LifecycleCoordinator(
+    onState: _handleAppLifecycleState,
   );
 
   /// Whether a live trust anchor exists (assessment postures
@@ -417,7 +421,7 @@ final class TrustedTimeImpl {
     // config errors throw, network outcomes never do.
     final _ = _config.effectiveTrustMode;
 
-    _installLifecycleObserver();
+    _lifecycle.install();
 
     if (_config.persistState) {
       // Restore the drift history before the anchor: a warm-restored
@@ -771,27 +775,6 @@ final class TrustedTimeImpl {
   void setRefreshInterval(Duration interval) =>
       _scheduler.setInterval(interval);
 
-  /// Installs the resume-time anchor-age check: a self-installed
-  /// [WidgetsBindingObserver] that runs a full sync when the app
-  /// returns to the foreground with a stale (or absent) anchor.
-  void _installLifecycleObserver() {
-    final observer = AppLifecycleObserver(_handleAppLifecycleState);
-    try {
-      WidgetsBinding.instance.addObserver(observer);
-      _lifecycleObserver = observer;
-    } catch (e) {
-      // No widgets binding (e.g. a headless background isolate). The
-      // periodic refresh timer still drives cadence; only the
-      // foreground-resume trigger is unavailable in this context.
-      if (TrustedTimeLog.enabled) {
-        TrustedTimeLog.log(
-          TrustedTimeLogLevel.info,
-          '[TrustedTime] Resume anchor-age observer not installed: $e',
-        );
-      }
-    }
-  }
-
   /// Resume-time anchor-age check. On [AppLifecycleState.resumed], runs
   /// a full sync iff no trusted anchor exists or the anchor is at least
   /// one refresh interval old ([activeRefreshInterval], so a runtime
@@ -839,7 +822,7 @@ final class TrustedTimeImpl {
 
   /// Whether the foreground-resume lifecycle observer is installed.
   @visibleForTesting
-  bool get debugLifecycleObserverInstalled => _lifecycleObserver != null;
+  bool get debugLifecycleObserverInstalled => _lifecycle.installed;
 
   /// The desktop in-isolate periodic background-sync timer, if armed.
   ///
@@ -897,15 +880,7 @@ final class TrustedTimeImpl {
     // failed re-initialize leaves the channel cleanly unbound.
     _bgChannel.dispose();
     _scheduler.dispose();
-    final observer = _lifecycleObserver;
-    if (observer != null) {
-      try {
-        WidgetsBinding.instance.removeObserver(observer);
-      } catch (_) {
-        // Binding already torn down; nothing to detach.
-      }
-      _lifecycleObserver = null;
-    }
+    _lifecycle.dispose();
     _syncEngine.dispose();
     _syncClock.dispose();
   }
