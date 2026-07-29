@@ -8,6 +8,7 @@ import 'monotonic_clock.dart';
 import 'sync_cycle.dart';
 import 'sync_engine.dart';
 import 'sources/nts_auth_level.dart';
+import 'domain/drift_correction.dart';
 import 'infra/background_channel.dart';
 import 'infra/lifecycle_coordinator.dart';
 import 'infra/proxy_sync_observer.dart';
@@ -263,19 +264,6 @@ final class TrustedTimeImpl {
     }
   }
 
-  /// Minimum observed span (on the network-UTC timeline) before the
-  /// current boot's drift rate is trusted for correction: shorter
-  /// windows are dominated by per-anchor consensus noise rather than
-  /// genuine oscillator drift.
-  static const _kMinDriftCorrectionSpan = Duration(hours: 1);
-
-  /// Largest drift-rate magnitude accepted for correction: 200 ppm.
-  /// Real oscillators sit around 5–50 ppm, so anything beyond this
-  /// bound indicates corrupt or semantically-implausible persisted
-  /// history rather than genuine drift — and rates near or below -1
-  /// would make the `elapsed / (1 + rate)` projection blow up.
-  static const _kMaxDriftRateMagnitude = 0.0002;
-
   /// Builds the unified [TimeAssessment] snapshot for the current
   /// instant — time, posture reason, and caveats, all evaluated at one
   /// moment on the same monotonic timeline as [now].
@@ -297,7 +285,10 @@ final class TrustedTimeImpl {
         anchor.networkUtcMs + elapsedMs,
         isUtc: true,
       );
-      final rate = _currentBootDriftRate(anchor);
+      final rate = currentBootDriftRate(
+        anchorBootId: anchor.bootId,
+        records: _driftHistory.records,
+      );
       return TimeAssessment(
         reason: anchor.authLevel == NtsAuthLevel.verified
             ? TrustStatusReason.synchronized
@@ -323,28 +314,6 @@ final class TrustedTimeImpl {
       confidence: ConfidenceLevel.none,
       syncInProgress: _syncActivity,
     );
-  }
-
-  /// Resolves the drift rate usable for correction: the newest history
-  /// record's observed rate, iff that record belongs to the live
-  /// anchor's boot session, its observed span crosses
-  /// [_kMinDriftCorrectionSpan], and the rate is finite with magnitude
-  /// within [_kMaxDriftRateMagnitude] (persisted history is only
-  /// syntactically validated, so a semantically-corrupt record must
-  /// not reach the projection). Prior boots' rates are diagnostics
-  /// only ([driftHistory]) — never applied across a reboot.
-  double? _currentBootDriftRate(TrustAnchor anchor) {
-    final bootId = anchor.bootId;
-    if (bootId == null) return null;
-    final records = _driftHistory.records;
-    if (records.isEmpty) return null;
-    final newest = records.last;
-    if (newest.bootId != bootId) return null;
-    if (newest.span < _kMinDriftCorrectionSpan) return null;
-    final rate = newest.observedDriftRate;
-    if (rate == null || !rate.isFinite) return null;
-    if (rate.abs() > _kMaxDriftRateMagnitude) return null;
-    return rate;
   }
 
   /// Backs [TimeAssessment.syncInProgress]. A cycle guarded by
