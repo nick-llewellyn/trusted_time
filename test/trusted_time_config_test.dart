@@ -171,14 +171,21 @@ void main() {
       // full second around a leap event and can poison the consensus.
       // Google, AWS, and Meta all publish their smear windows; they
       // were probed and dropped on that evidence (trusted_time-5fz).
-      expect(
-        curatedNtpInventory.map((e) => e.host),
-        isNot(
-          anyElement(
-            anyOf(contains('google'), contains('aws'), contains('facebook')),
-          ),
-        ),
-      );
+      //
+      // Matched on registrable domain rather than substring: a bare
+      // substring would reject an unrelated host that happens to
+      // contain 'aws', and exact hostnames alone would admit a sibling
+      // like time1.google.com, which smears for the same reason.
+      const smearingDomains = ['google.com', 'aws.com', 'facebook.com'];
+      for (final entry in curatedNtpInventory) {
+        for (final domain in smearingDomains) {
+          expect(
+            entry.host == domain || entry.host.endsWith('.$domain'),
+            isFalse,
+            reason: '${entry.host} belongs to documented smearer $domain',
+          );
+        }
+      }
     });
 
     test('the inventory has no duplicate hosts', () {
@@ -219,6 +226,39 @@ void main() {
       const config = TrustedTimeConfig(disableNtpForTesting: true);
       expect(config.ntpServers, isEmpty);
       expect(config.ntpInventory, isEmpty);
+    });
+
+    test('NtpServerInfo compares by value', () {
+      // The inventory is exported, so consumers can reasonably hold
+      // entries in sets or compare them against a constructed
+      // expectation.
+      const a = NtpServerInfo(
+        host: 'time.example',
+        tier: NtpServerTier.anycast,
+        observedStratum: 2,
+        observedGroupId: 'as13335',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const same = NtpServerInfo(
+        host: 'time.example',
+        tier: NtpServerTier.anycast,
+        observedStratum: 2,
+        observedGroupId: 'as13335',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const differentStratum = NtpServerInfo(
+        host: 'time.example',
+        tier: NtpServerTier.anycast,
+        observedStratum: 3,
+        observedGroupId: 'as13335',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+
+      expect(a, same);
+      expect(a.hashCode, same.hashCode);
+      expect(a, isNot(differentStratum));
+      expect(a.toString(), contains('time.example'));
+      expect(a.toString(), contains('stratum 2'));
     });
 
     test('ntsServers default to two anycast anchors from distinct '
