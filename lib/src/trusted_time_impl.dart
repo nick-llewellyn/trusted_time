@@ -1,7 +1,5 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
-import 'package:flutter/services.dart';
 import 'models.dart';
 import 'anchor_store.dart';
 import 'exceptions.dart';
@@ -11,6 +9,7 @@ import 'sync_cycle.dart';
 import 'sync_engine.dart';
 import 'sources/nts_auth_level.dart';
 import 'infra/app_lifecycle_observer.dart';
+import 'infra/background_channel.dart';
 import 'infra/proxy_sync_observer.dart';
 import 'infra/sync_observer.dart';
 import 'infra/consensus_cache.dart';
@@ -93,7 +92,7 @@ final class TrustedTimeImpl {
       impl.dispose();
       rethrow;
     }
-    _bgChannel.setMethodCallHandler(impl._handleBackgroundMethodCall);
+    impl._bgChannel.bind();
     return impl;
   }
 
@@ -121,7 +120,6 @@ final class TrustedTimeImpl {
   /// while anchored but primes the correct reason for any later lost
   /// trust (failed refresh, or the in-flight window of [forceResync]).
   TrustStatusReason _unanchoredReason = TrustStatusReason.neverSynced;
-  Timer? _desktopBgTimer;
   Completer<void>? _syncInProgress;
 
   /// Completes when the first sync cycle concludes (see
@@ -184,6 +182,14 @@ final class TrustedTimeImpl {
   late final RefreshScheduler _scheduler = RefreshScheduler(
     initialInterval: _config.refreshInterval,
     onTick: _performSync,
+  );
+
+  // Owns background sync on both platform paths: the native scheduler
+  // channel on Android/iOS and the in-isolate periodic timer elsewhere.
+  // The inbound handler is bound by [init] after a successful bootstrap
+  // and unbound by [dispose].
+  late final BackgroundChannel _bgChannel = BackgroundChannel(
+    onSync: _performSync,
   );
 
   /// Whether a live trust anchor exists (assessment postures
@@ -377,22 +383,8 @@ final class TrustedTimeImpl {
   /// On Android/iOS [interval] is applied at minute resolution and clamped
   /// to `[15 min, 1 week]` to respect [WorkManager]'s hard periodic floor;
   /// the desktop timer path honours [interval] as given.
-  Future<void> enableBackgroundSync(Duration interval) async {
-    if (defaultTargetPlatform == TargetPlatform.android ||
-        defaultTargetPlatform == TargetPlatform.iOS) {
-      if (interval.inMinutes < 15) {
-        TrustedTimeLog.log(
-          TrustedTimeLogLevel.warning,
-          '[TrustedTime] Background sync interval below the platform '
-          'scheduler floor (15 min); clamped up.',
-        );
-      }
-      await _invokeBackgroundSync(interval);
-    } else {
-      _desktopBgTimer?.cancel();
-      _desktopBgTimer = Timer.periodic(interval, (_) => _performSync());
-    }
-  }
+  Future<void> enableBackgroundSync(Duration interval) =>
+      _bgChannel.enable(interval);
 
   Future<void> _bootstrap() async {
     // Fail-fast gate for the sleep-aware hard requirement: by this
@@ -855,7 +847,7 @@ final class TrustedTimeImpl {
   /// the replace-not-stack contract of repeated enableBackgroundSync
   /// calls by observing cancellation and identity of the old timer.
   @visibleForTesting
-  Timer? get debugDesktopBgTimer => _desktopBgTimer;
+  Timer? get debugDesktopBgTimer => _bgChannel.desktopTimer;
 
   /// Whether the failed-sync retry timer is currently armed.
   ///
@@ -880,49 +872,6 @@ final class TrustedTimeImpl {
   @visibleForTesting
   void debugCancelRefreshTimer() => _scheduler.cancelRefreshTimer();
 
-  static const _bgChannel = MethodChannel('trusted_time/background');
-
-  /// Lower bound (minutes) enforced by the platform scheduler. Android's
-  /// [WorkManager] rejects any periodic interval below 15 minutes
-  /// (`PeriodicWorkRequest.MIN_PERIODIC_INTERVAL_MILLIS`); we mirror that
-  /// floor here so the request the native layer receives is always
-  /// schedulable and the clamp is visible to Dart-side tests.
-  static const int _minBgSyncMinutes = 15;
-
-  /// Upper bound (minutes) = one week, matching the previous 168h cap.
-  static const int _maxBgSyncMinutes = 168 * 60;
-
-  Future<void> _invokeBackgroundSync(Duration interval) async {
-    // Round *up* to the next whole minute rather than truncating:
-    // background sync is battery-sensitive OS work, so a leftover-seconds
-    // interval (e.g. 15m59s) must never schedule *more* frequently than
-    // the caller requested. Pure integer ceiling division — no double
-    // conversion, so no precision loss for very large Durations.
-    final minutes =
-        (interval.inMicroseconds + Duration.microsecondsPerMinute - 1) ~/
-        Duration.microsecondsPerMinute;
-    try {
-      await _bgChannel.invokeMethod<void>('enableBackgroundSync', {
-        'intervalMinutes': minutes.clamp(_minBgSyncMinutes, _maxBgSyncMinutes),
-      });
-    } catch (e) {
-      if (TrustedTimeLog.enabled) {
-        TrustedTimeLog.log(
-          TrustedTimeLogLevel.warning,
-          '[TrustedTime] Background sync failed: $e',
-        );
-      }
-    }
-  }
-
-  Future<void> _handleBackgroundMethodCall(MethodCall call) async {
-    // Defence in depth alongside the handler unbind in [dispose]: a
-    // callback already dispatched (in flight on the platform thread)
-    // when dispose ran must not drive a sync on a disposed engine.
-    if (_disposed) return;
-    if (call.method == 'onBackgroundSync') await _performSync();
-  }
-
   /// Documented.
   ///
   /// Idempotent: subsequent calls are no-ops. The composed inner
@@ -940,16 +889,14 @@ final class TrustedTimeImpl {
     // whenComplete may still fire later; _settleFirstSync is
     // idempotent).
     _settleFirstSync();
-    // Detach the static background-channel handler so platform
-    // callbacks (onBackgroundSync) can never invoke a disposed
+    // Detaching the shared background-channel handler is what stops
+    // platform callbacks (onBackgroundSync) reaching a disposed
     // engine. Only the live engine ever reaches this line — stale
     // references are already _disposed and return above — and [init]
     // re-binds the handler only after a successful bootstrap, so a
     // failed re-initialize leaves the channel cleanly unbound.
-    _bgChannel.setMethodCallHandler(null);
+    _bgChannel.dispose();
     _scheduler.dispose();
-    _desktopBgTimer?.cancel();
-    _desktopBgTimer = null;
     final observer = _lifecycleObserver;
     if (observer != null) {
       try {

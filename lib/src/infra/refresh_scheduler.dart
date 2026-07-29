@@ -12,9 +12,12 @@ import 'dart:async';
 /// flight) never gets the chance to clear the field on the scheduler's
 /// behalf.
 ///
-/// The scheduler holds no reference to the engine: [scheduleRetry]
-/// receives the backoff delay from the caller, and both timers fire
-/// the `onTick` callback supplied at construction.
+/// The scheduler computes nothing on the engine's behalf:
+/// [scheduleRetry] receives the backoff delay from the caller, and
+/// both timers fire the `onTick` callback supplied at construction.
+/// That callback is the only coupling back to the caller — no typed
+/// reference to the engine, no import of it — though as an instance
+/// tear-off it does keep the caller reachable from here.
 class RefreshScheduler {
   /// Creates a scheduler that fires [onTick] on every refresh or retry
   /// deadline, with the automatic refresh cadence starting at
