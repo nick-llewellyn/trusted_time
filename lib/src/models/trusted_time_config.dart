@@ -51,6 +51,7 @@ final class TrustedTimeConfig {
     this.ntpBurstCount = 8,
     this.requireSleepAwareProjection = false,
     @visibleForTesting this.disableNtpForTesting = false,
+    @visibleForTesting this.ntpInventoryForTesting,
   }) : assert(
          ntsBurstCount >= 1 && ntsBurstCount <= 8,
          'ntsBurstCount must be in 1..8: 8 matches the fixed burst size '
@@ -122,9 +123,35 @@ final class TrustedTimeConfig {
 
   /// The curated inventory behind [ntpServers], with per-host metadata.
   ///
-  /// Empty when [disableNtpForTesting] is set.
+  /// Empty when [disableNtpForTesting] is set and no
+  /// [ntpInventoryForTesting] override is supplied.
   List<NtpServerInfo> get ntpInventory =>
-      disableNtpForTesting ? const [] : curatedNtpInventory;
+      ntpInventoryForTesting ??
+      (disableNtpForTesting ? const [] : curatedNtpInventory);
+
+  /// Replaces the inventory the per-cycle partition reads, without
+  /// building any source for it.
+  ///
+  /// The partition is the one piece of engine behaviour that depends on
+  /// inventory *shape* — tier mix and host count — rather than on the
+  /// samples sources return. Exercising it offline therefore needs an
+  /// inventory the test controls, which [disableNtpForTesting] alone
+  /// cannot give: that flag empties the inventory, collapsing the
+  /// partition to its "nothing to narrow" branch where the cycle set is
+  /// the whole source pool. Assertions about narrowing then hold
+  /// vacuously.
+  ///
+  /// Deliberately feeds [ntpInventory] only, never [ntpServers]: a test
+  /// pairs this with `disableNtpForTesting: true` so no [NtpSource] is
+  /// constructed, and supplies its own fakes through
+  /// [additionalSources] under `ntp:`-prefixed ids matching these
+  /// hosts. The partition then narrows real sources with no DNS or UDP.
+  ///
+  /// Not a production knob: the inventory's provenance and leap-second
+  /// vetting are what make the curated list safe to query, and an
+  /// arbitrary substitute carries neither.
+  @visibleForTesting
+  final List<NtpServerInfo>? ntpInventoryForTesting;
 
   /// The list of Network Time Security (NTS) servers used for cryptographically
   /// authenticated synchronization.
@@ -485,6 +512,7 @@ final class TrustedTimeConfig {
     int? ntpBurstCount,
     bool? requireSleepAwareProjection,
     @visibleForTesting bool? disableNtpForTesting,
+    @visibleForTesting List<NtpServerInfo>? ntpInventoryForTesting,
   }) {
     return TrustedTimeConfig(
       ntsServers: ntsServers ?? this.ntsServers,
@@ -514,6 +542,8 @@ final class TrustedTimeConfig {
       requireSleepAwareProjection:
           requireSleepAwareProjection ?? this.requireSleepAwareProjection,
       disableNtpForTesting: disableNtpForTesting ?? this.disableNtpForTesting,
+      ntpInventoryForTesting:
+          ntpInventoryForTesting ?? this.ntpInventoryForTesting,
     );
   }
 
@@ -522,6 +552,7 @@ final class TrustedTimeConfig {
     if (identical(this, other)) return true;
     return other is TrustedTimeConfig &&
         other.disableNtpForTesting == disableNtpForTesting &&
+        listEquals(other.ntpInventoryForTesting, ntpInventoryForTesting) &&
         listEquals(other.ntsServers, ntsServers) &&
         other.ntsPort == ntsPort &&
         other.maxConcurrentDnsLookups == maxConcurrentDnsLookups &&
@@ -548,6 +579,13 @@ final class TrustedTimeConfig {
   @override
   int get hashCode => Object.hashAll([
     disableNtpForTesting,
+    // Nullable, and Object.hashAll rejects a null element, so the
+    // absent case has to hash as something. null is the overwhelmingly
+    // common value; -1 stands in for it because no inventory hashes to
+    // it, keeping "no override" distinct from any supplied list.
+    ntpInventoryForTesting == null
+        ? -1
+        : Object.hashAll(ntpInventoryForTesting!),
     Object.hashAll(ntsServers),
     ntsPort,
     maxConcurrentDnsLookups,

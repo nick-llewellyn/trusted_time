@@ -9,6 +9,7 @@ import 'package:trusted_time/src/source_quality_tracker.dart';
 import 'package:trusted_time/src/sync_engine.dart';
 
 import 'support/fake_clocks.dart';
+import 'support/fake_observers.dart';
 
 /// Minimal always-succeeding source, used to assert that caller-supplied
 /// sources bypass the inventory partition.
@@ -30,6 +31,72 @@ class _StubSource implements TimeSource {
 /// Real curated inventory, NTS suppressed so the assertions are about
 /// the NTP partition alone.
 const _liveInventory = TrustedTimeConfig(ntsServers: []);
+
+/// A [TimeSource] under an `ntp:`-prefixed id, so the partition treats
+/// it as inventory-backed rather than caller-supplied.
+///
+/// The real [NtpSource] would do DNS and UDP; this answers instantly
+/// with a fixed interval, letting a cycle complete offline while still
+/// being subject to narrowing.
+class _FakeNtpSource implements TimeSource {
+  _FakeNtpSource(String host) : id = '${TimeSource.prefixNtp}$host';
+  @override
+  final String id;
+  @override
+  final String groupId = 'as1';
+
+  @override
+  Future<TimeSample> getTime() async => TimeSample(
+    interval: TimeInterval(startMs: 1000, endMs: 1020),
+    sourceId: id,
+    groupId: groupId,
+  );
+}
+
+/// Builds a fake inventory of [anycast] always-queried hosts plus
+/// [unicast] explorer candidates, together with a matching source per
+/// host.
+///
+/// Returned as a config with `disableNtpForTesting: true` so the
+/// override is the only inventory in play and no live [NtpSource] is
+/// ever constructed.
+({TrustedTimeConfig config, List<TimeSource> sources}) _fakeInventory({
+  required int anycast,
+  required int unicast,
+}) {
+  final entries = <NtpServerInfo>[
+    for (var i = 0; i < anycast; i++)
+      NtpServerInfo(
+        host: 'any$i.test',
+        tier: NtpServerTier.anycast,
+        observedStratum: 1,
+        observedGroupId: 'as1',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      ),
+    for (var i = 0; i < unicast; i++)
+      NtpServerInfo(
+        host: 'uni$i.test',
+        tier: NtpServerTier.unicastStratum1,
+        observedStratum: 1,
+        observedGroupId: 'as1',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      ),
+  ];
+  final sources = [for (final e in entries) _FakeNtpSource(e.host)];
+  return (
+    config: TrustedTimeConfig(
+      ntsServers: const [],
+      disableNtpForTesting: true,
+      ntpInventoryForTesting: entries,
+      additionalSources: sources,
+      // One synthetic group across every fake, so consensus turns on
+      // participation alone -- these tests are about the denominator,
+      // not about diversity.
+      minGroupCount: 1,
+    ),
+    sources: sources,
+  );
+}
 
 SyncEngine _engine({
   TrustedTimeConfig config = _liveInventory,
@@ -209,5 +276,93 @@ void main() {
       );
       expect(ExplorerShuffle.isValidSeed(shuffle.seed), isTrue);
     });
+  });
+
+  group('SyncEngine coverage telemetry', () {
+    // These need an inventory the partition actually narrows. Every
+    // other offline test empties it, which sends _selectCycleHosts down
+    // its "nothing to narrow" branch where the cycle set is the whole
+    // pool -- and a denominator bug is invisible when the two agree.
+
+    test('coverage ratios divide by the cycle, not the pool', () async {
+      // 2 anycast + 6 unicast, budget 2: the cycle queries 4 of 8, so
+      // the two candidate denominators differ by a factor of two.
+      //
+      // Asserted against the reported participantCount rather than a
+      // hard-coded ratio: early exit can settle consensus before every
+      // queried host answers, so the numerator is a property of the
+      // cycle, not something the test should predict. What must hold
+      // is which denominator it was divided by.
+      final fake = _fakeInventory(anycast: 2, unicast: 6);
+      final observer = RecordingObserver();
+      final engine = SyncEngine(
+        config: fake.config,
+        clock: FakeMonotonicClock(),
+        observer: observer,
+        explorerShuffle: const ExplorerShuffle(7),
+        explorerBudget: 2,
+      );
+
+      expect(engine.selectCycleHostsForTesting(), hasLength(4));
+      expect(fake.sources, hasLength(8));
+      await engine.sync();
+
+      expect(observer.metricsReported, hasLength(1));
+      final metrics = observer.metricsReported.single;
+      expect(
+        metrics.confidenceBreakdown['depth'],
+        closeTo(metrics.participantCount / 4, 1e-9),
+      );
+      expect(
+        metrics.confidenceBreakdown['quorumDepth'],
+        closeTo(metrics.quorumDepth / 4, 1e-9),
+      );
+      // The pool denominator is the bug this replaced; name it so a
+      // regression cannot pass by coincidence.
+      expect(
+        metrics.confidenceBreakdown['depth'],
+        isNot(closeTo(metrics.participantCount / 8, 1e-9)),
+      );
+    });
+
+    test('a wider budget lowers the ratio for equal participation', () async {
+      // Same 8-host pool and the same consensus either way; only the
+      // cycle width differs. Under a pool denominator both cycles
+      // divide by 8 and the ratios match, so divergence here is
+      // exactly the property the fix introduced.
+      Future<SyncMetrics> syncWithBudget(int budget) async {
+        final fake = _fakeInventory(anycast: 2, unicast: 6);
+        final observer = RecordingObserver();
+        await SyncEngine(
+          config: fake.config,
+          clock: FakeMonotonicClock(),
+          observer: observer,
+          explorerShuffle: const ExplorerShuffle(7),
+          explorerBudget: budget,
+        ).sync();
+        return observer.metricsReported.single;
+      }
+
+      final narrow = await syncWithBudget(2);
+      final wide = await syncWithBudget(6);
+      expect(
+        narrow.participantCount,
+        equals(wide.participantCount),
+        reason: 'the numerator must be held fixed for this comparison',
+      );
+      expect(
+        narrow.confidenceBreakdown['depth'],
+        greaterThan(wide.confidenceBreakdown['depth']!),
+      );
+    });
+
+    // Deliberately untested: that the count is read off _CompletionGuard
+    // rather than an engine field. Cycle width is fixed per engine
+    // today -- quorum size, budget, and inventory are all constructor
+    // state -- so overlapping cycles overwrite the field with the value
+    // it already held, and no sequential or interleaved test can
+    // separate the two. The guard scoping is hardening for slice 3,
+    // where a per-cycle budget makes the widths differ; the test
+    // belongs with that change.
   });
 }

@@ -228,6 +228,59 @@ void main() {
       expect(config.ntpInventory, isEmpty);
     });
 
+    test('ntpInventoryForTesting replaces the inventory', () {
+      // The partition reads ntpInventory; the override exists so a test
+      // can control its shape without the curated 51.
+      const entry = NtpServerInfo(
+        host: 'fake.test',
+        tier: NtpServerTier.anycast,
+        observedStratum: 1,
+        observedGroupId: 'as1',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const config = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
+      expect(config.ntpInventory, equals(const [entry]));
+    });
+
+    test('ntpInventoryForTesting survives disableNtpForTesting', () {
+      // The intended pairing: the flag suppresses live NtpSource
+      // construction while the override still gives the partition
+      // something to narrow. If the flag won, every such test would
+      // silently take the "nothing to narrow" branch.
+      const entry = NtpServerInfo(
+        host: 'fake.test',
+        tier: NtpServerTier.anycast,
+        observedStratum: 1,
+        observedGroupId: 'as1',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const config = TrustedTimeConfig(
+        disableNtpForTesting: true,
+        ntpInventoryForTesting: [entry],
+      );
+      expect(config.ntpInventory, equals(const [entry]));
+      // ntpServers is untouched, so no live source is built for it.
+      expect(config.ntpServers, isEmpty);
+    });
+
+    test('ntpInventoryForTesting participates in equality and hashCode', () {
+      const entry = NtpServerInfo(
+        host: 'fake.test',
+        tier: NtpServerTier.anycast,
+        observedStratum: 1,
+        observedGroupId: 'as1',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const a = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
+      const b = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
+      const none = TrustedTimeConfig();
+
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
+      expect(a, isNot(equals(none)));
+      expect(a.copyWith(ntpInventoryForTesting: const []), isNot(equals(a)));
+    });
+
     test('NtpServerInfo compares by value', () {
       // The inventory is exported, so consumers can reasonably hold
       // entries in sets or compare them against a constructed
