@@ -213,6 +213,112 @@ void main() {
     });
   });
 
+  // The front-load widens foreground cycles for an install's first few
+  // days, then decays to the platform steady state. It is armed by
+  // count rather than latched to install age so vantage-epoch recovery
+  // can re-arm the same primitive on an unrelated trigger.
+  group('front-loaded explorer budget', () {
+    tearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    test('an unarmed engine runs at the steady-state budget', () {
+      final engine = _engine(budget: 3);
+      expect(engine.effectiveExplorerBudget, 3);
+      expect(engine.selectCycleHostsForTesting(), hasLength(13));
+    });
+
+    test('arming widens the cycle to the boosted budget', () {
+      final engine = _engine(budget: SyncEngine.iosExplorerBudget)
+        ..armExplorerBoost(SyncEngine.explorerBoostCycles);
+      expect(engine.effectiveExplorerBudget, SyncEngine.boostedExplorerBudget);
+      expect(
+        engine.selectCycleHostsForTesting(),
+        hasLength(10 + SyncEngine.boostedExplorerBudget),
+      );
+    });
+
+    test('the boost only ever widens, never narrows', () {
+      // boostedExplorerBudget is the standard width, so a caller who
+      // asked for more would otherwise be cut back by a front-load.
+      final wide = SyncEngine.boostedExplorerBudget + 5;
+      final engine = _engine(budget: wide)..armExplorerBoost(4);
+      expect(engine.effectiveExplorerBudget, wide);
+    });
+
+    test('arming again replaces the remainder rather than accumulating', () {
+      final engine = _engine(budget: 3)
+        ..armExplorerBoost(8)
+        ..armExplorerBoost(2);
+      expect(engine.explorerBoostRemaining, 2);
+    });
+
+    test('arming zero disarms', () {
+      final engine = _engine(budget: 3)
+        ..armExplorerBoost(8)
+        ..armExplorerBoost(0);
+      expect(engine.effectiveExplorerBudget, 3);
+    });
+
+    test('the boost decays only on a banked cycle', () async {
+      // 2 anycast + 6 unicast against a steady budget of 1: boosted the
+      // cycle takes every unicast host (the 8-wide boost exceeds the
+      // pool), steady it takes one, so the two widths are
+      // distinguishable by host count alone.
+      final fake = _fakeInventory(anycast: 2, unicast: 6);
+      final engine = SyncEngine(
+        config: fake.config,
+        clock: FakeMonotonicClock(),
+        explorerShuffle: const ExplorerShuffle(99),
+        explorerBudget: 1,
+      )..armExplorerBoost(2);
+
+      expect(engine.selectCycleHostsForTesting(), hasLength(8));
+      await engine.sync();
+      expect(engine.explorerBoostRemaining, 1);
+      await engine.sync();
+      expect(engine.explorerBoostRemaining, 0);
+
+      // Decayed to steady state: 2 anycast + 1 explorer.
+      expect(engine.effectiveExplorerBudget, 1);
+      expect(engine.selectCycleHostsForTesting(), hasLength(3));
+    });
+
+    test('decay stops at zero rather than going negative', () async {
+      final fake = _fakeInventory(anycast: 2, unicast: 6);
+      final engine = SyncEngine(
+        config: fake.config,
+        clock: FakeMonotonicClock(),
+        explorerShuffle: const ExplorerShuffle(99),
+        explorerBudget: 1,
+      )..armExplorerBoost(1);
+
+      await engine.sync();
+      await engine.sync();
+      expect(engine.explorerBoostRemaining, 0);
+    });
+
+    test('a boosted iOS cycle matches a standard steady-state one', () {
+      // The indistinguishability claim: a front-loaded iOS cycle emits
+      // the same host count as an unboosted Android one, so no single
+      // cycle is a distinctive event -- only the aggregate rate over an
+      // install's first days differs.
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final boostedIos = (_engine()..armExplorerBoost(8))
+          .selectCycleHostsForTesting();
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final steadyAndroid = _engine().selectCycleHostsForTesting();
+
+      expect(boostedIos, hasLength(steadyAndroid.length));
+    });
+
+    test('the boost is a no-op where the steady budget is already wide', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final steady = _engine().selectCycleHostsForTesting();
+      final boosted = (_engine()..armExplorerBoost(8))
+          .selectCycleHostsForTesting();
+      expect(boosted, equals(steady));
+    });
+  });
+
   group('SyncEngine partition pass-through', () {
     test('caller-supplied sources are never partitioned out', () {
       final extra = _StubSource('custom-1');
