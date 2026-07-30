@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'domain/explorer_shuffle.dart';
 import 'drift_history.dart';
 import 'models.dart';
 import 'source_quality_tracker.dart';
@@ -37,6 +38,29 @@ abstract interface class AnchorStorage {
   /// Persists the per-source quality stats, replacing any prior value.
   Future<void> saveSourceStats(Map<String, SourceQualityStats> stats);
 
+  /// Loads the persisted per-install explorer shuffle seed, or `null`
+  /// when none is stored or the stored value is corrupt. A seed outside
+  /// the range `ExplorerShuffle` generates counts as corrupt.
+  ///
+  /// A null return means "generate a fresh one", so corruption costs an
+  /// install its accumulated walk order but never fails a bootstrap.
+  Future<int?> loadExplorerSeed();
+
+  /// Persists the per-install explorer shuffle seed.
+  ///
+  /// [seed] must satisfy `ExplorerShuffle.isValidSeed`. Implementations
+  /// assert this rather than coercing: [loadExplorerSeed] rejects an
+  /// out-of-range seed, so a write outside the range is a value the
+  /// store would silently discard on the next read, and the caller
+  /// would see a walk order that resets on every launch with nothing
+  /// having failed. `ExplorerShuffle.generate` only ever produces
+  /// in-range seeds, so a violation is a caller bug.
+  ///
+  /// Written once, at first init. Rewriting it on every launch would
+  /// defeat the point: the walk order must be stable across process
+  /// death, or every restart re-anchors to the same permutation prefix.
+  Future<void> saveExplorerSeed(int seed);
+
   /// Wipes all persisted temporal data.
   Future<void> clear();
 }
@@ -63,6 +87,7 @@ final class AnchorStore implements AnchorStorage {
   static const _keyAnchor = 'tt_anchor_v2';
   static const _keyDriftHistory = 'tt_drift_history_v1';
   static const _keySourceStats = 'tt_source_stats_v1';
+  static const _keyExplorerSeed = 'tt_explorer_seed_v1';
 
   // Legacy offline-estimation keys (removed feature). Never written or
   // read anymore; still deleted by [clear] so installs upgrading from
@@ -169,6 +194,42 @@ final class AnchorStore implements AnchorStorage {
     await _storage.write(key: _keySourceStats, value: raw);
   }
 
+  /// Loads the explorer shuffle seed, if available.
+  ///
+  /// Corruption (a non-integer payload, or a read failure) is treated as
+  /// absence: the entry is deleted and `null` returned, so the caller
+  /// mints a fresh seed rather than failing a bootstrap over a walk
+  /// order.
+  @override
+  Future<int?> loadExplorerSeed() async {
+    try {
+      final raw = await _storage.read(key: _keyExplorerSeed);
+      if (raw == null) return null;
+      final seed = int.tryParse(raw);
+      // Out of range counts as corrupt: Random does not specify how it
+      // reduces a seed outside the generated range, so accepting one
+      // would make the walk order platform-dependent.
+      if (seed == null || !ExplorerShuffle.isValidSeed(seed)) {
+        await _bestEffortDelete(_keyExplorerSeed);
+        return null;
+      }
+      return seed;
+    } catch (_) {
+      await _bestEffortDelete(_keyExplorerSeed);
+      return null;
+    }
+  }
+
+  /// Persists the explorer shuffle seed.
+  @override
+  Future<void> saveExplorerSeed(int seed) async {
+    assert(
+      ExplorerShuffle.isValidSeed(seed),
+      'seed $seed is outside the range loadExplorerSeed accepts',
+    );
+    await _storage.write(key: _keyExplorerSeed, value: '$seed');
+  }
+
   /// Wipes all persisted temporal data from secure storage.
   @override
   Future<void> clear() async {
@@ -176,6 +237,7 @@ final class AnchorStore implements AnchorStorage {
       _storage.delete(key: _keyAnchor),
       _storage.delete(key: _keyDriftHistory),
       _storage.delete(key: _keySourceStats),
+      _storage.delete(key: _keyExplorerSeed),
       _storage.delete(key: _keyLegacyLastTrustedUtcMs),
       _storage.delete(key: _keyLegacyLastAnchorWallMs),
     ]);
@@ -192,6 +254,7 @@ final class InMemoryAnchorStorage implements AnchorStorage {
   TrustAnchor? _anchor;
   List<DriftBootRecord> _driftHistory = const [];
   Map<String, SourceQualityStats> _sourceStats = const {};
+  int? _explorerSeed;
 
   @override
   Future<TrustAnchor?> load() async => _anchor;
@@ -220,9 +283,32 @@ final class InMemoryAnchorStorage implements AnchorStorage {
   }
 
   @override
+  Future<int?> loadExplorerSeed() async {
+    final seed = _explorerSeed;
+    // Mirrors AnchorStore: an out-of-range seed is corrupt, so it is
+    // dropped rather than handed back. Without this the test double
+    // would accept values production silently discards.
+    if (seed == null || !ExplorerShuffle.isValidSeed(seed)) {
+      _explorerSeed = null;
+      return null;
+    }
+    return seed;
+  }
+
+  @override
+  Future<void> saveExplorerSeed(int seed) async {
+    assert(
+      ExplorerShuffle.isValidSeed(seed),
+      'seed $seed is outside the range loadExplorerSeed accepts',
+    );
+    _explorerSeed = seed;
+  }
+
+  @override
   Future<void> clear() async {
     _anchor = null;
     _driftHistory = const [];
     _sourceStats = const {};
+    _explorerSeed = null;
   }
 }

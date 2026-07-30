@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
+import 'package:trusted_time/src/domain/explorer_shuffle.dart';
 import 'package:trusted_time/src/drift_history.dart';
 import 'package:trusted_time/src/source_quality_tracker.dart';
 
@@ -266,6 +267,44 @@ void main() {
     });
   });
 
+  group('InMemoryAnchorStorage explorer seed', () {
+    test('starts absent, round-trips, and clears with clear()', () async {
+      final storage = InMemoryAnchorStorage();
+      expect(await storage.loadExplorerSeed(), isNull);
+
+      await storage.saveExplorerSeed(987654321);
+      expect(await storage.loadExplorerSeed(), 987654321);
+
+      await storage.clear();
+      expect(await storage.loadExplorerSeed(), isNull);
+    });
+
+    test('accepts the range boundaries', () async {
+      final storage = InMemoryAnchorStorage();
+
+      await storage.saveExplorerSeed(0);
+      expect(await storage.loadExplorerSeed(), 0);
+
+      await storage.saveExplorerSeed(ExplorerShuffle.seedBound - 1);
+      expect(await storage.loadExplorerSeed(), ExplorerShuffle.seedBound - 1);
+    });
+
+    test('asserts on an out-of-range seed', () async {
+      // The store would discard such a seed on the next read, so the
+      // caller would see a walk order that silently resets on every
+      // launch. Failing at the write makes that a caller bug.
+      final storage = InMemoryAnchorStorage();
+      expect(
+        () => storage.saveExplorerSeed(-1),
+        throwsA(isA<AssertionError>()),
+      );
+      expect(
+        () => storage.saveExplorerSeed(ExplorerShuffle.seedBound),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+  });
+
   group('AnchorStore source stats (mocked secure storage)', () {
     const storageChannel = MethodChannel(
       'plugins.it_nomads.com/flutter_secure_storage',
@@ -330,6 +369,140 @@ void main() {
 
       expect(
         deletedKeys.where((k) => k.startsWith(statsKeyPrefix)),
+        hasLength(1),
+      );
+    });
+  });
+
+  group('AnchorStore explorer seed (mocked secure storage)', () {
+    const storageChannel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
+    // Prefix-matched for the same reason as the stats key above: a
+    // version bump should not silently break these tests.
+    const seedKeyPrefix = 'tt_explorer_seed_';
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, null);
+    });
+
+    void mockRead(String? stored, {List<String>? deletedKeys}) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            final key = (call.arguments as Map)['key'] as String?;
+            if (call.method == 'delete') {
+              if (key != null) deletedKeys?.add(key);
+              return null;
+            }
+            if (call.method == 'read' &&
+                (key?.startsWith(seedKeyPrefix) ?? false)) {
+              return stored;
+            }
+            return null;
+          });
+    }
+
+    test('loadExplorerSeed returns null when nothing is stored', () async {
+      mockRead(null);
+      expect(await AnchorStore().loadExplorerSeed(), isNull);
+    });
+
+    test('loadExplorerSeed decodes a stored seed', () async {
+      mockRead('987654321');
+      expect(await AnchorStore().loadExplorerSeed(), 987654321);
+    });
+
+    test('a corrupt seed is treated as absent and deleted', () async {
+      // Corruption must cost an install its walk order, never a
+      // bootstrap: the caller reads null and mints a fresh seed.
+      final deletedKeys = <String>[];
+      mockRead('not-an-int', deletedKeys: deletedKeys);
+
+      expect(await AnchorStore().loadExplorerSeed(), isNull);
+      expect(
+        deletedKeys.where((k) => k.startsWith(seedKeyPrefix)),
+        hasLength(1),
+      );
+    });
+
+    test('an out-of-range seed is treated as absent and deleted', () async {
+      // Parseable but outside the generated range. Random does not
+      // specify how it reduces such a seed, so accepting it would make
+      // the walk order differ between the VM and the web for one
+      // install. Rejecting costs that install its walk order once.
+      for (final raw in ['-1', '${ExplorerShuffle.seedBound}']) {
+        final deletedKeys = <String>[];
+        mockRead(raw, deletedKeys: deletedKeys);
+
+        expect(await AnchorStore().loadExplorerSeed(), isNull, reason: raw);
+        expect(
+          deletedKeys.where((k) => k.startsWith(seedKeyPrefix)),
+          hasLength(1),
+          reason: raw,
+        );
+      }
+    });
+
+    test('accepts a seed at the edges of the generated range', () async {
+      mockRead('0');
+      expect(await AnchorStore().loadExplorerSeed(), 0);
+
+      mockRead('${ExplorerShuffle.seedBound - 1}');
+      expect(
+        await AnchorStore().loadExplorerSeed(),
+        ExplorerShuffle.seedBound - 1,
+      );
+    });
+
+    test('saveExplorerSeed writes the seed under the seed key', () async {
+      final written = <String, String?>{};
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            if (call.method == 'write') {
+              final args = call.arguments as Map;
+              written[args['key'] as String] = args['value'] as String?;
+            }
+            return null;
+          });
+
+      await AnchorStore().saveExplorerSeed(13579);
+
+      expect(
+        written.entries
+            .singleWhere((e) => e.key.startsWith(seedKeyPrefix))
+            .value,
+        '13579',
+      );
+    });
+
+    test('saveExplorerSeed asserts on an out-of-range seed', () async {
+      // Symmetric with the in-memory double: a seed the loader would
+      // reject must never reach storage in the first place.
+      expect(
+        () => AnchorStore().saveExplorerSeed(-1),
+        throwsA(isA<AssertionError>()),
+      );
+      expect(
+        () => AnchorStore().saveExplorerSeed(ExplorerShuffle.seedBound),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('clear() deletes the persisted explorer seed', () async {
+      final deletedKeys = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            if (call.method == 'delete') {
+              deletedKeys.add((call.arguments as Map)['key'] as String);
+            }
+            return null;
+          });
+
+      await AnchorStore().clear();
+
+      expect(
+        deletedKeys.where((k) => k.startsWith(seedKeyPrefix)),
         hasLength(1),
       );
     });
