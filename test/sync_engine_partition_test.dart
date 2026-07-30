@@ -170,6 +170,30 @@ void main() {
       expect(second.seed, equals(first.seed));
     });
 
+    test('an out-of-range stored seed is treated as absent', () async {
+      // A third-party AnchorStorage may hand back a seed the bundled
+      // implementations would have rejected. The constructor's range
+      // assert is stripped in release, so the helper must not rely on
+      // it. Each of these must be replaced, not adopted.
+      for (final corrupt in [-1, ExplorerShuffle.seedBound, 1 << 62]) {
+        final shuffle = await loadOrMintExplorerShuffle(
+          load: () async => corrupt,
+          save: (_) async {},
+        );
+        expect(shuffle.seed, isNot(equals(corrupt)));
+        expect(ExplorerShuffle.isValidSeed(shuffle.seed), isTrue);
+      }
+    });
+
+    test('minting over a corrupt seed repairs the store', () async {
+      int? stored = -7;
+      final shuffle = await loadOrMintExplorerShuffle(
+        load: () async => stored,
+        save: (seed) async => stored = seed,
+      );
+      expect(stored, equals(shuffle.seed));
+    });
+
     test('a failing load still yields a usable shuffle', () async {
       final shuffle = await loadOrMintExplorerShuffle(
         load: () async => throw StateError('unreadable'),

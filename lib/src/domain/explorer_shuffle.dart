@@ -129,13 +129,22 @@ final class ExplorerShuffle {
 /// convergence optimization, so losing it costs an install its
 /// accumulated position but must never fail a bootstrap. The returned
 /// shuffle is then unpersisted, and the next launch mints again.
+///
+/// An out-of-range stored seed is treated as absent rather than
+/// trusted. `AnchorStorage` is a public interface, so a caller's own
+/// implementation may return one, and the range check in
+/// [ExplorerShuffle]'s constructor is an assert that release builds
+/// strip. Minting over it also repairs the store, since the fresh seed
+/// is written back through [save].
 Future<ExplorerShuffle> loadOrMintExplorerShuffle({
   required Future<int?> Function() load,
   required Future<void> Function(int seed) save,
 }) async {
   try {
     final stored = await load();
-    if (stored != null) return ExplorerShuffle(stored);
+    if (stored != null && ExplorerShuffle.isValidSeed(stored)) {
+      return ExplorerShuffle(stored);
+    }
   } catch (_) {
     // Unreadable seed: fall through and mint, same as absent.
   }
