@@ -71,8 +71,12 @@ final class ExplorerShuffle {
   ///
   /// Deterministic for a given [seed] and [length]. Returns an empty
   /// list for a non-positive [length].
+  ///
+  /// The result is always a fresh growable list, including when empty,
+  /// so a caller that mutates the result does not fail only on the
+  /// degenerate length.
   List<int> order(int length) {
-    if (length <= 0) return const [];
+    if (length <= 0) return <int>[];
     final indices = [for (var i = 0; i < length; i++) i];
     // Fisher–Yates driven by a seeded generator: uniform over
     // permutations, and reproducible because the generator is

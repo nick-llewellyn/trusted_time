@@ -49,6 +49,20 @@ void main() {
       }
     });
 
+    test('returns a growable list at every length', () {
+      // An unmodifiable empty list would make mutation fail only on
+      // the degenerate length, which is the case a caller is least
+      // likely to exercise before shipping.
+      const shuffle = ExplorerShuffle(7);
+      for (final length in [-1, 0, 1, 51]) {
+        expect(
+          () => shuffle.order(length).add(99),
+          returnsNormally,
+          reason: 'length $length',
+        );
+      }
+    });
+
     test('handles degenerate lengths', () {
       const shuffle = ExplorerShuffle(7);
       expect(shuffle.order(0), isEmpty);
