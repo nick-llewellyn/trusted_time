@@ -164,7 +164,7 @@ void main() {
       expect(p.all.toSet(), hasLength(51));
     });
 
-    test('a default-budget cycle queries far fewer than the full pool', () {
+    test('a budgeted cycle queries far fewer than the full pool', () {
       final p = partitionInventory(
         inventory: curatedNtpInventory,
         shuffle: const ExplorerShuffle(7),
