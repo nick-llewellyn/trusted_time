@@ -278,6 +278,31 @@ void main() {
       await storage.clear();
       expect(await storage.loadExplorerSeed(), isNull);
     });
+
+    test('accepts the range boundaries', () async {
+      final storage = InMemoryAnchorStorage();
+
+      await storage.saveExplorerSeed(0);
+      expect(await storage.loadExplorerSeed(), 0);
+
+      await storage.saveExplorerSeed(ExplorerShuffle.seedBound - 1);
+      expect(await storage.loadExplorerSeed(), ExplorerShuffle.seedBound - 1);
+    });
+
+    test('asserts on an out-of-range seed', () async {
+      // The store would discard such a seed on the next read, so the
+      // caller would see a walk order that silently resets on every
+      // launch. Failing at the write makes that a caller bug.
+      final storage = InMemoryAnchorStorage();
+      expect(
+        () => storage.saveExplorerSeed(-1),
+        throwsA(isA<AssertionError>()),
+      );
+      expect(
+        () => storage.saveExplorerSeed(ExplorerShuffle.seedBound),
+        throwsA(isA<AssertionError>()),
+      );
+    });
   });
 
   group('AnchorStore source stats (mocked secure storage)', () {
@@ -448,6 +473,19 @@ void main() {
             .singleWhere((e) => e.key.startsWith(seedKeyPrefix))
             .value,
         '13579',
+      );
+    });
+
+    test('saveExplorerSeed asserts on an out-of-range seed', () async {
+      // Symmetric with the in-memory double: a seed the loader would
+      // reject must never reach storage in the first place.
+      expect(
+        () => AnchorStore().saveExplorerSeed(-1),
+        throwsA(isA<AssertionError>()),
+      );
+      expect(
+        () => AnchorStore().saveExplorerSeed(ExplorerShuffle.seedBound),
+        throwsA(isA<AssertionError>()),
       );
     });
 

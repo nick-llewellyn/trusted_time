@@ -48,6 +48,14 @@ abstract interface class AnchorStorage {
 
   /// Persists the per-install explorer shuffle seed.
   ///
+  /// [seed] must satisfy `ExplorerShuffle.isValidSeed`. Implementations
+  /// assert this rather than coercing: [loadExplorerSeed] rejects an
+  /// out-of-range seed, so a write outside the range is a value the
+  /// store would silently discard on the next read, and the caller
+  /// would see a walk order that resets on every launch with nothing
+  /// having failed. `ExplorerShuffle.generate` only ever produces
+  /// in-range seeds, so a violation is a caller bug.
+  ///
   /// Written once, at first init. Rewriting it on every launch would
   /// defeat the point: the walk order must be stable across process
   /// death, or every restart re-anchors to the same permutation prefix.
@@ -215,6 +223,10 @@ final class AnchorStore implements AnchorStorage {
   /// Persists the explorer shuffle seed.
   @override
   Future<void> saveExplorerSeed(int seed) async {
+    assert(
+      ExplorerShuffle.isValidSeed(seed),
+      'seed $seed is outside the range loadExplorerSeed accepts',
+    );
     await _storage.write(key: _keyExplorerSeed, value: '$seed');
   }
 
@@ -271,10 +283,24 @@ final class InMemoryAnchorStorage implements AnchorStorage {
   }
 
   @override
-  Future<int?> loadExplorerSeed() async => _explorerSeed;
+  Future<int?> loadExplorerSeed() async {
+    final seed = _explorerSeed;
+    // Mirrors AnchorStore: an out-of-range seed is corrupt, so it is
+    // dropped rather than handed back. Without this the test double
+    // would accept values production silently discards.
+    if (seed == null || !ExplorerShuffle.isValidSeed(seed)) {
+      _explorerSeed = null;
+      return null;
+    }
+    return seed;
+  }
 
   @override
   Future<void> saveExplorerSeed(int seed) async {
+    assert(
+      ExplorerShuffle.isValidSeed(seed),
+      'seed $seed is outside the range loadExplorerSeed accepts',
+    );
     _explorerSeed = seed;
   }
 
