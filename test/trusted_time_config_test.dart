@@ -228,6 +228,90 @@ void main() {
       expect(config.ntpInventory, isEmpty);
     });
 
+    test('ntpInventoryForTesting replaces the inventory', () {
+      // The partition reads ntpInventory; the override exists so a test
+      // can control its shape without the curated 51.
+      const entry = NtpServerInfo(
+        host: 'fake.test',
+        tier: NtpServerTier.anycast,
+        observedStratum: 1,
+        observedGroupId: 'as1',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const config = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
+      expect(config.ntpInventory, equals(const [entry]));
+    });
+
+    test('ntpInventoryForTesting empties ntpServers on its own', () {
+      // Without this the curated 51 would still be built as live
+      // NtpSources while eligibility keyed off the override -- real DNS
+      // and UDP from a test, against sources the partition then lets
+      // through unpartitioned for want of a matching inventory entry.
+      const entry = NtpServerInfo(
+        host: 'fake.test',
+        tier: NtpServerTier.anycast,
+        observedStratum: 1,
+        observedGroupId: 'as1',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const config = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
+      expect(config.ntpServers, isEmpty);
+      expect(config.ntpInventory, equals(const [entry]));
+    });
+
+    test('ntpInventoryForTesting survives disableNtpForTesting', () {
+      // The override wins over the flag's empty inventory, so the
+      // partition still has something to narrow. If the flag won, every
+      // test pairing the two would silently take the "nothing to
+      // narrow" branch and assert vacuously.
+      const entry = NtpServerInfo(
+        host: 'fake.test',
+        tier: NtpServerTier.anycast,
+        observedStratum: 1,
+        observedGroupId: 'as1',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const config = TrustedTimeConfig(
+        disableNtpForTesting: true,
+        ntpInventoryForTesting: [entry],
+      );
+      expect(config.ntpInventory, equals(const [entry]));
+      // ntpServers is untouched, so no live source is built for it.
+      expect(config.ntpServers, isEmpty);
+    });
+
+    test('ntpInventoryForTesting participates in equality and hashCode', () {
+      const entry = NtpServerInfo(
+        host: 'fake.test',
+        tier: NtpServerTier.anycast,
+        observedStratum: 1,
+        observedGroupId: 'as1',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const a = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
+      const b = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
+      const none = TrustedTimeConfig();
+
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
+      expect(a, isNot(equals(none)));
+      expect(a.copyWith(ntpInventoryForTesting: const []), isNot(equals(a)));
+    });
+
+    test('an absent override is distinct from an empty one', () {
+      // Absent means "use the curated inventory"; empty means "narrow
+      // against nothing". Not interchangeable, so == must separate
+      // them. Deliberately no hashCode assertion: unequal objects are
+      // permitted to collide, and pinning the absence of a collision
+      // would bind the test to the SDK's current hash mixing.
+      const absent = TrustedTimeConfig();
+      const empty = TrustedTimeConfig(ntpInventoryForTesting: []);
+
+      expect(absent, isNot(equals(empty)));
+      expect(absent.ntpInventory, same(curatedNtpInventory));
+      expect(empty.ntpInventory, isEmpty);
+    });
+
     test('NtpServerInfo compares by value', () {
       // The inventory is exported, so consumers can reasonably hold
       // entries in sets or compare them against a constructed

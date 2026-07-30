@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'anchor_store.dart';
+import 'domain/explorer_shuffle.dart';
 import 'exceptions.dart';
 import 'models.dart';
 import 'infra/trusted_time_log.dart';
@@ -50,6 +51,32 @@ const _iosRetryDelays = [Duration(seconds: 2)];
 @visibleForTesting
 List<Duration> defaultRetryDelaysFor(TargetPlatform platform) =>
     platform == TargetPlatform.iOS ? _iosRetryDelays : _androidRetryDelays;
+
+/// The one explorer walk order every attempt in a run shares.
+///
+/// With [TrustedTimeConfig.persistState] on, the install's stored seed
+/// is loaded (minted and written back on first launch), so a headless
+/// run walks the same order as the foreground.
+///
+/// With it off there is no seed to read, but the run still needs a
+/// shuffle: leaving it unset would let each per-attempt engine mint its
+/// own, and a retry would then probe a different explorer set than the
+/// attempt it is retrying — the opposite of what retrying a failed set
+/// is for. One is minted here instead and deliberately not written
+/// back, so the next run draws a fresh order. That is the same trade
+/// `persistState: false` already makes for the anchor and the
+/// per-source quality stats.
+///
+/// Exposed for tests pinning the non-persistent case; production
+/// callers reach it through [runBackgroundSync].
+@visibleForTesting
+Future<ExplorerShuffle> resolveRunShuffle({
+  required bool persistState,
+  required Future<int?> Function() load,
+  required Future<void> Function(int seed) save,
+}) async => persistState
+    ? await loadOrMintExplorerShuffle(load: load, save: save)
+    : ExplorerShuffle.generate();
 
 /// Outcome of a single headless background-sync invocation.
 ///
@@ -296,6 +323,17 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
       ? await anchorStore.loadSourceStats()
       : const <String, SourceQualityStats>{};
 
+  // Likewise resolved once per run, not per attempt: the walk order is
+  // a property of the install, so retries within one run must explore
+  // the same hosts rather than re-drawing the explorer set each time.
+  // See [resolveRunShuffle] for why the non-persistent case still gets
+  // a shuffle instead of leaving each attempt to mint its own.
+  final explorerShuffle = await resolveRunShuffle(
+    persistState: effectiveConfig.persistState,
+    load: anchorStore.loadExplorerSeed,
+    save: anchorStore.saveExplorerSeed,
+  );
+
   final maxAttempts = delays.length + 1;
   Object? lastError;
   var lastErrorRetryable = true;
@@ -303,8 +341,11 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
     // Fresh engine per attempt: a failed cycle arms per-source exponential
     // cooldowns (>= 2 min) inside the engine, so reusing it would make the
     // next attempt throw "all sources in cooldown" without any network I/O.
-    final engine = SyncEngine(config: effectiveConfig, clock: monotonicClock)
-      ..restoreSourceStats(persistedStats);
+    final engine = SyncEngine(
+      config: effectiveConfig,
+      clock: monotonicClock,
+      explorerShuffle: explorerShuffle,
+    )..restoreSourceStats(persistedStats);
     try {
       // Shared query-and-bank unit (sync + persistState-gated save) —
       // the same cycle the foreground engine runs, so a headless anchor
