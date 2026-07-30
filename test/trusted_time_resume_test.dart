@@ -27,7 +27,7 @@ void main() {
       () async {
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
             persistState: false,
           ),
@@ -43,7 +43,7 @@ void main() {
       await expectLater(
         TrustedTime.initialize(
           config: const TrustedTimeConfig(
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
             persistState: false,
             requireSleepAwareProjection: true,
@@ -57,7 +57,7 @@ void main() {
         'fallback and initialize() completes', () async {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
           persistState: false,
         ),
@@ -78,7 +78,7 @@ void main() {
       // First, a successful init installs a live singleton.
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
           persistState: false,
         ),
@@ -92,7 +92,7 @@ void main() {
       await expectLater(
         TrustedTime.initialize(
           config: const TrustedTimeConfig(
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
             persistState: false,
             requireSleepAwareProjection: true,
@@ -127,7 +127,7 @@ void main() {
 
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
           persistState: false,
         ),
@@ -140,7 +140,7 @@ void main() {
       await expectLater(
         TrustedTime.initialize(
           config: const TrustedTimeConfig(
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
             persistState: false,
             requireSleepAwareProjection: true,
@@ -166,7 +166,7 @@ void main() {
     Future<void> initWithAnchor(MidpointBox box) async {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          ntpServers: const [],
+          disableNtpForTesting: true,
           ntsServers: const [],
           persistState: false,
           earlyExit: false,
@@ -304,7 +304,7 @@ void main() {
       // with no anchor is an establish attempt and must proceed.
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
           persistState: false,
         ),
@@ -325,7 +325,7 @@ void main() {
     test('a resume with no anchor at all runs a full sync', () async {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
           persistState: false,
         ),
@@ -352,7 +352,7 @@ void main() {
       final box = freshBox();
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          ntpServers: const [],
+          disableNtpForTesting: true,
           ntsServers: const [],
           persistState: false,
           earlyExit: false,
@@ -379,7 +379,7 @@ void main() {
         'establish attempt on resume', () async {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
           persistState: false,
           refreshInterval: Duration.zero,
@@ -419,7 +419,7 @@ void main() {
       final entered = Completer<void>();
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          ntpServers: const [],
+          disableNtpForTesting: true,
           ntsServers: const [],
           persistState: false,
           earlyExit: false,

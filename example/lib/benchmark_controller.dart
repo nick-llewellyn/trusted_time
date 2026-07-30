@@ -441,7 +441,12 @@ class BenchmarkController extends ChangeNotifier {
       )..shuffle(Random())).toList(growable: false);
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          ntpServers: const [],
+          // The Beauty Parade benchmarks NTS hosts in isolation; the
+          // library's curated NTP inventory would contend with them for
+          // every cycle's budget. Diagnostic harness, so the test seam
+          // is used deliberately.
+          // ignore: invalid_use_of_visible_for_testing_member
+          disableNtpForTesting: true,
           ntsServers: shuffled,
           maxConcurrentDnsLookups: _maxConcurrentDnsLookupsOverride,
           minimumQuorum: 2,

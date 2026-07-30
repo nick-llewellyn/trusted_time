@@ -30,7 +30,7 @@ void main() {
         unawaited(
           TrustedTimeImpl.init(
             TrustedTimeConfig(
-              ntpServers: const [],
+              disableNtpForTesting: true,
               ntsServers: const [],
               persistState: false,
               // Shrink the first cycle's outer safety timeout
@@ -145,7 +145,7 @@ void main() {
       );
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          ntpServers: const [],
+          disableNtpForTesting: true,
           ntsServers: const [],
           earlyExit: false,
           additionalSources: [
@@ -243,7 +243,7 @@ void main() {
         unawaited(
           TrustedTimeImpl.init(
             TrustedTimeConfig(
-              ntpServers: const [],
+              disableNtpForTesting: true,
               ntsServers: const [],
               additionalSources: [_HungWarmSource()],
             ),
@@ -279,7 +279,7 @@ void main() {
         unawaited(
           TrustedTimeImpl.init(
             const TrustedTimeConfig(
-              ntpServers: [],
+              disableNtpForTesting: true,
               ntsServers: [],
               usePlatformTrust: true,
               customRootCerts: [1, 2, 3],
@@ -303,7 +303,7 @@ void main() {
         unawaited(
           TrustedTimeImpl.init(
             TrustedTimeConfig(
-              ntpServers: const [],
+              disableNtpForTesting: true,
               ntsServers: const [],
               additionalSources: [_SlowWarmSource()],
             ),
@@ -332,7 +332,7 @@ void main() {
         TrustedTimeImpl? impl;
         unawaited(
           TrustedTimeImpl.init(
-            const TrustedTimeConfig(ntpServers: [], ntsServers: []),
+            const TrustedTimeConfig(disableNtpForTesting: true, ntsServers: []),
           ).then((i) => impl = i),
         );
         async.flushMicrotasks();
@@ -356,7 +356,7 @@ void main() {
     // work only; the first sync cycle runs detached, observable as
     // syncInProgress and awaitable via firstSyncSettled.
     const config = TrustedTimeConfig(
-      ntpServers: [],
+      disableNtpForTesting: true,
       ntsServers: [],
       persistState: false,
       minimumQuorum: 2,

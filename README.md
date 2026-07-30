@@ -114,13 +114,15 @@ You can pass a `TrustedTimeConfig` to customise sources, sync intervals, and sec
 ```dart
 await TrustedTime.initialize(
   config: const TrustedTimeConfig(
-    ntpServers: ['pool.ntp.org', 'time.apple.com', 'time.windows.com'],
+    ntsServers: ['time.cloudflare.com', 'nts.netnod.se'],
     refreshInterval: Duration(hours: 6),
     backgroundSyncInterval: Duration(hours: 12),
     minGroupCount: 2,
   ),
 );
 ```
+
+The plain-NTP host list is not configurable: the library ships a fixed, curated inventory of 51 verified hosts (see `ntpServers` in the configuration reference below). `config.ntpInventory` exposes each host's tier, observed stratum and autonomous system, and leap-second evidence via `NtpServerInfo`.
 
 ### Get the current time
 
@@ -324,7 +326,8 @@ void main() {
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `ntpServers` | `List<String>` | `pool.ntp.org`, `time.apple.com`, `time.windows.com` | NTP server hostnames (every default host handles a leap second by stepping the clock, not by smearing it) |
+| `ntpServers` | `List<String>` | curated 51-host inventory | **Read-only.** Hostnames from the library's fixed NTP inventory, verified by live probe. No host is a documented leap-second smearer — Google, AWS, and Meta are excluded on published-smear evidence, since a smeared source diverges from stepping sources by up to a full second around a leap event |
+| `ntpInventory` | `List<NtpServerInfo>` | curated 51-host inventory | **Read-only.** The same inventory with per-host metadata: `tier` (anycast / unicast stratum 1 / unicast stratum 2), `observedStratum`, `observedGroupId`, and `leapPolicy` |
 | `ntpBurstCount` | `int` | `8` | Sequential SNTP exchanges per NTP source per sync; the lowest-delay sample is kept |
 | `ntsServers` | `List<String>` | `time.cloudflare.com`, `nts.netnod.se` | NTS server hostnames |
 | `ntsPort` | `int` | `4460` | NTS-KE port |

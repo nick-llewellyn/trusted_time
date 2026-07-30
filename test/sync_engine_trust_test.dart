@@ -103,7 +103,7 @@ void main() {
         // regardless of whether any NTS server is configured.
         final engine = SyncEngine(
           config: const TrustedTimeConfig(
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
             usePlatformTrust: true,
             customRootCerts: [1, 2, 3],
@@ -125,7 +125,10 @@ void main() {
         // valid config. bundledOnly (the effective default) is valid, so
         // source construction succeeds even with no NTS servers present.
         final engine = SyncEngine(
-          config: const TrustedTimeConfig(ntpServers: [], ntsServers: []),
+          config: const TrustedTimeConfig(
+            disableNtpForTesting: true,
+            ntsServers: [],
+          ),
           clock: clock,
         );
 
@@ -183,7 +186,7 @@ void main() {
     SyncEngine buildEngine(List<TimeSource> sources, {int minimumQuorum = 1}) =>
         SyncEngine(
           config: TrustedTimeConfig(
-            ntpServers: const [],
+            disableNtpForTesting: true,
             ntsServers: const [],
             minimumQuorum: minimumQuorum,
             minGroupCount: 1,

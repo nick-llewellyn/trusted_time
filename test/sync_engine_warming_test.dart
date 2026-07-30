@@ -119,7 +119,7 @@ void main() {
       config = const TrustedTimeConfig(
         minimumQuorum: 2,
         minGroupCount: 1,
-        ntpServers: [],
+        disableNtpForTesting: true,
       );
     });
 
@@ -374,7 +374,7 @@ void main() {
       config = const TrustedTimeConfig(
         minimumQuorum: 2,
         minGroupCount: 1,
-        ntpServers: [],
+        disableNtpForTesting: true,
       );
     });
 

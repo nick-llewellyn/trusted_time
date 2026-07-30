@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart' as nts;
 
+import '../data/ntp_inventory.dart';
 import '../domain/time_source.dart';
+import 'ntp_server_info.dart';
 
 @immutable
 /// Configuration parameters for the [TrustedTime] engine.
@@ -12,8 +14,8 @@ import '../domain/time_source.dart';
 /// ## Mutability contract
 ///
 /// [TrustedTimeConfig] is annotated `@immutable` and its scalar
-/// fields are `final`. The list-typed fields ([ntpServers],
-/// [ntsServers], [additionalSources]) are stored by
+/// fields are `final`. The list-typed fields ([ntsServers],
+/// [additionalSources]) are stored by
 /// reference for `const`-constructibility — the canonical
 /// production usage is to pass `const`-list literals, which are
 /// already deeply immutable.
@@ -27,11 +29,6 @@ import '../domain/time_source.dart';
 final class TrustedTimeConfig {
   /// Creates a new configuration instance with sensible production defaults.
   const TrustedTimeConfig({
-    this.ntpServers = const [
-      'pool.ntp.org',
-      'time.apple.com',
-      'time.windows.com',
-    ],
     this.ntsServers = const ['time.cloudflare.com', 'nts.netnod.se'],
     this.ntsPort = 4460,
     this.maxConcurrentDnsLookups,
@@ -53,6 +50,7 @@ final class TrustedTimeConfig {
     this.ntsBurstCount = 8,
     this.ntpBurstCount = 8,
     this.requireSleepAwareProjection = false,
+    @visibleForTesting this.disableNtpForTesting = false,
   }) : assert(
          ntsBurstCount >= 1 && ntsBurstCount <= 8,
          'ntsBurstCount must be in 1..8: 8 matches the fixed burst size '
@@ -91,13 +89,42 @@ final class TrustedTimeConfig {
     );
   }
 
-  /// The list of authoritative NTP server hostnames used for synchronization.
+  /// Suppresses every plain-NTP source, leaving [ntsServers] and
+  /// [additionalSources] as the only inputs.
   ///
-  /// Every default host follows the leap-second **stepping** policy;
-  /// smearing operators (Google, AWS) are deliberately excluded, since
-  /// a smeared source diverges from stepping sources by up to a full
-  /// second around a leap event and can poison the consensus.
-  final List<String> ntpServers;
+  /// Exists so the test suite (and the example app's NTS-only
+  /// benchmarking harness) can keep [ntpServers] from doing live DNS
+  /// and UDP. It is not a supported production knob: an install that
+  /// disables NTP loses the unauthenticated breadth the consensus
+  /// relies on.
+  @visibleForTesting
+  final bool disableNtpForTesting;
+
+  /// The authoritative NTP server hostnames used for synchronization.
+  ///
+  /// Fixed to the library's curated inventory — see
+  /// `lib/src/data/ntp_inventory.dart` for provenance, the
+  /// leap-second policy, and the anycast vantage caveat. No host is a
+  /// documented smearing operator: Google, AWS, and Meta are excluded
+  /// on published-smear evidence, since a smeared source diverges
+  /// from stepping sources by up to a full second around a leap event
+  /// and can poison the consensus. Stepping is documented for the
+  /// major operators and metrology institutes and presumed for the
+  /// remaining public servers, which run stock `ntpd`/`chrony`.
+  ///
+  /// Empty when [disableNtpForTesting] is set.
+  ///
+  /// This is the hostname view; [ntpInventory] carries each host's
+  /// tier, observed stratum and autonomous system, and leap-second
+  /// evidence.
+  List<String> get ntpServers =>
+      disableNtpForTesting ? const [] : curatedNtpHostnames;
+
+  /// The curated inventory behind [ntpServers], with per-host metadata.
+  ///
+  /// Empty when [disableNtpForTesting] is set.
+  List<NtpServerInfo> get ntpInventory =>
+      disableNtpForTesting ? const [] : curatedNtpInventory;
 
   /// The list of Network Time Security (NTS) servers used for cryptographically
   /// authenticated synchronization.
@@ -437,7 +464,6 @@ final class TrustedTimeConfig {
   /// [backgroundSyncInterval] cannot be cleared back to `null` through
   /// this method; construct a new instance directly if that is needed.
   TrustedTimeConfig copyWith({
-    List<String>? ntpServers,
     List<String>? ntsServers,
     int? ntsPort,
     int? maxConcurrentDnsLookups,
@@ -458,9 +484,9 @@ final class TrustedTimeConfig {
     int? ntsBurstCount,
     int? ntpBurstCount,
     bool? requireSleepAwareProjection,
+    @visibleForTesting bool? disableNtpForTesting,
   }) {
     return TrustedTimeConfig(
-      ntpServers: ntpServers ?? this.ntpServers,
       ntsServers: ntsServers ?? this.ntsServers,
       ntsPort: ntsPort ?? this.ntsPort,
       maxConcurrentDnsLookups:
@@ -487,6 +513,7 @@ final class TrustedTimeConfig {
       ntpBurstCount: ntpBurstCount ?? this.ntpBurstCount,
       requireSleepAwareProjection:
           requireSleepAwareProjection ?? this.requireSleepAwareProjection,
+      disableNtpForTesting: disableNtpForTesting ?? this.disableNtpForTesting,
     );
   }
 
@@ -494,7 +521,7 @@ final class TrustedTimeConfig {
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
     return other is TrustedTimeConfig &&
-        listEquals(other.ntpServers, ntpServers) &&
+        other.disableNtpForTesting == disableNtpForTesting &&
         listEquals(other.ntsServers, ntsServers) &&
         other.ntsPort == ntsPort &&
         other.maxConcurrentDnsLookups == maxConcurrentDnsLookups &&
@@ -520,7 +547,7 @@ final class TrustedTimeConfig {
 
   @override
   int get hashCode => Object.hashAll([
-    Object.hashAll(ntpServers),
+    disableNtpForTesting,
     Object.hashAll(ntsServers),
     ntsPort,
     maxConcurrentDnsLookups,
@@ -553,7 +580,11 @@ final class TrustedTimeConfig {
     // settings. Keep field order in sync with the constructor so a
     // diff between an expected and actual config reads top-to-bottom.
     return 'TrustedTimeConfig(\n'
-        '  ntpServers: $ntpServers,\n'
+        // Summarise rather than interpolate: the curated inventory is
+        // fixed and 51 entries long, so dumping it verbatim would bury
+        // every other field. The count (and the zero that
+        // disableNtpForTesting produces) is what an operator needs.
+        '  ntpServers: ${ntpServers.length} hosts,\n'
         '  ntsServers: $ntsServers,\n'
         '  ntsPort: $ntsPort,\n'
         '  maxConcurrentDnsLookups: $maxConcurrentDnsLookups,\n'

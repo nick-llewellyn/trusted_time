@@ -81,7 +81,11 @@ export 'src/models.dart'
         TrustAnchor,
         TrustAnchorContributor,
         ConfidenceLevel,
-        SyncMetrics;
+        SyncMetrics,
+        NtpServerInfo,
+        NtpServerTier,
+        NtpLeapPolicy,
+        curatedNtpInventory;
 // TrustMode, TrustBackend, and NtsTrustStatus are part of
 // `package:nts`'s public surface and are exposed by this package's
 // API:

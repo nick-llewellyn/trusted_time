@@ -144,7 +144,7 @@ void main() {
       // until the test drives it explicitly.
       await public_api.TrustedTime.initialize(
         config: const public_api.TrustedTimeConfig(
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
           persistState: false,
         ),

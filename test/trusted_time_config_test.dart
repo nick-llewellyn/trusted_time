@@ -150,18 +150,115 @@ void main() {
   });
 
   group('TrustedTimeConfig default source lists', () {
-    test('ntpServers default to three stepping operators', () {
-      // Leap-second policy: every default host steps. time.google.com
-      // (smearing) was deliberately removed — a smeared source
-      // diverges from stepping sources by up to a full second around
-      // a leap event.
+    test('ntpServers is the curated inventory', () {
       const config = TrustedTimeConfig();
-      expect(config.ntpServers, [
-        'pool.ntp.org',
-        'time.apple.com',
-        'time.windows.com',
-      ]);
-      expect(config.ntpServers, isNot(contains('time.google.com')));
+      expect(config.ntpInventory, same(curatedNtpInventory));
+      expect(config.ntpServers, hasLength(51));
+    });
+
+    test('ntpServers is the hostname view of ntpInventory', () {
+      // The engine queries by name; the metadata drives selection.
+      // These two must not drift apart.
+      const config = TrustedTimeConfig();
+      expect(
+        config.ntpServers,
+        config.ntpInventory.map((e) => e.host).toList(),
+      );
+    });
+
+    test('the inventory excludes every documented smearing operator', () {
+      // A smeared source diverges from stepping sources by up to a
+      // full second around a leap event and can poison the consensus.
+      // Google, AWS, and Meta all publish their smear windows; they
+      // were probed and dropped on that evidence (trusted_time-5fz).
+      //
+      // Matched on registrable domain rather than substring: a bare
+      // substring would reject an unrelated host that happens to
+      // contain 'aws', and exact hostnames alone would admit a sibling
+      // like time1.google.com, which smears for the same reason.
+      const smearingDomains = ['google.com', 'aws.com', 'facebook.com'];
+      for (final entry in curatedNtpInventory) {
+        for (final domain in smearingDomains) {
+          expect(
+            entry.host == domain || entry.host.endsWith('.$domain'),
+            isFalse,
+            reason: '${entry.host} belongs to documented smearer $domain',
+          );
+        }
+      }
+    });
+
+    test('the inventory has no duplicate hosts', () {
+      // A repeated host would inflate a quorum with one server's
+      // opinion counted twice.
+      expect(
+        curatedNtpInventory.map((e) => e.host).toSet(),
+        hasLength(curatedNtpInventory.length),
+      );
+    });
+
+    test('every entry carries a resolved group id', () {
+      // 'asn-unknown' is the probe's sentinel for a host whose
+      // autonomous system could not be established. An entry carrying
+      // it would silently escape the diversity accounting.
+      for (final entry in curatedNtpInventory) {
+        expect(
+          entry.observedGroupId,
+          matches(RegExp(r'^as[0-9]+$')),
+          reason: '${entry.host} has an unusable group id',
+        );
+      }
+    });
+
+    test('the anycast core spans the tiers it claims', () {
+      // mvq partitions on tier: the anycast core is self-localizing
+      // and always queried, the unicast hosts are the explore pool.
+      final byTier = <NtpServerTier, int>{};
+      for (final entry in curatedNtpInventory) {
+        byTier[entry.tier] = (byTier[entry.tier] ?? 0) + 1;
+      }
+      expect(byTier[NtpServerTier.anycast], 10);
+      expect(byTier[NtpServerTier.unicastStratum1], 34);
+      expect(byTier[NtpServerTier.unicastStratum2], 7);
+    });
+
+    test('disableNtpForTesting empties the NTP pool', () {
+      const config = TrustedTimeConfig(disableNtpForTesting: true);
+      expect(config.ntpServers, isEmpty);
+      expect(config.ntpInventory, isEmpty);
+    });
+
+    test('NtpServerInfo compares by value', () {
+      // The inventory is exported, so consumers can reasonably hold
+      // entries in sets or compare them against a constructed
+      // expectation.
+      const a = NtpServerInfo(
+        host: 'time.example',
+        tier: NtpServerTier.anycast,
+        observedStratum: 2,
+        observedGroupId: 'as13335',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const same = NtpServerInfo(
+        host: 'time.example',
+        tier: NtpServerTier.anycast,
+        observedStratum: 2,
+        observedGroupId: 'as13335',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const differentStratum = NtpServerInfo(
+        host: 'time.example',
+        tier: NtpServerTier.anycast,
+        observedStratum: 3,
+        observedGroupId: 'as13335',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+
+      expect(a, same);
+      expect(a.hashCode, same.hashCode);
+      expect(a, isNot(differentStratum));
+      expect(a.toString(), contains('time.example'));
+      expect(a.toString(), contains('stratum 2'));
     });
 
     test('ntsServers default to two anycast anchors from distinct '

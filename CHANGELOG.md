@@ -4,19 +4,36 @@
 
 ### Breaking Changes
 
-- **Default source lists rebuilt around a stepping-only leap-second
-  policy and administrative diversity.** `ntpServers` now defaults to
-  `['pool.ntp.org', 'time.apple.com', 'time.windows.com']` —
-  `time.google.com` is removed because Google smears leap seconds,
-  and a smeared source diverges from stepping sources by up to a full
-  second around a leap event. `ntsServers` now defaults to
+- **`ntpServers` is no longer settable; the library ships a curated
+  51-host inventory.** The `TrustedTimeConfig` constructor parameter
+  is removed and `ntpServers` becomes a read-only getter returning a
+  fixed inventory verified by live probe (`trusted_time-5fz`,
+  2026-07-26): 51 hosts spanning 27 ASN groups, tiered anycast /
+  unicast S1 / unicast S2. This exists so source selection can
+  explore a real inventory rather than three hosts, and so the host
+  set is a property of the library rather than of each install.
+  Consumers passing `ntpServers:` must delete the argument; there is
+  no replacement, including for internal or enterprise NTP. A
+  `@visibleForTesting` `disableNtpForTesting` flag suppresses the
+  pool for hermetic tests and is not a supported production knob.
+
+  No host in the inventory is a documented smearing operator —
+  `time.google.com`, `time.aws.com`, and `time.facebook.com` were
+  probed and excluded on published-smear evidence. Stepping is
+  documented for the major operators and metrology institutes and
+  presumed for the remaining public servers, which run stock
+  `ntpd`/`chrony`; the runtime defence against a smeared outlier
+  remains the Marzullo intersection.
+
+- **Default NTS list rebuilt around a stepping-only leap-second
+  policy and administrative diversity.** `ntsServers` now defaults to
   `['time.cloudflare.com', 'nts.netnod.se']`: two anycast anchors
   from distinct operators, so the out-of-the-box config satisfies the
   default `minGroupCount` of 2 and can mint a verified truth box on
   its own (the previous single-host default never could). Every
   default host steps. Consumers pinning the old defaults explicitly
   are unaffected; consumers relying on the implicit defaults get the
-  new lists on their next sync.
+  new list on their next sync.
 
 - **NTS sources now group by registrable domain instead of full
   hostname.** `NtsSource.groupId` for `gbg1.nts.netnod.se`,
@@ -225,6 +242,22 @@
   intervals.
 
 ### Added
+
+- **`NtpServerInfo`, `NtpServerTier`, `NtpLeapPolicy`, and
+  `config.ntpInventory`.** The curated inventory carries per-host
+  metadata rather than bare strings: the curation tier a host was
+  admitted under, the stratum and autonomous system a live probe
+  observed, and how firmly its leap-second behaviour is established.
+  Source selection needs the tier to know which hosts are
+  self-localizing, and the group id to avoid drawing a quorum that
+  counts one operator eleven times; both were previously recoverable
+  only from a doc comment. `ntpServers` remains the hostname view of
+  the same data.
+
+  Measured RTT and resolved IP are deliberately absent. An RTT from
+  the probe's UK vantage is a misleading prior for a device elsewhere,
+  and a resolved address is stale as soon as an operator renumbers —
+  both are properties of a query rather than of a host.
 
 - **Durable per-source quality stats** (`SourceQualityTracker`): the
   smoothed source metrics — EWMA RTT (from measured `TimeSample.delayMs`),

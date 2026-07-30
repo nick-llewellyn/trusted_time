@@ -51,7 +51,7 @@ void main() {
       config = const TrustedTimeConfig(
         minimumQuorum: 2,
         minGroupCount: 1, // Relax for tests
-        ntpServers: [],
+        disableNtpForTesting: true,
       );
     });
 
@@ -224,7 +224,7 @@ void main() {
           config: const TrustedTimeConfig(
             minimumQuorum: 2,
             minGroupCount: 2,
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
           ).copyWith(additionalSources: [s1, s2, s3]),
           clock: gatedClock,
@@ -278,7 +278,7 @@ void main() {
           config: const TrustedTimeConfig(
             minimumQuorum: 2,
             minGroupCount: 2,
-            ntpServers: [],
+            disableNtpForTesting: true,
             ntsServers: [],
           ).copyWith(additionalSources: [s1, s2, s3]),
           clock: clock,
@@ -413,7 +413,7 @@ void main() {
         config: const TrustedTimeConfig(
           minimumQuorum: 2,
           minGroupCount: 2,
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
         ).copyWith(additionalSources: sources),
         clock: FakeMonotonicClock(),
@@ -505,7 +505,7 @@ void main() {
         config: const TrustedTimeConfig(
           minimumQuorum: 2,
           minGroupCount: 2,
-          ntpServers: [],
+          disableNtpForTesting: true,
           ntsServers: [],
         ).copyWith(additionalSources: sources),
         clock: FakeMonotonicClock(),

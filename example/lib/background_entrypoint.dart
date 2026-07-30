@@ -28,7 +28,11 @@ TrustedTimeConfig buildStressConfig() {
     curatedNtsPool,
   )..shuffle(Random())).toList(growable: false);
   return TrustedTimeConfig(
-    ntpServers: const [],
+    // The stress harness measures NTS only; the library's curated NTP
+    // inventory would add 51 unrelated hosts to every cycle. This is a
+    // diagnostic app, so it deliberately reaches for the test seam.
+    // ignore: invalid_use_of_visible_for_testing_member
+    disableNtpForTesting: true,
     ntsServers: ntsSubset,
     minimumQuorum: 2,
     minQuorumRatio: 0.4,

@@ -204,7 +204,7 @@ void main() {
       await tester.runAsync(() async {
         await TrustedTime.initialize(
           config: TrustedTimeConfig(
-            ntpServers: const [],
+            disableNtpForTesting: true,
             ntsServers: requested,
             // Two distinct group ids so MarzulloEngine treats them as
             // independent samples and consensus is reachable on the
