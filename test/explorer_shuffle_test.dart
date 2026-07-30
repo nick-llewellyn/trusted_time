@@ -116,6 +116,27 @@ void main() {
     });
   });
 
+  group('ExplorerShuffle constructor', () {
+    test('asserts on a seed outside the valid range', () {
+      // Storage rejects such a seed on load, but a caller can build one
+      // directly, and order() would hand it to Random, whose reduction
+      // of an out-of-range seed is unspecified across platforms.
+      expect(() => ExplorerShuffle(-1), throwsA(isA<AssertionError>()));
+      expect(
+        () => ExplorerShuffle(ExplorerShuffle.seedBound),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('accepts the range boundaries', () {
+      expect(ExplorerShuffle(0).seed, 0);
+      expect(
+        ExplorerShuffle(ExplorerShuffle.seedBound - 1).seed,
+        ExplorerShuffle.seedBound - 1,
+      );
+    });
+  });
+
   group('ExplorerShuffle.isValidSeed', () {
     test('accepts the generated range inclusive of its lower bound', () {
       expect(ExplorerShuffle.isValidSeed(0), isTrue);

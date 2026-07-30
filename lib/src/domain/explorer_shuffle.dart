@@ -34,7 +34,16 @@ import 'package:flutter/foundation.dart';
 @immutable
 final class ExplorerShuffle {
   /// Wraps an existing [seed], normally one loaded from storage.
-  const ExplorerShuffle(this.seed);
+  ///
+  /// [seed] must satisfy [isValidSeed]. Storage already rejects an
+  /// out-of-range seed on load, but a caller can construct one
+  /// directly, and [order] would then hand it to [Random], whose
+  /// reduction of an out-of-range seed is unspecified — the walk order
+  /// would differ between the VM and the web for the same install.
+  /// Because the constructor is `const`, a literal violation is a
+  /// compile-time error rather than a runtime one.
+  const ExplorerShuffle(this.seed)
+    : assert(seed >= 0 && seed < seedBound, 'seed must be in [0, seedBound)');
 
   /// Generates a fresh seed from [Random.secure].
   ///
