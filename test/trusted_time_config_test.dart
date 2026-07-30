@@ -242,11 +242,28 @@ void main() {
       expect(config.ntpInventory, equals(const [entry]));
     });
 
+    test('ntpInventoryForTesting empties ntpServers on its own', () {
+      // Without this the curated 51 would still be built as live
+      // NtpSources while eligibility keyed off the override -- real DNS
+      // and UDP from a test, against sources the partition then lets
+      // through unpartitioned for want of a matching inventory entry.
+      const entry = NtpServerInfo(
+        host: 'fake.test',
+        tier: NtpServerTier.anycast,
+        observedStratum: 1,
+        observedGroupId: 'as1',
+        leapPolicy: NtpLeapPolicy.documentedStepping,
+      );
+      const config = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
+      expect(config.ntpServers, isEmpty);
+      expect(config.ntpInventory, equals(const [entry]));
+    });
+
     test('ntpInventoryForTesting survives disableNtpForTesting', () {
-      // The intended pairing: the flag suppresses live NtpSource
-      // construction while the override still gives the partition
-      // something to narrow. If the flag won, every such test would
-      // silently take the "nothing to narrow" branch.
+      // The override wins over the flag's empty inventory, so the
+      // partition still has something to narrow. If the flag won, every
+      // test pairing the two would silently take the "nothing to
+      // narrow" branch and assert vacuously.
       const entry = NtpServerInfo(
         host: 'fake.test',
         tier: NtpServerTier.anycast,
@@ -281,14 +298,18 @@ void main() {
       expect(a.copyWith(ntpInventoryForTesting: const []), isNot(equals(a)));
     });
 
-    test('an absent override hashes apart from an empty one', () {
-      // The two are unequal, so a presence bit carries the distinction
-      // rather than a placeholder assumed unreachable by a real list.
+    test('an absent override is distinct from an empty one', () {
+      // Absent means "use the curated inventory"; empty means "narrow
+      // against nothing". Not interchangeable, so == must separate
+      // them. Deliberately no hashCode assertion: unequal objects are
+      // permitted to collide, and pinning the absence of a collision
+      // would bind the test to the SDK's current hash mixing.
       const absent = TrustedTimeConfig();
       const empty = TrustedTimeConfig(ntpInventoryForTesting: []);
 
       expect(absent, isNot(equals(empty)));
-      expect(absent.hashCode, isNot(equals(empty.hashCode)));
+      expect(absent.ntpInventory, same(curatedNtpInventory));
+      expect(empty.ntpInventory, isEmpty);
     });
 
     test('NtpServerInfo compares by value', () {

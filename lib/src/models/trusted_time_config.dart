@@ -113,13 +113,17 @@ final class TrustedTimeConfig {
   /// major operators and metrology institutes and presumed for the
   /// remaining public servers, which run stock `ntpd`/`chrony`.
   ///
-  /// Empty when [disableNtpForTesting] is set.
+  /// Empty when [disableNtpForTesting] is set, or when
+  /// [ntpInventoryForTesting] replaces the inventory these names are
+  /// the view of.
   ///
   /// This is the hostname view; [ntpInventory] carries each host's
   /// tier, observed stratum and autonomous system, and leap-second
   /// evidence.
   List<String> get ntpServers =>
-      disableNtpForTesting ? const [] : curatedNtpHostnames;
+      disableNtpForTesting || ntpInventoryForTesting != null
+      ? const []
+      : curatedNtpHostnames;
 
   /// The curated inventory behind [ntpServers], with per-host metadata.
   ///
@@ -141,11 +145,13 @@ final class TrustedTimeConfig {
   /// the whole source pool. Assertions about narrowing then hold
   /// vacuously.
   ///
-  /// Deliberately feeds [ntpInventory] only, never [ntpServers]: a test
-  /// pairs this with `disableNtpForTesting: true` so no [NtpSource] is
-  /// constructed, and supplies its own fakes through
-  /// [additionalSources] under `ntp:`-prefixed ids matching these
-  /// hosts. The partition then narrows real sources with no DNS or UDP.
+  /// Setting this empties [ntpServers], so no [NtpSource] is built for
+  /// a hostname the partition no longer knows about. Without that, the
+  /// curated 51 would still be queried live while eligibility keyed off
+  /// the override — real DNS and UDP from a test, against sources the
+  /// narrowing then lets through unpartitioned. A test supplies its own
+  /// fakes through [additionalSources] under `ntp:`-prefixed ids
+  /// matching these hosts; the partition narrows those with no network.
   ///
   /// Not a production knob: the inventory's provenance and leap-second
   /// vetting are what make the curated list safe to query, and an
