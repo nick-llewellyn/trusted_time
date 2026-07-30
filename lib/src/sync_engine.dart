@@ -191,16 +191,23 @@ final class SyncEngine {
   /// The source ids this cycle may query.
   ///
   /// Only the curated plain-NTP inventory is partitioned. NTS sources
-  /// and [TrustedTimeConfig.additionalSources] are always eligible:
-  /// there are few of them, they are the authenticated half of the
-  /// consensus, and rotating them would make the authentication level
-  /// of an anchor depend on which cycle it landed in.
+  /// are always eligible: there are few of them, they are the
+  /// authenticated half of the consensus, and rotating them would make
+  /// the authentication level of an anchor depend on which cycle it
+  /// landed in.
   ///
-  /// Sources not drawn from the inventory at all (a caller's own
-  /// [TimeSource], or an NTP host reached through
-  /// [TrustedTimeConfig.additionalSources]) pass through for the same
-  /// reason: the partition narrows a list the library curates, not
-  /// whatever the caller supplied.
+  /// Eligibility is decided by source id, not by where the source came
+  /// from. A source passes through unpartitioned when its id is absent
+  /// from [TrustedTimeConfig.ntpInventory] — which is every caller
+  /// source in practice, since the partition narrows a list the library
+  /// curates, not whatever the caller supplied. The exception is a
+  /// [TrustedTimeConfig.additionalSources] entry whose id is
+  /// `ntp:<host>` for a host that *is* in the inventory: the engine
+  /// cannot tell it apart from the inventory-backed source it shadows,
+  /// so it is partitioned like one. Offline partition tests rely on
+  /// this (see [TrustedTimeConfig.ntpInventoryForTesting]); callers
+  /// wanting an unconditionally queried NTP host should give it an id
+  /// outside the curated set.
   ///
   /// Visible for tests so the narrowing and the pass-through rule can
   /// be asserted without running a cycle against the live inventory.

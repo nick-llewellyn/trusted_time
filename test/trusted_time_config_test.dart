@@ -281,6 +281,16 @@ void main() {
       expect(a.copyWith(ntpInventoryForTesting: const []), isNot(equals(a)));
     });
 
+    test('an absent override hashes apart from an empty one', () {
+      // The two are unequal, so a presence bit carries the distinction
+      // rather than a placeholder assumed unreachable by a real list.
+      const absent = TrustedTimeConfig();
+      const empty = TrustedTimeConfig(ntpInventoryForTesting: []);
+
+      expect(absent, isNot(equals(empty)));
+      expect(absent.hashCode, isNot(equals(empty.hashCode)));
+    });
+
     test('NtpServerInfo compares by value', () {
       // The inventory is exported, so consumers can reasonably hold
       // entries in sets or compare them against a constructed

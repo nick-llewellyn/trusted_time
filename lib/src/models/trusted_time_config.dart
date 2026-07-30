@@ -580,11 +580,13 @@ final class TrustedTimeConfig {
   int get hashCode => Object.hashAll([
     disableNtpForTesting,
     // Nullable, and Object.hashAll rejects a null element, so the
-    // absent case has to hash as something. null is the overwhelmingly
-    // common value; -1 stands in for it because no inventory hashes to
-    // it, keeping "no override" distinct from any supplied list.
+    // absent case has to hash as something. A presence bit carries
+    // "no override" on its own, leaving the second entry free to be
+    // any placeholder when absent rather than one assumed unreachable
+    // by a real inventory.
+    ntpInventoryForTesting != null,
     ntpInventoryForTesting == null
-        ? -1
+        ? 0
         : Object.hashAll(ntpInventoryForTesting!),
     Object.hashAll(ntsServers),
     ntsPort,

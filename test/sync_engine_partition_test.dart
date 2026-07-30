@@ -160,6 +160,25 @@ void main() {
       expect(selected, contains('${TimeSource.prefixNts}nts.example'));
     });
 
+    test('an additionalSource shadowing an inventory host is partitioned', () {
+      // The documented exception to the pass-through rule. Eligibility
+      // is decided by id, so an additionalSource under `ntp:<host>` for
+      // an inventory host is indistinguishable from the inventory-backed
+      // source it shadows and is narrowed like one.
+      final fake = _fakeInventory(anycast: 2, unicast: 6);
+      final selected = SyncEngine(
+        config: fake.config,
+        clock: FakeMonotonicClock(),
+        explorerShuffle: const ExplorerShuffle(7),
+        explorerBudget: 2,
+      ).selectCycleHostsForTesting();
+
+      expect(fake.config.additionalSources, hasLength(8));
+      expect(selected, hasLength(4));
+      final dropped = {for (final s in fake.sources) s.id}.difference(selected);
+      expect(dropped, hasLength(4));
+    });
+
     test('an empty inventory leaves every source eligible', () {
       final selected = _engine(
         config: const TrustedTimeConfig(
