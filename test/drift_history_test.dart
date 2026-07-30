@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
+import 'package:trusted_time/src/domain/explorer_shuffle.dart';
 import 'package:trusted_time/src/drift_history.dart';
 import 'package:trusted_time/src/source_quality_tracker.dart';
 
@@ -397,6 +398,35 @@ void main() {
       expect(
         deletedKeys.where((k) => k.startsWith(seedKeyPrefix)),
         hasLength(1),
+      );
+    });
+
+    test('an out-of-range seed is treated as absent and deleted', () async {
+      // Parseable but outside the generated range. Random does not
+      // specify how it reduces such a seed, so accepting it would make
+      // the walk order differ between the VM and the web for one
+      // install. Rejecting costs that install its walk order once.
+      for (final raw in ['-1', '${ExplorerShuffle.seedBound}']) {
+        final deletedKeys = <String>[];
+        mockRead(raw, deletedKeys: deletedKeys);
+
+        expect(await AnchorStore().loadExplorerSeed(), isNull, reason: raw);
+        expect(
+          deletedKeys.where((k) => k.startsWith(seedKeyPrefix)),
+          hasLength(1),
+          reason: raw,
+        );
+      }
+    });
+
+    test('accepts a seed at the edges of the generated range', () async {
+      mockRead('0');
+      expect(await AnchorStore().loadExplorerSeed(), 0);
+
+      mockRead('${ExplorerShuffle.seedBound - 1}');
+      expect(
+        await AnchorStore().loadExplorerSeed(),
+        ExplorerShuffle.seedBound - 1,
       );
     });
 

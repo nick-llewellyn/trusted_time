@@ -2,13 +2,6 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
-/// Upper bound (exclusive) for a generated seed.
-///
-/// Kept inside the 32-bit range `Random.nextInt` accepts, which is also
-/// well within the 53-bit integers a JSON round trip preserves exactly
-/// on the web's double-backed ints.
-const int _kSeedBound = 1 << 32;
-
 /// A per-install permutation of the explorer walk over the curated
 /// inventory.
 ///
@@ -50,7 +43,26 @@ final class ExplorerShuffle {
   /// order predictable across installs, collapsing the shuffle back to
   /// the shared-constant case it exists to avoid.
   factory ExplorerShuffle.generate({Random? random}) =>
-      ExplorerShuffle((random ?? Random.secure()).nextInt(_kSeedBound));
+      ExplorerShuffle((random ?? Random.secure()).nextInt(seedBound));
+
+  /// Upper bound (exclusive) for a seed.
+  ///
+  /// Inside the 32-bit range `Random.nextInt` accepts, which is also
+  /// well within the 53-bit integers a JSON round trip preserves
+  /// exactly on the web's double-backed ints.
+  static const int seedBound = 1 << 32;
+
+  /// Whether [seed] lies in the range this type generates.
+  ///
+  /// `Random` consumes only the low bits of its seed and does not
+  /// specify how it reduces values outside that range, so a seed from
+  /// elsewhere — a corrupt store, an older key format — could produce
+  /// a different walk on the VM than on the web. Callers reading a
+  /// seed they did not generate should reject rather than normalize:
+  /// a rejected seed costs one install its accumulated walk order,
+  /// while a silently normalized one is a walk order that changes
+  /// under the install when it moves platforms.
+  static bool isValidSeed(int seed) => seed >= 0 && seed < seedBound;
 
   /// The persisted per-install seed.
   final int seed;

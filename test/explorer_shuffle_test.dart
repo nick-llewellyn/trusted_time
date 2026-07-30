@@ -85,8 +85,43 @@ void main() {
       for (var i = 0; i < 50; i++) {
         final seed = ExplorerShuffle.generate().seed;
         expect(seed, greaterThanOrEqualTo(0));
-        expect(seed, lessThan(1 << 32));
+        expect(seed, lessThan(ExplorerShuffle.seedBound));
       }
+    });
+
+    test('every generated seed passes isValidSeed', () {
+      // The store rejects seeds failing isValidSeed, so a generator
+      // that could emit one would make installs discard their own
+      // freshly minted walk order on the next load.
+      for (var i = 0; i < 50; i++) {
+        expect(
+          ExplorerShuffle.isValidSeed(ExplorerShuffle.generate().seed),
+          isTrue,
+        );
+      }
+    });
+  });
+
+  group('ExplorerShuffle.isValidSeed', () {
+    test('accepts the generated range inclusive of its lower bound', () {
+      expect(ExplorerShuffle.isValidSeed(0), isTrue);
+      expect(ExplorerShuffle.isValidSeed(1), isTrue);
+      expect(
+        ExplorerShuffle.isValidSeed(ExplorerShuffle.seedBound - 1),
+        isTrue,
+      );
+    });
+
+    test('rejects negative and out-of-range seeds', () {
+      // Random consumes only the low bits and does not specify how it
+      // reduces values outside the range, so accepting these would let
+      // one install walk differently on the VM than on the web.
+      expect(ExplorerShuffle.isValidSeed(-1), isFalse);
+      expect(ExplorerShuffle.isValidSeed(ExplorerShuffle.seedBound), isFalse);
+      expect(
+        ExplorerShuffle.isValidSeed(ExplorerShuffle.seedBound + 1),
+        isFalse,
+      );
     });
 
     test('does not return a constant', () {

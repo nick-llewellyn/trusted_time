@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'domain/explorer_shuffle.dart';
 import 'drift_history.dart';
 import 'models.dart';
 import 'source_quality_tracker.dart';
@@ -38,7 +39,8 @@ abstract interface class AnchorStorage {
   Future<void> saveSourceStats(Map<String, SourceQualityStats> stats);
 
   /// Loads the persisted per-install explorer shuffle seed, or `null`
-  /// when none is stored or the stored value is corrupt.
+  /// when none is stored or the stored value is corrupt. A seed outside
+  /// the range `ExplorerShuffle` generates counts as corrupt.
   ///
   /// A null return means "generate a fresh one", so corruption costs an
   /// install its accumulated walk order but never fails a bootstrap.
@@ -196,7 +198,10 @@ final class AnchorStore implements AnchorStorage {
       final raw = await _storage.read(key: _keyExplorerSeed);
       if (raw == null) return null;
       final seed = int.tryParse(raw);
-      if (seed == null) {
+      // Out of range counts as corrupt: Random does not specify how it
+      // reduces a seed outside the generated range, so accepting one
+      // would make the walk order platform-dependent.
+      if (seed == null || !ExplorerShuffle.isValidSeed(seed)) {
         await _bestEffortDelete(_keyExplorerSeed);
         return null;
       }
