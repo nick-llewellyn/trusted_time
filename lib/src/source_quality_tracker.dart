@@ -296,6 +296,15 @@ final class SourceQualityTracker {
     return ids;
   }
 
+  /// When [sourceId] was last probed, in UTC milliseconds, or `null` if
+  /// it has never been probed.
+  ///
+  /// Survives process death via [snapshot] / [restore], which is what
+  /// lets the explorer walk resume where it left off without persisting
+  /// a separate cursor. Advisory: the value is stamped from the wall
+  /// clock, so it moves if the clock is corrected.
+  int? lastProbedUtcMs(String sourceId) => _stats[sourceId]?.lastProbedUtcMs;
+
   /// Returns `true` if [sourceId] should be force-included this cycle to
   /// prevent starvation, regardless of its quality rank.
   bool isStarved(String sourceId) {

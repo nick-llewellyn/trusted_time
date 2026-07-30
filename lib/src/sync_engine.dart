@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:nts/nts.dart' as nts;
+import 'domain/explorer_shuffle.dart';
+import 'domain/inventory_partition.dart';
 import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
@@ -42,22 +44,40 @@ final class SyncEngine {
   static const warmBarrierCap = Duration(seconds: 10);
 
   /// Documented.
+  ///
+  /// [explorerShuffle] orders this install's walk over the unicast
+  /// inventory; see [explorerBudget]. Callers that can persist a seed
+  /// (the foreground bootstrap and the background runner) pass the
+  /// stored one so the walk survives process death. Omitting it mints a
+  /// throwaway shuffle, which keeps direct construction — chiefly in
+  /// tests — working, at the cost of restarting the walk each time.
   SyncEngine({
     required TrustedTimeConfig config,
     required MonotonicClock clock,
     SyncObserver? observer,
     ConsensusCache? cache,
     SourceQualityTracker? qualityTracker,
+    ExplorerShuffle? explorerShuffle,
+    int explorerBudget = defaultExplorerBudget,
   }) : _config = config,
        _clock = clock,
        _observer = observer,
        _cache = cache,
        _qualityTracker = qualityTracker ?? SourceQualityTracker(),
+       _explorerShuffle = explorerShuffle ?? ExplorerShuffle.generate(),
+       _explorerBudget = explorerBudget,
        _engine = MarzulloEngine(
          minQuorumRatio: config.minQuorumRatio,
          maxAllowedUncertaintyMs: config.maxAllowedUncertaintyMs,
          minGroupCount: config.minGroupCount,
        );
+
+  /// Unicast hosts probed per cycle when the caller does not say.
+  ///
+  /// Sized for the constrained case (iOS's ~30 s background refresh
+  /// window) so the default is safe everywhere; the platform-asymmetric
+  /// budget that raises it on Android is a later slice.
+  static const defaultExplorerBudget = 5;
 
   final TrustedTimeConfig _config;
   final MonotonicClock _clock;
@@ -65,6 +85,19 @@ final class SyncEngine {
 
   final ConsensusCache? _cache;
   final MarzulloEngine _engine;
+  final int _explorerBudget;
+
+  ExplorerShuffle _explorerShuffle;
+
+  /// The hosts the current cycle is allowed to query, or `null` outside
+  /// a cycle.
+  ///
+  /// Recomputed per cycle by [_selectCycleHosts]: the explorer half
+  /// depends on which hosts are stalest *now*, so it cannot be hoisted
+  /// to construction. Held as state rather than threaded as a parameter
+  /// because the telemetry denominators are computed deep in the
+  /// completion path.
+  Set<String>? _cycleHostIds;
 
   /// Shared DNS concurrency budget (ADR 0008).
   ///
@@ -165,6 +198,49 @@ final class SyncEngine {
     ];
   }
 
+  /// The source ids this cycle may query.
+  ///
+  /// Only the curated plain-NTP inventory is partitioned. NTS sources
+  /// and [TrustedTimeConfig.additionalSources] are always eligible:
+  /// there are few of them, they are the authenticated half of the
+  /// consensus, and rotating them would make the authentication level
+  /// of an anchor depend on which cycle it landed in.
+  ///
+  /// Sources not drawn from the inventory at all (a caller's own
+  /// [TimeSource], or an NTP host reached through
+  /// [TrustedTimeConfig.additionalSources]) pass through for the same
+  /// reason: the partition narrows a list the library curates, not
+  /// whatever the caller supplied.
+  ///
+  /// Visible for tests so the narrowing and the pass-through rule can
+  /// be asserted without running a cycle against the live inventory.
+  @visibleForTesting
+  Set<String> selectCycleHostsForTesting() => _selectCycleHosts();
+
+  Set<String> _selectCycleHosts() {
+    final inventory = _config.ntpInventory;
+    if (inventory.isEmpty) {
+      return {for (final s in _sources) s.id};
+    }
+    final partition = partitionInventory(
+      inventory: inventory,
+      shuffle: _explorerShuffle,
+      explorerBudget: _explorerBudget,
+      lastProbedUtcMs: (host) =>
+          _qualityTracker.lastProbedUtcMs('${TimeSource.prefixNtp}$host'),
+    );
+    final selected = {
+      for (final host in partition.all) '${TimeSource.prefixNtp}$host',
+    };
+    final inventoryIds = {
+      for (final entry in inventory) '${TimeSource.prefixNtp}${entry.host}',
+    };
+    return {
+      for (final s in _sources)
+        if (selected.contains(s.id) || !inventoryIds.contains(s.id)) s.id,
+    };
+  }
+
   /// Tracks consecutive failures for each source to implement exponential cooldown.
   final _sourceHealth = <String, int>{};
 
@@ -205,6 +281,21 @@ final class SyncEngine {
   /// Returns the quality tracker's durable stats for persistence.
   Map<String, SourceQualityStats> sourceStatsSnapshot() =>
       _qualityTracker.snapshot();
+
+  /// Adopts a persisted explorer walk order. Call before the first
+  /// [sync]; a cycle already under way keeps the shuffle it started
+  /// with.
+  ///
+  /// Pairs with [restoreSourceStats] rather than the constructor
+  /// because the seed is a storage read and the engine is built
+  /// synchronously. Without it the engine walks a throwaway
+  /// permutation, which still probes every host eventually but
+  /// re-anchors to a fresh prefix on every process start.
+  void restoreExplorerShuffle(ExplorerShuffle shuffle) =>
+      _explorerShuffle = shuffle;
+
+  /// This install's explorer walk order.
+  ExplorerShuffle get explorerShuffle => _explorerShuffle;
 
   int _syncAttempts = 0;
 
@@ -581,7 +672,10 @@ final class SyncEngine {
     // sources configured" from "all in cooldown" is preserved — it now
     // fires only when no cooled-down source is yet due for rescue.
     final now = DateTime.now();
+    final cycleHosts = _selectCycleHosts();
+    _cycleHostIds = cycleHosts;
     final healthySources = _sources.where((s) {
+      if (!cycleHosts.contains(s.id)) return false;
       final until = _blacklistUntil[s.id];
       return until == null || now.isAfter(until);
     }).toList();
@@ -612,8 +706,16 @@ final class SyncEngine {
       // healthySources, which are all already in rankedIds) is what makes
       // this branch reachable; the healthyById membership check prevents
       // double-inclusion.
+      //
+      // Restricted to this cycle's hosts: a source the partition left
+      // out is not starved, it is simply not this cycle's turn, and
+      // re-admitting it here would undo the narrowing every cycle. The
+      // explorer walk is itself the anti-starvation mechanism for those
+      // hosts — see [partitionInventory].
       for (final s in _sources)
-        if (!healthyById.containsKey(s.id) && _qualityTracker.isStarved(s.id))
+        if (cycleHosts.contains(s.id) &&
+            !healthyById.containsKey(s.id) &&
+            _qualityTracker.isStarved(s.id))
           s,
     ];
     if (activeSources.isEmpty) {
@@ -1037,6 +1139,16 @@ final class SyncEngine {
         );
       }
 
+      // Denominator for the coverage ratios below: the sources this
+      // cycle was allowed to query, not the whole materialised pool.
+      // Since the inventory is partitioned per cycle, dividing by the
+      // full 51-host pool would report a healthy quorum as a fraction
+      // of hosts the cycle never intended to contact, and the ratio
+      // would drift with inventory size rather than with consensus
+      // quality. Falls back to the pool only when no cycle set was
+      // recorded, which the empty-inventory path can produce.
+      final cycleSourceCount = _cycleHostIds?.length ?? _sources.length;
+
       _observer?.onMetricsReported(
         SyncMetrics(
           latencyMs: latencyMs,
@@ -1066,8 +1178,8 @@ final class SyncEngine {
             // sweep-depth integer rather than the midpoint-containment
             // integer; the two diverge under the same conditions
             // documented on ConsensusResult.participantCount.
-            'depth': result.participantCount / _sources.length,
-            'quorumDepth': result.quorumDepth / _sources.length,
+            'depth': result.participantCount / cycleSourceCount,
+            'quorumDepth': result.quorumDepth / cycleSourceCount,
             'diversity': result.groupCount / 2.0,
             'stability': 1.0,
             // Fraction of the configured source pool that contributed a
@@ -1079,12 +1191,12 @@ final class SyncEngine {
             // contained the fallback window's midpoint without having
             // formed a truth box. Read alongside degradedTier, not as a
             // degradation discriminant on its own.
-            'tier1Quorum': _sources.isEmpty
+            'tier1Quorum': cycleSourceCount == 0
                 ? 0.0
                 : result.participants
                           .where((s) => s.authLevel == NtsAuthLevel.verified)
                           .length /
-                      _sources.length,
+                      cycleSourceCount,
           },
         ),
       );

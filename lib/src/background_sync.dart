@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'anchor_store.dart';
+import 'domain/explorer_shuffle.dart';
 import 'exceptions.dart';
 import 'models.dart';
 import 'infra/trusted_time_log.dart';
@@ -296,6 +297,16 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
       ? await anchorStore.loadSourceStats()
       : const <String, SourceQualityStats>{};
 
+  // Likewise loaded once per run, not per attempt: the walk order is a
+  // property of the install, so retries within one run must explore the
+  // same hosts rather than re-drawing the explorer set each time.
+  final explorerShuffle = effectiveConfig.persistState
+      ? await loadOrMintExplorerShuffle(
+          load: anchorStore.loadExplorerSeed,
+          save: anchorStore.saveExplorerSeed,
+        )
+      : null;
+
   final maxAttempts = delays.length + 1;
   Object? lastError;
   var lastErrorRetryable = true;
@@ -303,8 +314,11 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
     // Fresh engine per attempt: a failed cycle arms per-source exponential
     // cooldowns (>= 2 min) inside the engine, so reusing it would make the
     // next attempt throw "all sources in cooldown" without any network I/O.
-    final engine = SyncEngine(config: effectiveConfig, clock: monotonicClock)
-      ..restoreSourceStats(persistedStats);
+    final engine = SyncEngine(
+      config: effectiveConfig,
+      clock: monotonicClock,
+      explorerShuffle: explorerShuffle,
+    )..restoreSourceStats(persistedStats);
     try {
       // Shared query-and-bank unit (sync + persistState-gated save) —
       // the same cycle the foreground engine runs, so a headless anchor

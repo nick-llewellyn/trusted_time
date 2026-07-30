@@ -116,3 +116,35 @@ final class ExplorerShuffle {
   @override
   String toString() => 'ExplorerShuffle($seed)';
 }
+
+/// Loads this install's explorer shuffle from [load], minting and
+/// persisting a fresh seed through [save] when none is stored.
+///
+/// Shared by the foreground bootstrap and the headless background
+/// runner so the two cannot drift on when a seed is minted — a
+/// background run that minted its own throwaway seed would give the
+/// same install two walk orders.
+///
+/// Storage failures are swallowed: the walk order is a privacy and
+/// convergence optimization, so losing it costs an install its
+/// accumulated position but must never fail a bootstrap. The returned
+/// shuffle is then unpersisted, and the next launch mints again.
+Future<ExplorerShuffle> loadOrMintExplorerShuffle({
+  required Future<int?> Function() load,
+  required Future<void> Function(int seed) save,
+}) async {
+  try {
+    final stored = await load();
+    if (stored != null) return ExplorerShuffle(stored);
+  } catch (_) {
+    // Unreadable seed: fall through and mint, same as absent.
+  }
+  final minted = ExplorerShuffle.generate();
+  try {
+    await save(minted.seed);
+  } catch (_) {
+    // Unpersisted, so the walk restarts next launch. Still better than
+    // failing the cycle this seed was being loaded for.
+  }
+  return minted;
+}

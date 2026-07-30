@@ -9,6 +9,7 @@ import 'sync_cycle.dart';
 import 'sync_engine.dart';
 import 'sources/nts_auth_level.dart';
 import 'domain/drift_correction.dart';
+import 'domain/explorer_shuffle.dart';
 import 'infra/background_channel.dart';
 import 'infra/lifecycle_coordinator.dart';
 import 'infra/proxy_sync_observer.dart';
@@ -402,6 +403,16 @@ final class TrustedTimeImpl {
       // runs, so the very first cycle already ranks servers on the
       // accumulated RTT/success history instead of starting blind.
       _syncEngine.restoreSourceStats(await _store.loadSourceStats());
+      // Adopt this install's explorer walk order before the first
+      // cycle, minting one on first ever launch. Without it the engine
+      // walks the throwaway shuffle its constructor made, so every
+      // process start would re-probe the same permutation prefix.
+      _syncEngine.restoreExplorerShuffle(
+        await loadOrMintExplorerShuffle(
+          load: _store.loadExplorerSeed,
+          save: _store.saveExplorerSeed,
+        ),
+      );
     }
 
     // The persisted-anchor restore check runs before any network-bound
