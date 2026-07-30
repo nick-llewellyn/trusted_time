@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
 import 'package:trusted_time/src/domain/explorer_shuffle.dart';
@@ -101,7 +103,7 @@ class _FakeNtpSource implements TimeSource {
 SyncEngine _engine({
   TrustedTimeConfig config = _liveInventory,
   ExplorerShuffle? shuffle,
-  int budget = SyncEngine.defaultExplorerBudget,
+  int? budget,
   SourceQualityTracker? tracker,
 }) => SyncEngine(
   config: config,
@@ -141,6 +143,73 @@ void main() {
       expect(a, isNot(equals(b)));
       // The quorum half is shared; only the explorer half diverges.
       expect(a.intersection(b).length, greaterThanOrEqualTo(10));
+    });
+  });
+
+  // The budget exists to keep a cycle inside the OS execution window,
+  // and only iOS enforces one, so the split is two-way rather than
+  // per-platform.
+  group('default explorer budget platform split', () {
+    test('iOS gets the narrow budget its ~30s task window allows', () {
+      expect(
+        SyncEngine.defaultExplorerBudgetFor(TargetPlatform.iOS),
+        SyncEngine.iosExplorerBudget,
+      );
+    });
+
+    test('Android gets the wider budget its ~9min worker allows', () {
+      expect(
+        SyncEngine.defaultExplorerBudgetFor(TargetPlatform.android),
+        SyncEngine.standardExplorerBudget,
+      );
+    });
+
+    test('iOS is strictly narrower than the standard budget', () {
+      // The point of the split. Without this the two constants could
+      // drift to the same value and every test above would still pass.
+      expect(
+        SyncEngine.iosExplorerBudget,
+        lessThan(SyncEngine.standardExplorerBudget),
+      );
+    });
+
+    test('platforms with no OS deadline reuse the standard budget', () {
+      for (final platform in const [
+        TargetPlatform.macOS,
+        TargetPlatform.linux,
+        TargetPlatform.windows,
+        TargetPlatform.fuchsia,
+      ]) {
+        expect(
+          SyncEngine.defaultExplorerBudgetFor(platform),
+          SyncEngine.standardExplorerBudget,
+          reason: '$platform has no execution window to fit under',
+        );
+      }
+    });
+  });
+
+  group('constructor budget resolution', () {
+    tearDown(() => debugDefaultTargetPlatformOverride = null);
+
+    test('an omitted budget resolves from the host platform', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final ios = _engine().selectCycleHostsForTesting();
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final android = _engine().selectCycleHostsForTesting();
+
+      expect(ios, hasLength(10 + SyncEngine.iosExplorerBudget));
+      expect(android, hasLength(10 + SyncEngine.standardExplorerBudget));
+    });
+
+    test('an explicit budget overrides the platform default', () {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      expect(
+        _engine(
+          budget: SyncEngine.standardExplorerBudget,
+        ).selectCycleHostsForTesting(),
+        hasLength(10 + SyncEngine.standardExplorerBudget),
+      );
     });
   });
 
@@ -378,10 +447,11 @@ void main() {
     // Deliberately untested: that the count is read off _CompletionGuard
     // rather than an engine field. Cycle width is fixed per engine
     // today -- quorum size, budget, and inventory are all constructor
-    // state -- so overlapping cycles overwrite the field with the value
-    // it already held, and no sequential or interleaved test can
-    // separate the two. The guard scoping is hardening for slice 3,
-    // where a per-cycle budget makes the widths differ; the test
-    // belongs with that change.
+    // state, and the platform default is resolved once at construction
+    // -- so overlapping cycles overwrite the field with the value it
+    // already held, and no sequential or interleaved test can separate
+    // the two. The guard scoping is hardening for the front-loaded
+    // foreground budget, where widths differ *within* an engine's life;
+    // the test belongs with that change.
   });
 }

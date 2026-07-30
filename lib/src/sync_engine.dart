@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, visibleForTesting;
 import 'package:nts/nts.dart' as nts;
 import 'domain/explorer_shuffle.dart';
 import 'domain/inventory_partition.dart';
@@ -51,6 +52,9 @@ final class SyncEngine {
   /// stored one so the walk survives process death. Omitting it mints a
   /// throwaway shuffle, which keeps direct construction — chiefly in
   /// tests — working, at the cost of restarting the walk each time.
+  ///
+  /// [explorerBudget] defaults to [defaultExplorerBudgetFor] applied to
+  /// [defaultTargetPlatform].
   SyncEngine({
     required TrustedTimeConfig config,
     required MonotonicClock clock,
@@ -58,26 +62,55 @@ final class SyncEngine {
     ConsensusCache? cache,
     SourceQualityTracker? qualityTracker,
     ExplorerShuffle? explorerShuffle,
-    int explorerBudget = defaultExplorerBudget,
+    int? explorerBudget,
   }) : _config = config,
        _clock = clock,
        _observer = observer,
        _cache = cache,
        _qualityTracker = qualityTracker ?? SourceQualityTracker(),
        _explorerShuffle = explorerShuffle ?? ExplorerShuffle.generate(),
-       _explorerBudget = explorerBudget,
+       _explorerBudget =
+           explorerBudget ?? defaultExplorerBudgetFor(defaultTargetPlatform),
        _engine = MarzulloEngine(
          minQuorumRatio: config.minQuorumRatio,
          maxAllowedUncertaintyMs: config.maxAllowedUncertaintyMs,
          minGroupCount: config.minGroupCount,
        );
 
-  /// Unicast hosts probed per cycle when the caller does not say.
+  /// Unicast hosts probed per cycle on iOS.
   ///
-  /// Sized for the constrained case (iOS's ~30 s background refresh
-  /// window) so the default is safe everywhere; the platform-asymmetric
-  /// budget that raises it on Android is a later slice.
-  static const defaultExplorerBudget = 5;
+  /// A cycle always queries the 10-host anycast quorum first, so this is
+  /// the *additional* width on top of it, not the total. iOS grants a
+  /// `BGAppRefreshTask` roughly 30 s and hard-kills at expiry (ADR
+  /// 0002); three explorers is what fits alongside the quorum with
+  /// margin for the engine's warming barrier and per-query latency
+  /// bound.
+  static const iosExplorerBudget = 3;
+
+  /// Unicast hosts probed per cycle everywhere else.
+  ///
+  /// Android's ~9-minute worker budget leaves room for a wider walk, so
+  /// the whole 41-host explorer pool is covered in fewer cycles.
+  static const standardExplorerBudget = 8;
+
+  /// The default explorer budget for [platform].
+  ///
+  /// Exposed for tests pinning the platform split; production callers
+  /// let the [SyncEngine] constructor resolve it from
+  /// [defaultTargetPlatform].
+  ///
+  /// The split is two-way rather than three-way on purpose. iOS is the
+  /// only platform whose OS kills the run at a deadline, and the budget
+  /// exists to fit under that deadline; desktop and host-run tests have
+  /// no deadline to fit under, so they take the standard width for the
+  /// same reason Android does. Giving unconstrained hosts a *third*,
+  /// wider value would mean sending more traffic to public NTP servers
+  /// purely because nothing was stopping us, which is not a reason.
+  @visibleForTesting
+  static int defaultExplorerBudgetFor(TargetPlatform platform) =>
+      platform == TargetPlatform.iOS
+      ? iosExplorerBudget
+      : standardExplorerBudget;
 
   final TrustedTimeConfig _config;
   final MonotonicClock _clock;
