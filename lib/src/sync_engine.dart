@@ -89,16 +89,6 @@ final class SyncEngine {
 
   ExplorerShuffle _explorerShuffle;
 
-  /// The hosts the current cycle is allowed to query, or `null` outside
-  /// a cycle.
-  ///
-  /// Recomputed per cycle by [_selectCycleHosts]: the explorer half
-  /// depends on which hosts are stalest *now*, so it cannot be hoisted
-  /// to construction. Held as state rather than threaded as a parameter
-  /// because the telemetry denominators are computed deep in the
-  /// completion path.
-  Set<String>? _cycleHostIds;
-
   /// Shared DNS concurrency budget (ADR 0008).
   ///
   /// One budget governs all uncached host resolutions the engine can see
@@ -673,7 +663,7 @@ final class SyncEngine {
     // fires only when no cooled-down source is yet due for rescue.
     final now = DateTime.now();
     final cycleHosts = _selectCycleHosts();
-    _cycleHostIds = cycleHosts;
+    completionGuard.cycleHostCount = cycleHosts.length;
     final healthySources = _sources.where((s) {
       if (!cycleHosts.contains(s.id)) return false;
       final until = _blacklistUntil[s.id];
@@ -1145,9 +1135,19 @@ final class SyncEngine {
       // full 51-host pool would report a healthy quorum as a fraction
       // of hosts the cycle never intended to contact, and the ratio
       // would drift with inventory size rather than with consensus
-      // quality. Falls back to the pool only when no cycle set was
-      // recorded, which the empty-inventory path can produce.
-      final cycleSourceCount = _cycleHostIds?.length ?? _sources.length;
+      // quality.
+      //
+      // Read off [guard] rather than an engine field so the count
+      // belongs to *this* cycle: two `sync()` invocations that slip
+      // past the public-API coalescer each own a guard, whereas a
+      // shared field would let the later selection retroactively
+      // rebase the earlier cycle's ratios.
+      //
+      // The pool fallback is defensive only: `_runSyncCycle` sets the
+      // count immediately after selecting the host set, which precedes
+      // every path that can reach here. It keeps a future reordering
+      // from silently dividing by zero.
+      final cycleSourceCount = guard.cycleHostCount ?? _sources.length;
 
       _observer?.onMetricsReported(
         SyncMetrics(
@@ -1574,8 +1574,20 @@ final class SyncEngine {
 /// `bool` flag would, but without the cross-cycle reset hazard:
 /// overlapping `sync()` invocations on the same engine instance each
 /// own a distinct guard and cannot reset each other's state.
+///
+/// Also carries [cycleHostCount], for the same reason: the telemetry
+/// denominators are computed deep in the completion path, and an
+/// engine-scoped field would let one cycle's host set be divided into
+/// another's sample counts.
 class _CompletionGuard {
   bool inFlight = false;
+
+  /// How many sources this cycle was allowed to query.
+  ///
+  /// Set once, immediately after the cycle's host set is selected, and
+  /// read by `_completeSync` as the coverage-ratio denominator. Null
+  /// only before selection has run.
+  int? cycleHostCount;
 }
 
 /// Per-cycle bookkeeping for the pre-sync rescue.

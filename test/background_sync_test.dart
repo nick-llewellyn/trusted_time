@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
 import 'package:trusted_time/src/background_sync.dart';
+import 'package:trusted_time/src/domain/explorer_shuffle.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
 import 'package:trusted_time/src/models.dart';
 
@@ -440,6 +441,55 @@ void main() {
             reason: '$platform should reuse the Android schedule',
           );
         }
+      });
+    });
+
+    // Every attempt in a run shares one walk order, so a retry probes
+    // the explorer set the failed attempt probed rather than a fresh
+    // draw. The persistState split must not break that.
+    group('run-level explorer shuffle', () {
+      test('persisted runs adopt the install seed and repeat it', () async {
+        final store = InMemoryAnchorStorage();
+        final first = await resolveRunShuffle(
+          persistState: true,
+          load: store.loadExplorerSeed,
+          save: store.saveExplorerSeed,
+        );
+        final second = await resolveRunShuffle(
+          persistState: true,
+          load: store.loadExplorerSeed,
+          save: store.saveExplorerSeed,
+        );
+        expect(second, equals(first));
+        expect(await store.loadExplorerSeed(), equals(first.seed));
+      });
+
+      test('a non-persistent run still yields a shuffle, unwritten', () async {
+        final store = InMemoryAnchorStorage();
+        final shuffle = await resolveRunShuffle(
+          persistState: false,
+          load: store.loadExplorerSeed,
+          save: store.saveExplorerSeed,
+        );
+        // Usable: every attempt in the run can walk it, so a retry
+        // re-probes the set the failed attempt drew.
+        expect(ExplorerShuffle.isValidSeed(shuffle.seed), isTrue);
+        // Unwritten: persistState: false must leave the store alone,
+        // exactly as it does for the anchor and the quality stats.
+        expect(await store.loadExplorerSeed(), isNull);
+      });
+
+      test('a non-persistent run does not read the stored seed', () async {
+        var loads = 0;
+        await resolveRunShuffle(
+          persistState: false,
+          load: () async {
+            loads++;
+            return null;
+          },
+          save: (_) async {},
+        );
+        expect(loads, isZero);
       });
     });
   });
