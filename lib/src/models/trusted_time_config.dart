@@ -484,7 +484,7 @@ final class TrustedTimeConfig {
     int? ntsBurstCount,
     int? ntpBurstCount,
     bool? requireSleepAwareProjection,
-    bool? disableNtpForTesting,
+    @visibleForTesting bool? disableNtpForTesting,
   }) {
     return TrustedTimeConfig(
       ntsServers: ntsServers ?? this.ntsServers,
