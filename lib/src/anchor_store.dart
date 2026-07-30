@@ -37,6 +37,20 @@ abstract interface class AnchorStorage {
   /// Persists the per-source quality stats, replacing any prior value.
   Future<void> saveSourceStats(Map<String, SourceQualityStats> stats);
 
+  /// Loads the persisted per-install explorer shuffle seed, or `null`
+  /// when none is stored or the stored value is corrupt.
+  ///
+  /// A null return means "generate a fresh one", so corruption costs an
+  /// install its accumulated walk order but never fails a bootstrap.
+  Future<int?> loadExplorerSeed();
+
+  /// Persists the per-install explorer shuffle seed.
+  ///
+  /// Written once, at first init. Rewriting it on every launch would
+  /// defeat the point: the walk order must be stable across process
+  /// death, or every restart re-anchors to the same permutation prefix.
+  Future<void> saveExplorerSeed(int seed);
+
   /// Wipes all persisted temporal data.
   Future<void> clear();
 }
@@ -63,6 +77,7 @@ final class AnchorStore implements AnchorStorage {
   static const _keyAnchor = 'tt_anchor_v2';
   static const _keyDriftHistory = 'tt_drift_history_v1';
   static const _keySourceStats = 'tt_source_stats_v1';
+  static const _keyExplorerSeed = 'tt_explorer_seed_v1';
 
   // Legacy offline-estimation keys (removed feature). Never written or
   // read anymore; still deleted by [clear] so installs upgrading from
@@ -169,6 +184,35 @@ final class AnchorStore implements AnchorStorage {
     await _storage.write(key: _keySourceStats, value: raw);
   }
 
+  /// Loads the explorer shuffle seed, if available.
+  ///
+  /// Corruption (a non-integer payload, or a read failure) is treated as
+  /// absence: the entry is deleted and `null` returned, so the caller
+  /// mints a fresh seed rather than failing a bootstrap over a walk
+  /// order.
+  @override
+  Future<int?> loadExplorerSeed() async {
+    try {
+      final raw = await _storage.read(key: _keyExplorerSeed);
+      if (raw == null) return null;
+      final seed = int.tryParse(raw);
+      if (seed == null) {
+        await _bestEffortDelete(_keyExplorerSeed);
+        return null;
+      }
+      return seed;
+    } catch (_) {
+      await _bestEffortDelete(_keyExplorerSeed);
+      return null;
+    }
+  }
+
+  /// Persists the explorer shuffle seed.
+  @override
+  Future<void> saveExplorerSeed(int seed) async {
+    await _storage.write(key: _keyExplorerSeed, value: '$seed');
+  }
+
   /// Wipes all persisted temporal data from secure storage.
   @override
   Future<void> clear() async {
@@ -176,6 +220,7 @@ final class AnchorStore implements AnchorStorage {
       _storage.delete(key: _keyAnchor),
       _storage.delete(key: _keyDriftHistory),
       _storage.delete(key: _keySourceStats),
+      _storage.delete(key: _keyExplorerSeed),
       _storage.delete(key: _keyLegacyLastTrustedUtcMs),
       _storage.delete(key: _keyLegacyLastAnchorWallMs),
     ]);
@@ -192,6 +237,7 @@ final class InMemoryAnchorStorage implements AnchorStorage {
   TrustAnchor? _anchor;
   List<DriftBootRecord> _driftHistory = const [];
   Map<String, SourceQualityStats> _sourceStats = const {};
+  int? _explorerSeed;
 
   @override
   Future<TrustAnchor?> load() async => _anchor;
@@ -220,9 +266,18 @@ final class InMemoryAnchorStorage implements AnchorStorage {
   }
 
   @override
+  Future<int?> loadExplorerSeed() async => _explorerSeed;
+
+  @override
+  Future<void> saveExplorerSeed(int seed) async {
+    _explorerSeed = seed;
+  }
+
+  @override
   Future<void> clear() async {
     _anchor = null;
     _driftHistory = const [];
     _sourceStats = const {};
+    _explorerSeed = null;
   }
 }
