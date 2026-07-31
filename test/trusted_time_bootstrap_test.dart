@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
+import 'package:trusted_time/src/source_quality_tracker.dart';
 import 'package:trusted_time/src/sync_engine.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
@@ -611,8 +612,14 @@ void main() {
     test('a persisted zero leaves the front-load spent', () async {
       // The write side stops once the count stops moving, so a spent
       // boost must neither re-arm nor rewrite.
-      final store = InMemoryAnchorStorage();
-      await store.saveExplorerBoostRemaining(0);
+      final inner = InMemoryAnchorStorage();
+      // Seeded through the inner store so the counter starts at zero and
+      // every write it sees belongs to a cycle. Asserting the *value*
+      // stayed 0 would not pin this: rewriting 0 on every cycle also
+      // leaves it 0, so the guard that stops the writes could be
+      // deleted with the test still green.
+      await inner.saveExplorerBoostRemaining(0);
+      final store = _CountingBoostStore(inner);
 
       final impl = await TrustedTimeImpl.init(
         configWith(twoGoodSources()),
@@ -623,8 +630,64 @@ void main() {
 
       expect(impl.debugSyncEngine.explorerBoostRemaining, 0);
       expect(await store.loadExplorerBoostRemaining(), 0);
+      expect(store.boostWrites, 0);
     });
   });
+}
+
+/// An [AnchorStorage] that tallies front-load writes, delegating the
+/// rest to a real [InMemoryAnchorStorage].
+///
+/// Delegation rather than a subclass because [InMemoryAnchorStorage] is
+/// `final`; the tally is only meaningful against real storage
+/// behaviour, so the reads still have to round-trip through it.
+class _CountingBoostStore implements AnchorStorage {
+  _CountingBoostStore(this._inner);
+
+  final InMemoryAnchorStorage _inner;
+
+  /// How many times [saveExplorerBoostRemaining] has been called.
+  int boostWrites = 0;
+
+  @override
+  Future<void> saveExplorerBoostRemaining(int remaining) {
+    boostWrites++;
+    return _inner.saveExplorerBoostRemaining(remaining);
+  }
+
+  @override
+  Future<int?> loadExplorerBoostRemaining() =>
+      _inner.loadExplorerBoostRemaining();
+
+  @override
+  Future<TrustAnchor?> load() => _inner.load();
+
+  @override
+  Future<void> save(TrustAnchor anchor) => _inner.save(anchor);
+
+  @override
+  Future<List<DriftBootRecord>> loadDriftHistory() => _inner.loadDriftHistory();
+
+  @override
+  Future<void> saveDriftHistory(List<DriftBootRecord> records) =>
+      _inner.saveDriftHistory(records);
+
+  @override
+  Future<Map<String, SourceQualityStats>> loadSourceStats() =>
+      _inner.loadSourceStats();
+
+  @override
+  Future<void> saveSourceStats(Map<String, SourceQualityStats> stats) =>
+      _inner.saveSourceStats(stats);
+
+  @override
+  Future<int?> loadExplorerSeed() => _inner.loadExplorerSeed();
+
+  @override
+  Future<void> saveExplorerSeed(int seed) => _inner.saveExplorerSeed(seed);
+
+  @override
+  Future<void> clear() => _inner.clear();
 }
 
 /// A [TimeSource] whose [warm] completes after a delay, to exercise a
