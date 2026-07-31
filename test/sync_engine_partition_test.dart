@@ -251,6 +251,15 @@ void main() {
       expect(engine.explorerBoostRemaining, 2);
     });
 
+    test('arming a negative count throws in every build mode', () {
+      // The count reaches the engine from persisted storage, so a
+      // release build must not clamp a corrupt value silently.
+      expect(
+        () => _engine(budget: 3).armExplorerBoost(-1),
+        throwsA(isA<RangeError>()),
+      );
+    });
+
     test('arming zero disarms', () {
       final engine = _engine(budget: 3)
         ..armExplorerBoost(8)

@@ -76,7 +76,8 @@ abstract interface class AnchorStorage {
   ///
   /// [remaining] must be non-negative; [loadExplorerBoostRemaining]
   /// treats a negative value as corrupt, so writing one would silently
-  /// re-arm the boost on the next launch.
+  /// re-arm the boost on the next launch. Implementations enforce this
+  /// with a [RangeError] in all build modes.
   ///
   /// Written by the foreground path only, and only on the cycles where
   /// the count actually changes — so it stops being written entirely
@@ -279,7 +280,7 @@ final class AnchorStore implements AnchorStorage {
   /// Persists the remaining front-loaded foreground cycle count.
   @override
   Future<void> saveExplorerBoostRemaining(int remaining) async {
-    assert(remaining >= 0, 'remaining $remaining is negative');
+    RangeError.checkNotNegative(remaining, 'remaining');
     await _storage.write(key: _keyExplorerBoost, value: '$remaining');
   }
 
@@ -359,23 +360,18 @@ final class InMemoryAnchorStorage implements AnchorStorage {
     _explorerSeed = seed;
   }
 
+  // No corruption branch, unlike [loadExplorerSeed]: the write side
+  // rejects a negative count at runtime, so the field can only ever
+  // hold a value AnchorStore would also hand back.
   @override
-  Future<int?> loadExplorerBoostRemaining() async {
-    final remaining = _explorerBoostRemaining;
-    // Mirrors AnchorStore: a negative count is corrupt, so it is
-    // dropped rather than handed back. Without this the test double
-    // would accept values production silently discards.
-    if (remaining == null || remaining < 0) {
-      _explorerBoostRemaining = null;
-      return null;
-    }
-    return remaining;
-  }
+  Future<int?> loadExplorerBoostRemaining() async => _explorerBoostRemaining;
 
   @override
   Future<void> saveExplorerBoostRemaining(int remaining) async {
-    assert(remaining >= 0, 'remaining $remaining is negative');
-    _explorerBoostRemaining = remaining;
+    _explorerBoostRemaining = RangeError.checkNotNegative(
+      remaining,
+      'remaining',
+    );
   }
 
   @override

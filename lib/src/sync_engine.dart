@@ -380,9 +380,11 @@ final class SyncEngine {
   /// stay wide for [cycles] more cycles, not for the sum.
   ///
   /// [cycles] must be non-negative; zero is the no-op that disarms.
+  /// Enforced with a [RangeError] in all build modes: the count reaches
+  /// here from persisted storage via the foreground bootstrap, so a
+  /// release build would otherwise clamp a corrupt value silently.
   void armExplorerBoost(int cycles) {
-    assert(cycles >= 0, 'cycles $cycles is negative');
-    _explorerBoostRemaining = cycles < 0 ? 0 : cycles;
+    _explorerBoostRemaining = RangeError.checkNotNegative(cycles, 'cycles');
   }
 
   /// Foreground cycles still owed the front-loaded explorer budget.

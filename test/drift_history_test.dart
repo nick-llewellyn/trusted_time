@@ -325,13 +325,14 @@ void main() {
       expect(await storage.loadExplorerBoostRemaining(), 0);
     });
 
-    test('asserts on a negative count', () async {
+    test('rejects a negative count in every build mode', () async {
       // A negative count reads back as corrupt, so the caller would
-      // silently re-arm a spent boost on every launch.
+      // silently re-arm a spent boost on every launch. Rejected with a
+      // RangeError rather than an assert so release builds fail too.
       final storage = InMemoryAnchorStorage();
       expect(
         () => storage.saveExplorerBoostRemaining(-1),
-        throwsA(isA<AssertionError>()),
+        throwsA(isA<RangeError>()),
       );
     });
   });
@@ -625,10 +626,10 @@ void main() {
       );
     });
 
-    test('asserts on a negative count', () async {
+    test('rejects a negative count in every build mode', () async {
       expect(
         () => AnchorStore().saveExplorerBoostRemaining(-1),
-        throwsA(isA<AssertionError>()),
+        throwsA(isA<RangeError>()),
       );
     });
 
