@@ -296,6 +296,57 @@
     `SyncClock` exposes `isSleepAware` for the reader captured with the
     current anchor (probing the factory before the first anchor).
 
+### Changed
+
+- **A sync cycle no longer sweeps the whole NTP inventory.** Each cycle
+  now queries the 10 vantage-independent hosts — reached by anycast or
+  DNS steering, so they resolve to something near the caller wherever
+  the device is and need no per-install ranking — plus a bounded sample
+  of the 41 vantage-dependent unicast hosts, whose proximity varies by
+  where the device happens to be and so has to be measured. That is the
+  `NtpServerTier.anycast` tier in full, against a rotating slice of the
+  two unicast tiers, rather than all 51 hosts every cycle. The unicast
+  sample rotates by staleness, never-probed first, so every host is
+  still measured; it just takes a few cycles rather than one. An
+  integrator observes materially fewer outbound queries per cycle at
+  unchanged consensus quality: that quorum alone satisfies the default
+  `minGroupCount`, and the unicast tier was only ever feeding the
+  ranking.
+
+  The rotation order is a per-install permutation, seeded once and
+  persisted (secure-storage key `tt_explorer_seed_v1`, gated on
+  `persistState` like the anchor). A fixed order would make the
+  sequence of hosts a device contacts a constant shared by every
+  install, and therefore usable as a join key across networks that see
+  only part of the traffic. Losing the seed costs an install its walk
+  order and nothing else.
+
+  How many unicast hosts a cycle samples depends on the platform: three
+  on iOS, eight everywhere else. iOS is the only target whose OS
+  hard-kills a background run at a deadline (`BGAppRefreshTask`, ~30 s),
+  and the narrow budget is what fits under it alongside the quorum.
+  No configuration surface changed — `TrustedTimeConfig` gained no
+  required field and the new behaviour is the default.
+
+- **A fresh install now converges on its server ranking in days rather
+  than weeks.** The first eight foreground cycles after install sample
+  the wider unicast budget regardless of platform, which is ~1.6 sweeps
+  of the unicast pool — enough that most hosts have a second
+  observation for the EWMAs to smooth against. The count is persisted
+  (`tt_explorer_boost_v1`) and decays per banked cycle, so it survives
+  process death and stops on its own; an install upgrading from a
+  version before the counter existed gets one front-load, the same
+  posture as a fresh install. Headless background cycles are never
+  front-loaded, so the iOS deadline is unaffected.
+
+  Exploratory probes run outside the cycle's critical path under their
+  own 2 s timeout: they feed the ranking only and cannot contribute to
+  consensus, so `sync()` completes on the anycast quorum without
+  waiting for them. The front-load therefore costs no cycle latency.
+  For the same reason the reported `confidence` breakdown divides by
+  the consensus-eligible sources only — the coverage ratios do not move
+  with the exploration width.
+
 ### Fixed
 
 - **Projected time no longer freezes during device sleep** (with NTS
