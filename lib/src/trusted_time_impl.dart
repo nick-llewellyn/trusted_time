@@ -419,6 +419,17 @@ final class TrustedTimeImpl {
       // means the front-load is spent and arms nothing. Foreground
       // only, by construction: runBackgroundSync never calls this, so a
       // headless cycle keeps the platform budget throughout.
+      //
+      // Persist-gated for a reason beyond needing the read, since the
+      // `??` gives it a storage-free fallback: a boost that cannot be
+      // persisted can only re-arm. Decay is per banked cycle and
+      // refreshInterval defaults to 48h, so a typical session banks one
+      // -- re-arming every launch would never decay, leaving
+      // persistState: false permanently wide rather than front-loaded.
+      // That contradicts the posture of a mode chosen to leave no
+      // trace. The accepted cost is that such installs also restore no
+      // stats and no shuffle seed, so they rank blind at the narrow
+      // platform budget and converge slowly.
       _syncEngine.armExplorerBoost(
         await _store.loadExplorerBoostRemaining() ??
             SyncEngine.explorerBoostCycles,
