@@ -193,8 +193,21 @@ final class SourceQualityTracker {
     while (q.length > _kHistoryDepth) {
       q.removeFirst();
     }
-    _lastQueriedCycle[sourceId] = _cycleIndex;
+    recordProbe(sourceId: sourceId, delayMs: delayMs, jitterMs: jitterMs);
+  }
 
+  /// Records a successful probe that was never offered to consensus.
+  ///
+  /// Explorer probes run outside the blocking query set, so they have no
+  /// participation outcome to report. Routing them through [record] with
+  /// `participatedInConsensus: false` would state one anyway, and the
+  /// participation dimension of [ranked] would then decay toward zero
+  /// for exactly the sources the cycle deliberately kept out of
+  /// consensus. This updates the durable proximity signals and the
+  /// starvation cursor and leaves the consensus history untouched, so
+  /// such a source scores neutral on participation rather than badly.
+  void recordProbe({required String sourceId, int? delayMs, int? jitterMs}) {
+    _lastQueriedCycle[sourceId] = _cycleIndex;
     final stats = _stats.putIfAbsent(sourceId, _SourceStats.new);
     if (delayMs != null) {
       stats.ewmaRttMs = _ewma(stats.ewmaRttMs, delayMs.toDouble());

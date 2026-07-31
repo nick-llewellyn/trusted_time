@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart'
     show TargetPlatform, debugDefaultTargetPlatformOverride;
 import 'package:flutter_test/flutter_test.dart';
@@ -55,9 +57,29 @@ class _FakeNtpSource implements TimeSource {
   );
 }
 
+/// A [_FakeNtpSource] that never answers.
+///
+/// Stands in for a host that is reachable enough to accept the query
+/// but slow enough to outlive any timeout the cycle would wait on, so
+/// a test can tell "the cycle did not block on it" from "the cycle
+/// blocked and it happened to be fast".
+class _HangingNtpSource implements TimeSource {
+  _HangingNtpSource(String host) : id = '${TimeSource.prefixNtp}$host';
+  @override
+  final String id;
+  @override
+  final String groupId = 'as1';
+
+  @override
+  Future<TimeSample> getTime() => Completer<TimeSample>().future;
+}
+
 /// Builds a fake inventory of [anycast] always-queried hosts plus
 /// [unicast] explorer candidates, together with a matching source per
 /// host.
+///
+/// When [hangingUnicast] is set, the unicast sources never answer,
+/// which is how the non-blocking assertions separate the two halves.
 ///
 /// Returned as a config with `disableNtpForTesting: true` so the
 /// override is the only inventory in play and no live [NtpSource] is
@@ -65,6 +87,7 @@ class _FakeNtpSource implements TimeSource {
 ({TrustedTimeConfig config, List<TimeSource> sources}) _fakeInventory({
   required int anycast,
   required int unicast,
+  bool hangingUnicast = false,
 }) {
   final entries = <NtpServerInfo>[
     for (var i = 0; i < anycast; i++)
@@ -84,7 +107,13 @@ class _FakeNtpSource implements TimeSource {
         leapPolicy: NtpLeapPolicy.documentedStepping,
       ),
   ];
-  final sources = [for (final e in entries) _FakeNtpSource(e.host)];
+  final sources = [
+    for (final e in entries)
+      if (hangingUnicast && e.tier != NtpServerTier.anycast)
+        _HangingNtpSource(e.host)
+      else
+        _FakeNtpSource(e.host),
+  ];
   return (
     config: TrustedTimeConfig(
       ntsServers: const [],
@@ -481,15 +510,106 @@ void main() {
     });
   });
 
+  // Explorers are probed for their RTT, not for their time. They must
+  // therefore neither gate the cycle nor reach the consensus that
+  // mints the anchor.
+  group('non-blocking explorers', () {
+    test('the split puts inventory unicast hosts outside the quorum', () {
+      final roles = _engine(budget: 5).selectCycleRolesForTesting();
+      expect(roles.blocking, hasLength(10));
+      expect(roles.explorers, hasLength(5));
+      expect(roles.blocking.intersection(roles.explorers), isEmpty);
+    });
+
+    test('caller-supplied sources are never demoted to explorers', () {
+      final roles = SyncEngine(
+        config: TrustedTimeConfig(
+          ntsServers: const [],
+          additionalSources: [_StubSource('custom')],
+        ),
+        clock: FakeMonotonicClock(),
+        explorerShuffle: const ExplorerShuffle(3),
+        explorerBudget: 5,
+      ).selectCycleRolesForTesting();
+      expect(roles.blocking, contains('custom'));
+      expect(roles.explorers, isNot(contains('custom')));
+    });
+
+    test('a cycle completes while every explorer is still hanging', () async {
+      // Only the two anycast hosts answer; all six explorers hang
+      // forever. Under the old flattened set the cycle would wait on
+      // the full maxLatency before finalizing, so completing at all is
+      // the assertion.
+      final fake = _fakeInventory(anycast: 2, unicast: 6, hangingUnicast: true);
+      final anchor = await SyncEngine(
+        config: fake.config,
+        clock: FakeMonotonicClock(),
+        explorerShuffle: const ExplorerShuffle(7),
+        explorerBudget: 6,
+      ).sync();
+      expect(anchor, isNotNull);
+    });
+
+    test('explorer samples stay out of consensus', () async {
+      final fake = _fakeInventory(anycast: 2, unicast: 6);
+      final observer = RecordingObserver();
+      await SyncEngine(
+        config: fake.config,
+        clock: FakeMonotonicClock(),
+        observer: observer,
+        explorerShuffle: const ExplorerShuffle(7),
+        explorerBudget: 6,
+      ).sync();
+
+      // Every unicast host answers instantly here, so a leak would show
+      // up as participants the anycast quorum cannot account for.
+      expect(observer.consensusReached.single.participantCount, 2);
+    });
+
+    test('an explorer probe still refreshes the ranking', () async {
+      final fake = _fakeInventory(anycast: 2, unicast: 6);
+      final tracker = SourceQualityTracker();
+      await SyncEngine(
+        config: fake.config,
+        clock: FakeMonotonicClock(),
+        qualityTracker: tracker,
+        explorerShuffle: const ExplorerShuffle(7),
+        explorerBudget: 6,
+      ).sync();
+      // Let the probes, which the cycle deliberately did not wait on,
+      // land before reading the tracker.
+      await Future<void>.delayed(Duration.zero);
+
+      for (var i = 0; i < 6; i++) {
+        expect(
+          tracker.lastProbedUtcMs('${TimeSource.prefixNtp}uni$i.test'),
+          isNotNull,
+          reason: 'uni$i.test was probed, so the walk must advance past it',
+        );
+      }
+    });
+
+    test('a probe with no consensus outcome does not claim one', () async {
+      // recordProbe must not synthesise a participation observation:
+      // an explorer that scored a false non-participation every cycle
+      // would sink in the very ranking the probe exists to inform.
+      final tracker = SourceQualityTracker();
+      tracker.recordProbe(sourceId: 'ntp:uni0.test', delayMs: 10);
+      expect(tracker.participationRate('ntp:uni0.test'), isNull);
+      expect(tracker.lastProbedUtcMs('ntp:uni0.test'), isNotNull);
+    });
+  });
+
   group('SyncEngine coverage telemetry', () {
     // These need an inventory the partition actually narrows. Every
     // other offline test empties it, which sends _selectCycleHosts down
     // its "nothing to narrow" branch where the cycle set is the whole
     // pool -- and a denominator bug is invisible when the two agree.
 
-    test('coverage ratios divide by the cycle, not the pool', () async {
-      // 2 anycast + 6 unicast, budget 2: the cycle queries 4 of 8, so
-      // the two candidate denominators differ by a factor of two.
+    test('coverage ratios divide by the blocking set, not the pool', () async {
+      // 2 anycast + 6 unicast, budget 2: the cycle touches 4 of 8 but
+      // only the 2 anycast hosts can reach consensus, so all three
+      // candidate denominators (2, 4, 8) are distinct.
       //
       // Asserted against the reported participantCount rather than a
       // hard-coded ratio: early exit can settle consensus before every
@@ -507,6 +627,7 @@ void main() {
       );
 
       expect(engine.selectCycleHostsForTesting(), hasLength(4));
+      expect(engine.selectCycleRolesForTesting().blocking, hasLength(2));
       expect(fake.sources, hasLength(8));
       await engine.sync();
 
@@ -514,11 +635,11 @@ void main() {
       final metrics = observer.metricsReported.single;
       expect(
         metrics.confidenceBreakdown['depth'],
-        closeTo(metrics.participantCount / 4, 1e-9),
+        closeTo(metrics.participantCount / 2, 1e-9),
       );
       expect(
         metrics.confidenceBreakdown['quorumDepth'],
-        closeTo(metrics.quorumDepth / 4, 1e-9),
+        closeTo(metrics.quorumDepth / 2, 1e-9),
       );
       // The pool denominator is the bug this replaced; name it so a
       // regression cannot pass by coincidence.
@@ -528,11 +649,12 @@ void main() {
       );
     });
 
-    test('a wider budget lowers the ratio for equal participation', () async {
-      // Same 8-host pool and the same consensus either way; only the
-      // cycle width differs. Under a pool denominator both cycles
-      // divide by 8 and the ratios match, so divergence here is
-      // exactly the property the fix introduced.
+    test('the explorer budget does not move the ratio', () async {
+      // Same 8-host pool, same blocking set either way; only the
+      // explorer width differs. Explorers cannot participate in
+      // consensus, so counting them would deflate the ratio purely
+      // because the front-load was live -- reporting a confidence drop
+      // where the time quality is identical.
       Future<SyncMetrics> syncWithBudget(int budget) async {
         final fake = _fakeInventory(anycast: 2, unicast: 6);
         final observer = RecordingObserver();
@@ -555,7 +677,7 @@ void main() {
       );
       expect(
         narrow.confidenceBreakdown['depth'],
-        greaterThan(wide.confidenceBreakdown['depth']!),
+        closeTo(wide.confidenceBreakdown['depth']!, 1e-9),
       );
     });
 

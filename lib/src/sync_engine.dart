@@ -113,6 +113,17 @@ final class SyncEngine {
   /// explorer pool at 3/cycle, against ~5 at 8/cycle).
   static const boostedExplorerBudget = standardExplorerBudget;
 
+  /// Per-query bound on an explorer probe.
+  ///
+  /// Much shorter than [TrustedTimeConfig.maxLatency], which sizes the
+  /// window a source gets to *build the anchor* and so must tolerate a
+  /// slow-but-usable path. An explorer is being measured, not relied
+  /// on, and a host that cannot answer in two seconds is one the
+  /// ranking should defer regardless — so the timeout doubles as the
+  /// bound on how far an explorer's tail can outlive the cycle that
+  /// launched it.
+  static const explorerTimeout = Duration(seconds: 2);
+
   /// How many foreground cycles a freshly armed front-load covers.
   ///
   /// Eight boosted cycles at [boostedExplorerBudget] is ~1.6 sweeps of
@@ -280,13 +291,32 @@ final class SyncEngine {
   ///
   /// Visible for tests so the narrowing and the pass-through rule can
   /// be asserted without running a cycle against the live inventory.
+  ///
+  /// Returns both halves of the split as one set: this asserts *which*
+  /// hosts a cycle touches, which is what the narrowing rule is about.
+  /// Use [selectCycleRolesForTesting] to assert the split itself.
   @visibleForTesting
-  Set<String> selectCycleHostsForTesting() => _selectCycleHosts();
+  Set<String> selectCycleHostsForTesting() {
+    final roles = _selectCycleHosts();
+    return {...roles.blocking, ...roles.explorers};
+  }
 
-  Set<String> _selectCycleHosts() {
+  /// Visible for tests asserting which half of the cycle a host lands in.
+  @visibleForTesting
+  ({Set<String> blocking, Set<String> explorers})
+  selectCycleRolesForTesting() => _selectCycleHosts();
+
+  /// The source ids this cycle queries, split by whether they gate it.
+  ///
+  /// `blocking` sources build the anchor and the cycle waits on them;
+  /// `explorers` are fired alongside and feed only the ranking. Every
+  /// source that is not an inventory-backed explorer lands in
+  /// `blocking`, so a caller-supplied source is never demoted to a
+  /// ranking-only probe.
+  ({Set<String> blocking, Set<String> explorers}) _selectCycleHosts() {
     final inventory = _config.ntpInventory;
     if (inventory.isEmpty) {
-      return {for (final s in _sources) s.id};
+      return (blocking: {for (final s in _sources) s.id}, explorers: const {});
     }
     final partition = partitionInventory(
       inventory: inventory,
@@ -295,16 +325,25 @@ final class SyncEngine {
       lastProbedUtcMs: (host) =>
           _qualityTracker.lastProbedUtcMs('${TimeSource.prefixNtp}$host'),
     );
-    final selected = {
-      for (final host in partition.all) '${TimeSource.prefixNtp}$host',
+    final quorum = {
+      for (final host in partition.quorum) '${TimeSource.prefixNtp}$host',
+    };
+    final explorers = {
+      for (final host in partition.explorers) '${TimeSource.prefixNtp}$host',
     };
     final inventoryIds = {
       for (final entry in inventory) '${TimeSource.prefixNtp}${entry.host}',
     };
-    return {
-      for (final s in _sources)
-        if (selected.contains(s.id) || !inventoryIds.contains(s.id)) s.id,
-    };
+    final blocking = <String>{};
+    final probing = <String>{};
+    for (final s in _sources) {
+      if (explorers.contains(s.id)) {
+        probing.add(s.id);
+      } else if (quorum.contains(s.id) || !inventoryIds.contains(s.id)) {
+        blocking.add(s.id);
+      }
+    }
+    return (blocking: blocking, explorers: probing);
   }
 
   /// Tracks consecutive failures for each source to implement exponential cooldown.
@@ -783,7 +822,12 @@ final class SyncEngine {
     // sources configured" from "all in cooldown" is preserved — it now
     // fires only when no cooled-down source is yet due for rescue.
     final now = DateTime.now();
-    final cycleHosts = _selectCycleHosts();
+    final cycleRoles = _selectCycleHosts();
+    final cycleHosts = cycleRoles.blocking;
+    // Explorers are excluded from the denominator on purpose: they
+    // cannot contribute to consensus, so counting them would deflate
+    // every coverage ratio by the explorer width and make the reported
+    // confidence move with the front-load rather than with time quality.
     completionGuard.cycleHostCount = cycleHosts.length;
     final healthySources = _sources.where((s) {
       if (!cycleHosts.contains(s.id)) return false;
@@ -1028,6 +1072,23 @@ final class SyncEngine {
           }
         }());
       }
+
+      // 3b. Launch the explorer probes.
+      //
+      // Deliberately not fed into [sampleController]: an explorer
+      // sample must reach neither the Marzullo population nor
+      // [pendingQueries]. The first would let a host the ranking has
+      // not yet vetted steer the anchor; the second would put the
+      // cycle's completion behind a probe whose only product is a
+      // ranking update, which is precisely the latency the front-load
+      // was buying convergence with.
+      //
+      // These futures outlive the cycle by design. `sync()` returns on
+      // quorum and the probes land in [_qualityTracker] whenever they
+      // finish, so a slow explorer costs the next cycle's ranking
+      // nothing and this cycle's latency nothing. [explorerTimeout]
+      // bounds how long that tail can run.
+      _launchExplorerProbes(cycleRoles.explorers);
 
       // Outer safety timeout. The warming barrier above completes (or
       // caps out) before this deadline starts counting, so the common
@@ -1558,6 +1619,38 @@ final class SyncEngine {
       TrustedTimeLogLevel.info,
       '[TrustedTime] sample $sourceId fail reason=$reason',
     );
+  }
+
+  /// Fires this cycle's explorer probes without gating the cycle.
+  ///
+  /// Runs outside the cycle's stream entirely: a probe result reaches
+  /// [_qualityTracker] and nothing else. Failures decay the durable
+  /// success rate exactly as a blocking failure would, because a host
+  /// that will not answer is a host the ranking should defer — but
+  /// they take no part in the cooldown ladder here, since
+  /// [_querySafe]'s blacklisting exists to keep a bad source out of
+  /// consensus and an explorer was never in it.
+  void _launchExplorerProbes(Set<String> explorerIds) {
+    if (explorerIds.isEmpty) return;
+    for (final source in _sources) {
+      if (!explorerIds.contains(source.id)) continue;
+      unawaited(() async {
+        try {
+          final sample = await source.getTime().timeout(explorerTimeout);
+          _logSample(sample);
+          _qualityTracker.recordProbe(
+            sourceId: source.id,
+            delayMs: sample.delayMs,
+            jitterMs: sample.jitterMs,
+          );
+          final stratum = sample.stratum;
+          if (stratum != null) _qualityTracker.setStratum(source.id, stratum);
+        } catch (e) {
+          _logSampleFailure(source.id, e);
+          _qualityTracker.recordFailure(source.id);
+        }
+      }());
+    }
   }
 
   /// Wraps a source query with timeout and health-tracking logic.
