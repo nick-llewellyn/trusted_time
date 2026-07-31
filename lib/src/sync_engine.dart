@@ -309,10 +309,16 @@ final class SyncEngine {
   /// The source ids this cycle queries, split by whether they gate it.
   ///
   /// `blocking` sources build the anchor and the cycle waits on them;
-  /// `explorers` are fired alongside and feed only the ranking. Every
-  /// source that is not an inventory-backed explorer lands in
-  /// `blocking`, so a caller-supplied source is never demoted to a
-  /// ranking-only probe.
+  /// `explorers` are fired alongside and feed only the ranking.
+  ///
+  /// The split is decided by id, on the same rule as the pass-through
+  /// documented on [selectCycleHostsForTesting]: a source lands in
+  /// `explorers` only when its id is one the partition assigned to the
+  /// explorer walk. That is every inventory host outside the quorum,
+  /// and it includes a [TrustedTimeConfig.additionalSources] entry
+  /// whose id shadows such a host — the engine cannot tell it apart
+  /// from the inventory source, so it is probed like one. A caller
+  /// source with an id outside the inventory always blocks.
   ({Set<String> blocking, Set<String> explorers}) _selectCycleHosts() {
     final inventory = _config.ntpInventory;
     if (inventory.isEmpty) {
@@ -1632,8 +1638,15 @@ final class SyncEngine {
   /// consensus and an explorer was never in it.
   void _launchExplorerProbes(Set<String> explorerIds) {
     if (explorerIds.isEmpty) return;
-    for (final source in _sources) {
-      if (!explorerIds.contains(source.id)) continue;
+    // First-seen wins for a colliding id, matching the blocking path's
+    // healthyById dedup. Without it a shadowed inventory host would be
+    // probed once per instance and its durable stats updated twice from
+    // what the ranking treats as a single source.
+    final byId = <String, TimeSource>{};
+    for (final s in _sources) {
+      if (explorerIds.contains(s.id)) byId.putIfAbsent(s.id, () => s);
+    }
+    for (final source in byId.values) {
       unawaited(() async {
         try {
           final sample = await source.getTime().timeout(explorerTimeout);

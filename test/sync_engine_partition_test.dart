@@ -74,6 +74,26 @@ class _HangingNtpSource implements TimeSource {
   Future<TimeSample> getTime() => Completer<TimeSample>().future;
 }
 
+/// A [_FakeNtpSource] that tallies how often it was queried.
+class _CountingNtpSource implements TimeSource {
+  _CountingNtpSource(String host) : id = '${TimeSource.prefixNtp}$host';
+  @override
+  final String id;
+  @override
+  final String groupId = 'as1';
+  int calls = 0;
+
+  @override
+  Future<TimeSample> getTime() async {
+    calls++;
+    return TimeSample(
+      interval: TimeInterval(startMs: 1000, endMs: 1020),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
+}
+
 /// Builds a fake inventory of [anycast] always-queried hosts plus
 /// [unicast] explorer candidates, together with a matching source per
 /// host.
@@ -597,6 +617,39 @@ void main() {
       tracker.recordProbe(sourceId: 'ntp:uni0.test', delayMs: 10);
       expect(tracker.participationRate('ntp:uni0.test'), isNull);
       expect(tracker.lastProbedUtcMs('ntp:uni0.test'), isNotNull);
+    });
+
+    test('explorer probes are deduped by id', () async {
+      // An additionalSource can shadow an inventory host, putting two
+      // instances under one id in _sources. The blocking path resolves
+      // that first-seen; the probe path must agree, or the shadowed
+      // host is queried twice and its durable stats updated twice from
+      // what the ranking treats as a single source.
+      final fake = _fakeInventory(anycast: 2, unicast: 6);
+      final first = _CountingNtpSource('uni0.test');
+      final second = _CountingNtpSource('uni0.test');
+      final shadowed = [
+        for (final s in fake.sources)
+          if (s.id != first.id) s,
+        first,
+        second,
+      ];
+      await SyncEngine(
+        config: TrustedTimeConfig(
+          ntsServers: const [],
+          disableNtpForTesting: true,
+          ntpInventoryForTesting: fake.config.ntpInventoryForTesting,
+          additionalSources: shadowed,
+          minGroupCount: 1,
+        ),
+        clock: FakeMonotonicClock(),
+        explorerShuffle: const ExplorerShuffle(7),
+        explorerBudget: 6,
+      ).sync();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(first.calls, 1);
+      expect(second.calls, 0);
     });
   });
 

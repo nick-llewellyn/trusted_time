@@ -196,16 +196,21 @@ final class SourceQualityTracker {
     recordProbe(sourceId: sourceId, delayMs: delayMs, jitterMs: jitterMs);
   }
 
-  /// Records a successful probe that was never offered to consensus.
+  /// Records a successful query's durable signals without appending a
+  /// consensus observation.
   ///
-  /// Explorer probes run outside the blocking query set, so they have no
-  /// participation outcome to report. Routing them through [record] with
-  /// `participatedInConsensus: false` would state one anyway, and the
-  /// participation dimension of [ranked] would then decay toward zero
-  /// for exactly the sources the cycle deliberately kept out of
-  /// consensus. This updates the durable proximity signals and the
-  /// starvation cursor and leaves the consensus history untouched, so
-  /// such a source scores neutral on participation rather than badly.
+  /// This is the half of [record] that every successful query shares —
+  /// RTT, jitter, success rate, and the starvation cursor — and [record]
+  /// delegates here after appending its observation, so the durable
+  /// path is written once.
+  ///
+  /// Called directly for explorer probes, which run outside the
+  /// blocking query set and so have no participation outcome to report.
+  /// Routing those through [record] with `participatedInConsensus:
+  /// false` would state one anyway, and the participation dimension of
+  /// [ranked] would then decay toward zero for exactly the sources the
+  /// cycle deliberately kept out of consensus. Leaving the history
+  /// untouched scores them neutral on participation rather than badly.
   void recordProbe({required String sourceId, int? delayMs, int? jitterMs}) {
     _lastQueriedCycle[sourceId] = _cycleIndex;
     final stats = _stats.putIfAbsent(sourceId, _SourceStats.new);
