@@ -93,6 +93,34 @@ final class SyncEngine {
   /// the whole 41-host explorer pool is covered in fewer cycles.
   static const standardExplorerBudget = 8;
 
+  /// Unicast hosts probed per *foreground* cycle while the front-load is
+  /// live.
+  ///
+  /// Deliberately equal to [standardExplorerBudget] rather than wider.
+  /// The platform split exists because iOS hard-kills a
+  /// `BGAppRefreshTask` at ~30 s (ADR 0002); a foreground cycle has no
+  /// such deadline, so the narrow iOS budget has no reason to apply
+  /// there. Holding the boost at the standard width keeps every
+  /// individual cycle indistinguishable from some platform's steady
+  /// state — only the aggregate rate over an install's first few days
+  /// differs, and there is no single distinctive event of the kind the
+  /// removed bootstrap sweep produced. A wider value would buy faster
+  /// convergence at the cost of a cycle shape nothing else emits.
+  ///
+  /// The corollary is that the boost is a no-op wherever the steady
+  /// budget is already [standardExplorerBudget]; it exists for iOS,
+  /// which is where the convergence gap is (~14 cycles to sweep the
+  /// explorer pool at 3/cycle, against ~5 at 8/cycle).
+  static const boostedExplorerBudget = standardExplorerBudget;
+
+  /// How many foreground cycles a freshly armed front-load covers.
+  ///
+  /// Eight boosted cycles at [boostedExplorerBudget] is ~1.6 sweeps of
+  /// the 41-host explorer pool, which puts most hosts one probe past
+  /// their first — enough for the EWMA to have something to smooth
+  /// against rather than a single unsmoothed sample.
+  static const explorerBoostCycles = 8;
+
   /// The default explorer budget for [platform].
   ///
   /// Exposed for tests pinning the platform split; production callers
@@ -121,6 +149,14 @@ final class SyncEngine {
   final int _explorerBudget;
 
   ExplorerShuffle _explorerShuffle;
+
+  /// Foreground cycles still owed the front-loaded explorer budget.
+  ///
+  /// Zero — the steady state — everywhere the boost was never armed,
+  /// which includes every headless engine: [armExplorerBoost] is called
+  /// only from the foreground bootstrap, so a background cycle keeps
+  /// the platform budget throughout.
+  int _explorerBoostRemaining = 0;
 
   /// Shared DNS concurrency budget (ADR 0008).
   ///
@@ -255,7 +291,7 @@ final class SyncEngine {
     final partition = partitionInventory(
       inventory: inventory,
       shuffle: _explorerShuffle,
-      explorerBudget: _explorerBudget,
+      explorerBudget: effectiveExplorerBudget,
       lastProbedUtcMs: (host) =>
           _qualityTracker.lastProbedUtcMs('${TimeSource.prefixNtp}$host'),
     );
@@ -326,6 +362,51 @@ final class SyncEngine {
 
   /// This install's explorer walk order.
   ExplorerShuffle get explorerShuffle => _explorerShuffle;
+
+  /// Widens the explorer budget to [boostedExplorerBudget] for the next
+  /// [cycles] cycles, then decays to the platform steady state.
+  ///
+  /// Called by the foreground bootstrap with the persisted remaining
+  /// count, so a front-load spans launches instead of restarting (or
+  /// evaporating) on every process start. Background runs never call
+  /// it, which is what keeps the boost foreground-only.
+  ///
+  /// Parameterized by count rather than latched to "is this a new
+  /// install" because the same primitive serves vantage-epoch recovery
+  /// (`trusted_time-s34`), which re-arms a temporarily enlarged
+  /// explorer set on a trigger that has nothing to do with install age.
+  /// Re-arming while a boost is live replaces the remainder rather than
+  /// accumulating: two overlapping triggers mean the exploration should
+  /// stay wide for [cycles] more cycles, not for the sum.
+  ///
+  /// [cycles] must be non-negative; zero is the no-op that disarms.
+  /// Enforced with a [RangeError] in all build modes: the count reaches
+  /// here from persisted storage via the foreground bootstrap, so a
+  /// release build would otherwise clamp a corrupt value silently.
+  void armExplorerBoost(int cycles) {
+    _explorerBoostRemaining = RangeError.checkNotNegative(cycles, 'cycles');
+  }
+
+  /// Foreground cycles still owed the front-loaded explorer budget.
+  ///
+  /// Read by the foreground path after a banked cycle to persist the
+  /// decayed count.
+  int get explorerBoostRemaining => _explorerBoostRemaining;
+
+  /// The explorer budget the *next* cycle will use.
+  ///
+  /// Widened while a front-load is live; the platform steady state
+  /// otherwise. Exposed for tests asserting the decay curve without
+  /// inspecting the selected host set.
+  ///
+  /// A boost only ever widens. [boostedExplorerBudget] is the standard
+  /// platform width, so a caller that constructed the engine with a
+  /// *wider* explicit budget would otherwise see the boost narrow its
+  /// cycles — a front-load that front-loads less.
+  @visibleForTesting
+  int get effectiveExplorerBudget => _explorerBoostRemaining > 0
+      ? max(_explorerBudget, boostedExplorerBudget)
+      : _explorerBudget;
 
   int _syncAttempts = 0;
 
@@ -1021,6 +1102,17 @@ final class SyncEngine {
       _hasAnchored = true;
       _cache?.update(anchor);
       _qualityTracker.advanceCycle();
+      // Decay the front-load alongside the cycle counter, and for the
+      // same reason: only a cycle that actually banked an anchor
+      // produced the explorer observations the boost exists to gather.
+      // Spending it on a failed cycle would let a run of network
+      // outages burn the whole front-load having probed nothing.
+      //
+      // Decaying *here* rather than at host selection is what makes the
+      // width stable for the duration of a cycle: [effectiveExplorerBudget]
+      // is read once, at selection, and the count it depends on cannot
+      // move again until that cycle has completed.
+      if (_explorerBoostRemaining > 0) _explorerBoostRemaining--;
       return anchor;
     } catch (e) {
       _markSyncFailed(e);

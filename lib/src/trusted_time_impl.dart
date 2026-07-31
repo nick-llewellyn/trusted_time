@@ -413,6 +413,27 @@ final class TrustedTimeImpl {
           save: _store.saveExplorerSeed,
         ),
       );
+      // Resume this install's front-loaded exploration. An absent count
+      // means a fresh install (or an upgrade from before the counter
+      // existed, or a wiped store) and arms a full boost; a stored zero
+      // means the front-load is spent and arms nothing. Foreground
+      // only, by construction: runBackgroundSync never calls this, so a
+      // headless cycle keeps the platform budget throughout.
+      //
+      // Persist-gated for a reason beyond needing the read, since the
+      // `??` gives it a storage-free fallback: a boost that cannot be
+      // persisted can only re-arm. Decay is per banked cycle and
+      // refreshInterval defaults to 48h, so a typical session banks one
+      // -- re-arming every launch would never decay, leaving
+      // persistState: false permanently wide rather than front-loaded.
+      // That contradicts the posture of a mode chosen to leave no
+      // trace. The accepted cost is that such installs also restore no
+      // stats and no shuffle seed, so they rank blind at the narrow
+      // platform budget and converge slowly.
+      _syncEngine.armExplorerBoost(
+        await _store.loadExplorerBoostRemaining() ??
+            SyncEngine.explorerBoostCycles,
+      );
     }
 
     // The persisted-anchor restore check runs before any network-bound
@@ -586,11 +607,25 @@ final class TrustedTimeImpl {
       // identically. Save runs before _applyAnchor: a storage failure
       // surfaces as a failed cycle rather than leaving in-memory state
       // ahead of what the next warm restore will read back.
+      final boostBefore = _syncEngine.explorerBoostRemaining;
       final anchor = await performSyncCycle(
         engine: _syncEngine,
         store: _store,
         config: _config,
       );
+      // Persist the decayed front-load so it spans launches instead of
+      // restarting every process start. Foreground only — the boost is
+      // never armed headlessly — and written only on the cycles where
+      // the count actually moved, so it stops being written once the
+      // front-load is spent. Best-effort for the same reason the stats
+      // snapshot is: the anchor is already banked, and losing one
+      // decrement costs an install one extra wide cycle.
+      final boostAfter = _syncEngine.explorerBoostRemaining;
+      if (_config.persistState && boostAfter != boostBefore) {
+        try {
+          await _store.saveExplorerBoostRemaining(boostAfter);
+        } catch (_) {}
+      }
       // The anchor's readings are backdated to the consensus reference
       // instant (see SyncEngine._createAnchor), so the projection must
       // be seeded with the gap between that instant and now — the same

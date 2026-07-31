@@ -61,6 +61,29 @@ abstract interface class AnchorStorage {
   /// death, or every restart re-anchors to the same permutation prefix.
   Future<void> saveExplorerSeed(int seed);
 
+  /// Loads how many front-loaded foreground cycles this install has
+  /// left, or `null` when none is stored or the stored value is corrupt
+  /// (anything that is not a non-negative integer).
+  ///
+  /// A null return means "arm a fresh boost", not "boost exhausted" —
+  /// an exhausted boost is a stored `0`. An install upgrading from a
+  /// version before the counter existed therefore gets one front-load,
+  /// which is the same posture as a fresh install and costs a handful
+  /// of extra explorer probes over the following cycles.
+  Future<int?> loadExplorerBoostRemaining();
+
+  /// Persists how many front-loaded foreground cycles remain.
+  ///
+  /// [remaining] must be non-negative; [loadExplorerBoostRemaining]
+  /// treats a negative value as corrupt, so writing one would silently
+  /// re-arm the boost on the next launch. Implementations enforce this
+  /// with a [RangeError] in all build modes.
+  ///
+  /// Written by the foreground path only, and only on the cycles where
+  /// the count actually changes — so it stops being written entirely
+  /// once the boost is spent.
+  Future<void> saveExplorerBoostRemaining(int remaining);
+
   /// Wipes all persisted temporal data.
   Future<void> clear();
 }
@@ -88,6 +111,7 @@ final class AnchorStore implements AnchorStorage {
   static const _keyDriftHistory = 'tt_drift_history_v1';
   static const _keySourceStats = 'tt_source_stats_v1';
   static const _keyExplorerSeed = 'tt_explorer_seed_v1';
+  static const _keyExplorerBoost = 'tt_explorer_boost_v1';
 
   // Legacy offline-estimation keys (removed feature). Never written or
   // read anymore; still deleted by [clear] so installs upgrading from
@@ -230,6 +254,36 @@ final class AnchorStore implements AnchorStorage {
     await _storage.write(key: _keyExplorerSeed, value: '$seed');
   }
 
+  /// Loads the remaining front-loaded foreground cycle count.
+  ///
+  /// Corruption (a non-integer or negative payload, or a read failure)
+  /// is treated as absence: the entry is deleted and `null` returned,
+  /// so the caller arms a fresh boost rather than failing a bootstrap
+  /// over an exploration schedule.
+  @override
+  Future<int?> loadExplorerBoostRemaining() async {
+    try {
+      final raw = await _storage.read(key: _keyExplorerBoost);
+      if (raw == null) return null;
+      final remaining = int.tryParse(raw);
+      if (remaining == null || remaining < 0) {
+        await _bestEffortDelete(_keyExplorerBoost);
+        return null;
+      }
+      return remaining;
+    } catch (_) {
+      await _bestEffortDelete(_keyExplorerBoost);
+      return null;
+    }
+  }
+
+  /// Persists the remaining front-loaded foreground cycle count.
+  @override
+  Future<void> saveExplorerBoostRemaining(int remaining) async {
+    RangeError.checkNotNegative(remaining, 'remaining');
+    await _storage.write(key: _keyExplorerBoost, value: '$remaining');
+  }
+
   /// Wipes all persisted temporal data from secure storage.
   @override
   Future<void> clear() async {
@@ -238,6 +292,7 @@ final class AnchorStore implements AnchorStorage {
       _storage.delete(key: _keyDriftHistory),
       _storage.delete(key: _keySourceStats),
       _storage.delete(key: _keyExplorerSeed),
+      _storage.delete(key: _keyExplorerBoost),
       _storage.delete(key: _keyLegacyLastTrustedUtcMs),
       _storage.delete(key: _keyLegacyLastAnchorWallMs),
     ]);
@@ -255,6 +310,7 @@ final class InMemoryAnchorStorage implements AnchorStorage {
   List<DriftBootRecord> _driftHistory = const [];
   Map<String, SourceQualityStats> _sourceStats = const {};
   int? _explorerSeed;
+  int? _explorerBoostRemaining;
 
   @override
   Future<TrustAnchor?> load() async => _anchor;
@@ -304,11 +360,26 @@ final class InMemoryAnchorStorage implements AnchorStorage {
     _explorerSeed = seed;
   }
 
+  // No corruption branch, unlike [loadExplorerSeed]: the write side
+  // rejects a negative count at runtime, so the field can only ever
+  // hold a value AnchorStore would also hand back.
+  @override
+  Future<int?> loadExplorerBoostRemaining() async => _explorerBoostRemaining;
+
+  @override
+  Future<void> saveExplorerBoostRemaining(int remaining) async {
+    _explorerBoostRemaining = RangeError.checkNotNegative(
+      remaining,
+      'remaining',
+    );
+  }
+
   @override
   Future<void> clear() async {
     _anchor = null;
     _driftHistory = const [];
     _sourceStats = const {};
     _explorerSeed = null;
+    _explorerBoostRemaining = null;
   }
 }

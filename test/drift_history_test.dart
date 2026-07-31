@@ -305,6 +305,38 @@ void main() {
     });
   });
 
+  group('InMemoryAnchorStorage explorer boost', () {
+    test('starts absent, round-trips, and clears with clear()', () async {
+      final storage = InMemoryAnchorStorage();
+      // Absent is "arm a fresh boost", not "boost exhausted" -- an
+      // exhausted boost is a stored zero.
+      expect(await storage.loadExplorerBoostRemaining(), isNull);
+
+      await storage.saveExplorerBoostRemaining(5);
+      expect(await storage.loadExplorerBoostRemaining(), 5);
+
+      await storage.clear();
+      expect(await storage.loadExplorerBoostRemaining(), isNull);
+    });
+
+    test('a stored zero is distinct from absence', () async {
+      final storage = InMemoryAnchorStorage();
+      await storage.saveExplorerBoostRemaining(0);
+      expect(await storage.loadExplorerBoostRemaining(), 0);
+    });
+
+    test('rejects a negative count in every build mode', () async {
+      // A negative count reads back as corrupt, so the caller would
+      // silently re-arm a spent boost on every launch. Rejected with a
+      // RangeError rather than an assert so release builds fail too.
+      final storage = InMemoryAnchorStorage();
+      expect(
+        () => storage.saveExplorerBoostRemaining(-1),
+        throwsA(isA<RangeError>()),
+      );
+    });
+  });
+
   group('AnchorStore source stats (mocked secure storage)', () {
     const storageChannel = MethodChannel(
       'plugins.it_nomads.com/flutter_secure_storage',
@@ -503,6 +535,118 @@ void main() {
 
       expect(
         deletedKeys.where((k) => k.startsWith(seedKeyPrefix)),
+        hasLength(1),
+      );
+    });
+  });
+
+  group('AnchorStore explorer boost (mocked secure storage)', () {
+    const storageChannel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
+    const boostKeyPrefix = 'tt_explorer_boost_';
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, null);
+    });
+
+    void mockRead(String? stored, {List<String>? deletedKeys}) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            final key = (call.arguments as Map)['key'] as String?;
+            if (call.method == 'delete') {
+              if (key != null) deletedKeys?.add(key);
+              return null;
+            }
+            if (call.method == 'read' &&
+                (key?.startsWith(boostKeyPrefix) ?? false)) {
+              return stored;
+            }
+            return null;
+          });
+    }
+
+    test('returns null when nothing is stored', () async {
+      mockRead(null);
+      expect(await AnchorStore().loadExplorerBoostRemaining(), isNull);
+    });
+
+    test('decodes a stored count, including zero', () async {
+      mockRead('5');
+      expect(await AnchorStore().loadExplorerBoostRemaining(), 5);
+
+      // Zero is a spent boost, not an absent one -- it must survive the
+      // round trip or every launch would re-arm.
+      mockRead('0');
+      expect(await AnchorStore().loadExplorerBoostRemaining(), 0);
+    });
+
+    test(
+      'a corrupt or negative count is treated as absent and deleted',
+      () async {
+        // Absence arms a fresh boost, so corruption costs an install a
+        // handful of extra explorer probes, never a bootstrap.
+        for (final raw in ['not-an-int', '-1']) {
+          final deletedKeys = <String>[];
+          mockRead(raw, deletedKeys: deletedKeys);
+
+          expect(
+            await AnchorStore().loadExplorerBoostRemaining(),
+            isNull,
+            reason: raw,
+          );
+          expect(
+            deletedKeys.where((k) => k.startsWith(boostKeyPrefix)),
+            hasLength(1),
+            reason: raw,
+          );
+        }
+      },
+    );
+
+    test('writes the count under the boost key', () async {
+      final written = <String, String?>{};
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            if (call.method == 'write') {
+              final args = call.arguments as Map;
+              written[args['key'] as String] = args['value'] as String?;
+            }
+            return null;
+          });
+
+      await AnchorStore().saveExplorerBoostRemaining(3);
+
+      expect(
+        written.entries
+            .singleWhere((e) => e.key.startsWith(boostKeyPrefix))
+            .value,
+        '3',
+      );
+    });
+
+    test('rejects a negative count in every build mode', () async {
+      expect(
+        () => AnchorStore().saveExplorerBoostRemaining(-1),
+        throwsA(isA<RangeError>()),
+      );
+    });
+
+    test('clear() deletes the persisted boost count', () async {
+      final deletedKeys = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            if (call.method == 'delete') {
+              deletedKeys.add((call.arguments as Map)['key'] as String);
+            }
+            return null;
+          });
+
+      await AnchorStore().clear();
+
+      expect(
+        deletedKeys.where((k) => k.startsWith(boostKeyPrefix)),
         hasLength(1),
       );
     });
