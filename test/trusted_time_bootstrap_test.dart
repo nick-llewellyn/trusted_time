@@ -546,6 +546,11 @@ void main() {
         configWith(twoGoodSources()),
         store: store,
       );
+      // Registered as well as called inline: the inline dispose is
+      // ordering (the second launch must follow a torn-down first), the
+      // tearDown is containment, so a failing expect above it cannot
+      // leak timers into the next test. dispose is idempotent.
+      addTearDown(first.dispose);
       await first.firstSyncSettled;
       final minted = first.debugSyncEngine.explorerShuffle.seed;
       // Adopted, not merely stored: the engine's own shuffle must be the
@@ -558,9 +563,9 @@ void main() {
         configWith(twoGoodSources()),
         store: store,
       );
+      addTearDown(second.dispose);
       await second.firstSyncSettled;
       expect(second.debugSyncEngine.explorerShuffle.seed, minted);
-      second.dispose();
     });
 
     test('arms a full front-load when nothing is persisted', () async {
