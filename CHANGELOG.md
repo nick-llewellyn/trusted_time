@@ -299,15 +299,19 @@
 ### Changed
 
 - **A sync cycle no longer sweeps the whole NTP inventory.** Each cycle
-  now queries the 10 anycast hosts — which are DNS-steered or anycast,
-  so they land near the caller from any vantage and need no per-install
-  ranking — plus a bounded sample of the 41 unicast hosts, rather than
-  all 51. The unicast sample rotates by staleness, never-probed first,
-  so every host is still measured; it just takes a few cycles rather
-  than one. An integrator observes materially fewer outbound queries
-  per cycle at unchanged consensus quality: the anycast quorum alone
-  satisfies the default `minGroupCount`, and the unicast half was only
-  ever feeding the ranking.
+  now queries the 10 vantage-independent hosts — reached by anycast or
+  DNS steering, so they resolve to something near the caller wherever
+  the device is and need no per-install ranking — plus a bounded sample
+  of the 41 vantage-dependent unicast hosts, whose proximity varies by
+  where the device happens to be and so has to be measured. That is the
+  `NtpServerTier.anycast` tier in full, against a rotating slice of the
+  two unicast tiers, rather than all 51 hosts every cycle. The unicast
+  sample rotates by staleness, never-probed first, so every host is
+  still measured; it just takes a few cycles rather than one. An
+  integrator observes materially fewer outbound queries per cycle at
+  unchanged consensus quality: that quorum alone satisfies the default
+  `minGroupCount`, and the unicast tier was only ever feeding the
+  ranking.
 
   The rotation order is a per-install permutation, seeded once and
   persisted (secure-storage key `tt_explorer_seed_v1`, gated on
