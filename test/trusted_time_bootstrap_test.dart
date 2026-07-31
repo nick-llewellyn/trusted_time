@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/anchor_store.dart';
 import 'package:trusted_time/src/sync_engine.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
@@ -509,6 +510,114 @@ void main() {
       await resync;
       expect(TrustedTime.getAssessment().isTrusted, isTrue);
       expect(TrustedTime.getAssessment().syncInProgress, isFalse);
+    });
+  });
+
+  group('bootstrap restores persisted exploration state', () {
+    // The explore/exploit slices put two reads on the bootstrap path —
+    // the per-install explorer shuffle seed and the front-load counter —
+    // and both fail silently: the engine still syncs, it just walks a
+    // throwaway permutation or never front-loads. Neither is observable
+    // through the assessment, so they are pinned here against an
+    // injected store, at the same entry point production uses.
+    TrustedTimeConfig configWith(List<TimeSource> sources) => TrustedTimeConfig(
+      disableNtpForTesting: true,
+      ntsServers: const [],
+      persistState: true,
+      minimumQuorum: 2,
+      minGroupCount: 1,
+      earlyExit: false,
+      additionalSources: sources,
+    );
+
+    List<TimeSource> twoGoodSources() {
+      final utc = DateTime.utc(2024, 6, 1);
+      return [
+        FakeSource(idValue: 'nts:a', groupIdValue: 'g1', utc: utc),
+        FakeSource(idValue: 'nts:b', groupIdValue: 'g2', utc: utc),
+      ];
+    }
+
+    test('mints an explorer seed on first launch and adopts the same '
+        'one on the next', () async {
+      final store = InMemoryAnchorStorage();
+
+      final first = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      await first.firstSyncSettled;
+      final minted = first.debugSyncEngine.explorerShuffle.seed;
+      // Adopted, not merely stored: the engine's own shuffle must be the
+      // persisted one, which is what makes the walk order stable.
+      expect(await store.loadExplorerSeed(), minted);
+      first.dispose();
+
+      // Second "launch" against the same store: no re-mint.
+      final second = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      await second.firstSyncSettled;
+      expect(second.debugSyncEngine.explorerShuffle.seed, minted);
+      second.dispose();
+    });
+
+    test('arms a full front-load when nothing is persisted', () async {
+      // An absent count is a fresh install (or an upgrade from before
+      // the counter existed), not an exhausted boost — the distinction
+      // a stored zero carries.
+      final store = InMemoryAnchorStorage();
+      final impl = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      addTearDown(impl.dispose);
+      await impl.firstSyncSettled;
+
+      // One cycle has banked by now, so the armed count has already
+      // decayed by exactly one.
+      expect(
+        impl.debugSyncEngine.explorerBoostRemaining,
+        SyncEngine.explorerBoostCycles - 1,
+      );
+      expect(
+        await store.loadExplorerBoostRemaining(),
+        SyncEngine.explorerBoostCycles - 1,
+      );
+    });
+
+    test('arms the front-load from the persisted count and banks the '
+        'decrement', () async {
+      final store = InMemoryAnchorStorage();
+      await store.saveExplorerBoostRemaining(3);
+
+      final impl = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      addTearDown(impl.dispose);
+      await impl.firstSyncSettled;
+
+      expect(impl.debugSyncEngine.explorerBoostRemaining, 2);
+      expect(await store.loadExplorerBoostRemaining(), 2);
+    });
+
+    test('a persisted zero leaves the front-load spent', () async {
+      // The write side stops once the count stops moving, so a spent
+      // boost must neither re-arm nor rewrite.
+      final store = InMemoryAnchorStorage();
+      await store.saveExplorerBoostRemaining(0);
+
+      final impl = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      addTearDown(impl.dispose);
+      await impl.firstSyncSettled;
+
+      expect(impl.debugSyncEngine.explorerBoostRemaining, 0);
+      expect(await store.loadExplorerBoostRemaining(), 0);
     });
   });
 }
