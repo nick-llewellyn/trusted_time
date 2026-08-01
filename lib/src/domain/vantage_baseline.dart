@@ -186,6 +186,14 @@ final class VantageBaseline {
   /// which costs one install its warmup rather than seeding the
   /// detector with a number that would make every subsequent cycle
   /// look like a shift.
+  ///
+  /// Fields are validated individually rather than against each other.
+  /// Combinations [observe] cannot produce — a null [ewmaRttMs] beside
+  /// a non-zero [observationCount], a [pendingShiftCount] past the
+  /// debounce, a pending run before warmup — are accepted because the
+  /// first observation overwrites all three, whereas rejecting the
+  /// record would also discard an [epoch] that is still perfectly
+  /// good. The exception is a value that never heals: see below.
   static VantageBaseline? fromJson(Object? json) {
     if (json is! Map<String, dynamic>) return null;
     final ewmaRttMs = json['ewmaRttMs'];
@@ -195,7 +203,15 @@ final class VantageBaseline {
     if (observationCount is! int || observationCount < 0) return null;
     if (pendingShiftCount is! int || pendingShiftCount < 0) return null;
     if (epoch is! int || epoch < 0) return null;
-    if (ewmaRttMs != null && (ewmaRttMs is! num || ewmaRttMs < 0)) return null;
+    // NaN is the one unrecoverable seed. Every comparison against it
+    // is false, so it never registers a shift and never opens the
+    // epoch that would replace it, while the EWMA propagates it
+    // forward untouched — the detector would be silently dead for the
+    // life of the install.
+    if (ewmaRttMs != null &&
+        (ewmaRttMs is! num || ewmaRttMs < 0 || !ewmaRttMs.isFinite)) {
+      return null;
+    }
     return VantageBaseline(
       ewmaRttMs: ewmaRttMs is num ? ewmaRttMs.toDouble() : null,
       observationCount: observationCount,

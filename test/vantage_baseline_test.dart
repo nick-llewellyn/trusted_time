@@ -248,6 +248,72 @@ void main() {
       expect(VantageBaseline.fromJson(payload(epoch: null)), isNull);
     });
 
+    test('a non-finite round trip time rejects the record', () {
+      // NaN is the one seed that never heals. Every comparison against
+      // it is false, so it can neither register a shift nor open the
+      // epoch that would replace it, and the EWMA carries it forward
+      // untouched — a detector that is silently dead forever.
+      expect(
+        VantageBaseline.fromJson(const <String, dynamic>{
+          'ewmaRttMs': double.nan,
+          'observationCount': 4,
+          'pendingShiftCount': 0,
+          'epoch': 1,
+        }),
+        isNull,
+      );
+      expect(
+        VantageBaseline.fromJson(const <String, dynamic>{
+          'ewmaRttMs': double.infinity,
+          'observationCount': 4,
+          'pendingShiftCount': 0,
+          'epoch': 1,
+        }),
+        isNull,
+      );
+    });
+
+    test('a state observe cannot produce is restored, not discarded', () {
+      // Cross-field consistency is deliberately not enforced. Each of
+      // these is unreachable through observe, and each is also erased
+      // by the very next observation — while rejecting the record
+      // would throw away an epoch that is still perfectly good.
+      const noRttButCounted = VantageBaseline(
+        observationCount: 4,
+        pendingShiftCount: 1,
+        epoch: 2,
+      );
+      final restored = VantageBaseline.fromJson(noRttButCounted.toJson());
+      expect(restored, noRttButCounted);
+
+      // The null EWMA branch of observe ignores both counts outright.
+      final settled = restored!.observe([25, 25, 25, 25]);
+      expect(settled.ewmaRttMs, 25.0);
+      expect(settled.observationCount, 1);
+      expect(settled.pendingShiftCount, 0);
+      expect(settled.epoch, 2, reason: 'the epoch is what survives');
+    });
+
+    test('an over-large pending count fires once and then clears', () {
+      // pendingShiftCount past the debounce is unreachable through
+      // observe, but it costs at most one early epoch: the shift path
+      // replaces the record wholesale, and an in-band cycle clears it
+      // without firing at all.
+      const overrun = VantageBaseline(
+        ewmaRttMs: 25,
+        observationCount: 4,
+        pendingShiftCount: 9,
+        epoch: 0,
+      );
+      final inBand = overrun.observe([25, 25, 25, 25]);
+      expect(inBand.pendingShiftCount, 0);
+      expect(inBand.epoch, 0, reason: 'an in-band cycle just clears it');
+
+      final outOfBand = overrun.observe([180, 180, 180, 180]);
+      expect(outOfBand.epoch, 1);
+      expect(outOfBand.pendingShiftCount, 0, reason: 'the epoch resets it');
+    });
+
     test('an integral round trip time decodes as a double', () {
       // jsonEncode collapses 25.0 to `25`, so the decode has to widen
       // it back or an equality check against the pre-save value fails.
