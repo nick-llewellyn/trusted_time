@@ -447,6 +447,33 @@ void main() {
         t.recordProbe(sourceId: 'new', delayMs: 20);
         expect(t.isVantageStale('new'), isFalse);
       });
+
+      test('the mark survives a snapshot/restore cycle', () {
+        // A restart is not a return to the old vantage, and the epoch
+        // that raised the mark persists too — so it will not fire again
+        // to re-mark these. Dropping the mark here would hand full
+        // weight back to readings taken on another network.
+        final first = SourceQualityTracker(wallClock: () => 1000);
+        settle(first, 'near', 20);
+        first.markVantageStale();
+
+        final second = SourceQualityTracker(wallClock: () => 2000)
+          ..restore(first.snapshot());
+
+        expect(second.isVantageStale('near'), isTrue);
+        expect(second.lastProbedUtcMs('near'), isNull);
+      });
+
+      test('an unmarked entry restores unmarked', () {
+        final first = SourceQualityTracker(wallClock: () => 1000);
+        settle(first, 'near', 20);
+
+        final second = SourceQualityTracker(wallClock: () => 2000)
+          ..restore(first.snapshot());
+
+        expect(second.isVantageStale('near'), isFalse);
+        expect(second.lastProbedUtcMs('near'), equals(1000));
+      });
     });
 
     group('SourceQualityStats JSON', () {
@@ -457,6 +484,7 @@ void main() {
           successRate: 0.875,
           lastProbedUtcMs: 1700000000000,
           stratum: 2,
+          vantageStale: true,
         );
         final decoded = SourceQualityStats.fromJson(stats.toJson());
         expect(decoded, isNotNull);
@@ -465,6 +493,7 @@ void main() {
         expect(decoded.successRate, equals(0.875));
         expect(decoded.lastProbedUtcMs, equals(1700000000000));
         expect(decoded.stratum, equals(2));
+        expect(decoded.vantageStale, isTrue);
       });
 
       test('round-trips with optional fields absent', () {
@@ -476,11 +505,19 @@ void main() {
         expect(json, isNot(contains('ewmaRttMs')));
         expect(json, isNot(contains('ewmaJitterMs')));
         expect(json, isNot(contains('stratum')));
+        expect(
+          json,
+          isNot(contains('vantageStale')),
+          reason:
+              'an absent key and false mean the same thing, and an '
+              'older payload has no key at all',
+        );
         final decoded = SourceQualityStats.fromJson(json);
         expect(decoded, isNotNull);
         expect(decoded!.ewmaRttMs, isNull);
         expect(decoded.ewmaJitterMs, isNull);
         expect(decoded.stratum, isNull);
+        expect(decoded.vantageStale, isFalse);
       });
 
       test('fromJson rejects malformed entries and sanitizes fields', () {
@@ -499,11 +536,13 @@ void main() {
           'lastProbedUtcMs': 1,
           'ewmaRttMs': 'fast', // Wrong type → dropped.
           'stratum': 99, // Out of range → dropped.
+          'vantageStale': 'yes', // Wrong type → not stale.
         });
         expect(sanitized, isNotNull);
         expect(sanitized!.successRate, equals(1.0));
         expect(sanitized.ewmaRttMs, isNull);
         expect(sanitized.stratum, isNull);
+        expect(sanitized.vantageStale, isFalse);
       });
     });
   });

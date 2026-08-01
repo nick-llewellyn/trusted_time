@@ -55,6 +55,7 @@ final class SourceQualityStats {
     this.ewmaRttMs,
     this.ewmaJitterMs,
     this.stratum,
+    this.vantageStale = false,
   });
 
   /// EWMA of the measured network delay (`TimeSample.delayMs`, a whole
@@ -80,6 +81,19 @@ final class SourceQualityStats {
   /// Last observed NTP stratum (1–15), or null when unknown.
   final int? stratum;
 
+  /// Whether these metrics were measured from a vantage the device has
+  /// since left.
+  ///
+  /// Persisted because the mark outlives the process that set it: a
+  /// restart between the vantage change and the re-sweep must not hand
+  /// back full weight to readings taken somewhere else. The epoch that
+  /// triggered the marking is itself persisted, so it will not fire
+  /// again to re-mark them.
+  ///
+  /// Omitted from [toJson] when false, which is both the common case
+  /// and what an older payload without the key means.
+  final bool vantageStale;
+
   /// Serializes to a JSON-compatible map. Null fields are omitted.
   Map<String, Object?> toJson() => {
     if (ewmaRttMs != null) 'ewmaRttMs': ewmaRttMs,
@@ -87,6 +101,7 @@ final class SourceQualityStats {
     'successRate': successRate,
     'lastProbedUtcMs': lastProbedUtcMs,
     if (stratum != null) 'stratum': stratum,
+    if (vantageStale) 'vantageStale': true,
   };
 
   /// Deserializes one stats entry, returning null when [json] is not a
@@ -106,6 +121,7 @@ final class SourceQualityStats {
       successRate: successRate.toDouble().clamp(0.0, 1.0),
       lastProbedUtcMs: lastProbedUtcMs,
       stratum: stratum is int && stratum >= 1 && stratum <= 15 ? stratum : null,
+      vantageStale: json['vantageStale'] == true,
     );
   }
 }
@@ -282,7 +298,10 @@ final class SourceQualityTracker {
   ///
   /// The mark clears per source on its next probe, so recovery is
   /// incremental — sources come back to full weight as they are
-  /// re-measured, rather than all at once on some later signal.
+  /// re-measured, rather than all at once on some later signal. It
+  /// survives process death via [snapshot] / [restore], since a restart
+  /// is not a return to the old vantage and the epoch that raised the
+  /// mark persists alongside it.
   void markVantageStale() {
     for (final stats in _stats.values) {
       stats.vantageStale = true;
@@ -322,6 +341,7 @@ final class SourceQualityTracker {
           successRate: _stats[id]!.successRate,
           lastProbedUtcMs: _stats[id]!.lastProbedUtcMs,
           stratum: _stratumHints[id],
+          vantageStale: _stats[id]!.vantageStale,
         ),
     };
   }
@@ -340,6 +360,12 @@ final class SourceQualityTracker {
   /// the staleness cutoff forever. In-process recording always stamps
   /// from the current clock, so restore is the only entry point for
   /// future values.
+  ///
+  /// A vantage mark is restored with the entry. It records that the
+  /// reading came from a network the device has left, which a restart
+  /// does not undo, and the epoch that would have re-marked it persists
+  /// too — so dropping the mark here would quietly restore full weight
+  /// to readings taken somewhere else.
   void restore(Map<String, SourceQualityStats> stats) {
     final now = _wallClock();
     stats.forEach((id, s) {
@@ -348,7 +374,8 @@ final class SourceQualityTracker {
         ..ewmaRttMs = s.ewmaRttMs
         ..ewmaJitterMs = s.ewmaJitterMs
         ..successRate = s.successRate.clamp(0.0, 1.0)
-        ..lastProbedUtcMs = s.lastProbedUtcMs > now ? now : s.lastProbedUtcMs;
+        ..lastProbedUtcMs = s.lastProbedUtcMs > now ? now : s.lastProbedUtcMs
+        ..vantageStale = s.vantageStale;
       final stratum = s.stratum;
       if (stratum != null) setStratum(id, stratum);
     });
