@@ -32,6 +32,21 @@ class _RttSource implements TimeSource {
   );
 }
 
+/// An [_RttSource] that fails its first query and answers every one
+/// after, so the engine blacklists its id long enough for the
+/// starvation rescue to become the path that re-admits it.
+class _FlakyRttSource extends _RttSource {
+  _FlakyRttSource(super.host, super.delayMs);
+  var _failed = false;
+
+  @override
+  Future<TimeSample> getTime() {
+    if (_failed) return super.getTime();
+    _failed = true;
+    throw StateError('cold');
+  }
+}
+
 /// Round trip every unicast explorer answers at, held far above any
 /// anycast value a test uses: were the explorer half feeding the
 /// baseline, its round trip would dominate the median and no anycast
@@ -122,6 +137,54 @@ void main() {
       final engine = _engine(fixture.config, budget: 4);
       await run(engine, 1);
       expect(engine.vantageBaseline.ewmaRttMs, 25);
+    });
+
+    test('a host backed by two sources answers once', () async {
+      // Two anycast hosts, one of them backed by a colliding pair of
+      // sources. While both are healthy the engine collapses them and
+      // the duplicate is unreachable; the starvation rescue re-admits
+      // from the source list directly, so it force-includes each
+      // instance and the id is queried twice in one cycle. Arm that by
+      // failing the id once, which blacklists it for far longer than
+      // the five cycles starvation takes to fire.
+      final entries = <NtpServerInfo>[
+        for (final host in ['dup.test', 'any.test'])
+          NtpServerInfo(
+            host: host,
+            tier: NtpServerTier.anycast,
+            observedStratum: 1,
+            observedGroupId: 'as1',
+            leapPolicy: NtpLeapPolicy.documentedStepping,
+          ),
+      ];
+      final engine = _engine(
+        TrustedTimeConfig(
+          ntsServers: const [],
+          disableNtpForTesting: true,
+          ntpInventoryForTesting: entries,
+          additionalSources: [
+            _FlakyRttSource('dup.test', 25),
+            _RttSource('dup.test', 25),
+            _RttSource('any.test', 25),
+            // Outside the inventory, so they block unconditionally and
+            // carry the consensus while the anycast half stays at two
+            // hosts — one below the baseline's responder floor.
+            for (var i = 0; i < 3; i++)
+              _RttSource('filler$i.test', _explorerRttMs),
+          ],
+          minGroupCount: 1,
+          earlyExit: false,
+        ),
+      );
+
+      // Six cycles: the first fails `dup.test` and the five after it
+      // are what the starvation guard counts before re-admitting.
+      await run(engine, 6);
+      expect(
+        engine.vantageBaseline.ewmaRttMs,
+        isNull,
+        reason: 'two hosts answered, whatever the sample count',
+      );
     });
 
     test('a restored baseline is what the next cycle measures against', () {

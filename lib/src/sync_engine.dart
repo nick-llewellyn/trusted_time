@@ -1742,14 +1742,28 @@ final class SyncEngine {
   /// the slowest source in the inventory, which is the latency early
   /// exit exists to avoid paying, and this detector is not worth it.
   ///
+  /// One round trip per host, first answer winning, on the same
+  /// first-seen rule the blocking path's `healthyById` and
+  /// [_launchExplorerProbes] already dedup a colliding id by. A cycle
+  /// can query one id twice — two sources sharing it are collapsed
+  /// while both are healthy, but the starvation rescue re-admits from
+  /// [_sources] directly, so a blacklisted id backed by two instances
+  /// is queried once per instance. The floor is what makes that worth
+  /// guarding rather than the median: [VantageBaseline] counts
+  /// responders to decide whether a cycle is observable at all, and a
+  /// duplicate would let two hosts clear a bar set at three.
+  ///
   /// The response keys off the epoch, not off any individual reading:
   /// the baseline debounces internally, so by the time the epoch
   /// advances the shift has already been sustained.
   void _observeVantage(Iterable<TimeSample> samples) {
-    final rtts = <int>[
-      for (final s in samples)
-        if (_anycastIds.contains(s.sourceId) && s.delayMs != null) s.delayMs!,
-    ];
+    final byHost = <String, int>{};
+    for (final s in samples) {
+      final rtt = s.delayMs;
+      if (rtt == null || !_anycastIds.contains(s.sourceId)) continue;
+      byHost.putIfAbsent(s.sourceId, () => rtt);
+    }
+    final rtts = byHost.values;
     if (rtts.isEmpty) return;
 
     final previous = _vantageBaseline;
