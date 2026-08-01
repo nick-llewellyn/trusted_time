@@ -32,8 +32,18 @@ class _RttSource implements TimeSource {
   );
 }
 
-/// Four anycast hosts (above the baseline's responder floor) and four
-/// unicast explorer candidates, all answering at [rttMs].
+/// Round trip every unicast explorer answers at, held far above any
+/// anycast value a test uses: were the explorer half feeding the
+/// baseline, its round trip would dominate the median and no anycast
+/// move could be read at all.
+const _explorerRttMs = 900;
+
+/// Four anycast hosts (above the baseline's responder floor) answering
+/// at [rttMs], plus four unicast explorer candidates answering at a
+/// fixed [_explorerRttMs] that no test varies.
+///
+/// Only the anycast half is returned, since it is the only half a test
+/// has reason to move.
 ({TrustedTimeConfig config, List<_RttSource> anycast}) _fixture(int rttMs) {
   final entries = <NtpServerInfo>[
     for (var i = 0; i < 4; i++)
@@ -55,10 +65,7 @@ class _RttSource implements TimeSource {
   ];
   final anycast = [for (var i = 0; i < 4; i++) _RttSource('any$i.test', rttMs)];
   final unicast = [
-    // Deliberately far slower than the anycast hosts: were the unicast
-    // half feeding the baseline, its round trip would dominate the
-    // median and no anycast move could be read at all.
-    for (var i = 0; i < 4; i++) _RttSource('uni$i.test', 900),
+    for (var i = 0; i < 4; i++) _RttSource('uni$i.test', _explorerRttMs),
   ];
   return (
     config: TrustedTimeConfig(
@@ -109,8 +116,8 @@ void main() {
     });
 
     test('unicast explorers are kept out of the baseline', () async {
-      // The explorers answer at 900 ms against the quorum's 25 ms, so
-      // a leak would be visible in the median immediately.
+      // The explorers answer at [_explorerRttMs] against the quorum's
+      // 25 ms, so a leak would be visible in the median immediately.
       final fixture = _fixture(25);
       final engine = _engine(fixture.config, budget: 4);
       await run(engine, 1);
