@@ -28,6 +28,25 @@ const int _kMaxPersistedSources = 32;
 /// seeding the ranking with it would be worse than starting neutral.
 const int _kStatsStalenessMs = 30 * 24 * 60 * 60 * 1000;
 
+/// How much of a vantage-stale source's score survives the marking.
+///
+/// The score is pulled toward the 0.5 neutral by this factor. Old
+/// metrics are evidence about the wrong network, so the attenuation is
+/// a discount on confidence, not a penalty: it shrinks the distance
+/// from neutral in both directions, leaving a stale source's optimism
+/// and its pessimism equally unearned.
+///
+/// Two consequences follow, and only the first is a guarantee. Ordering
+/// among stale sources is preserved, since the map is monotonic — that
+/// is the "breaks ties until fresh measurements arrive" behaviour a
+/// vantage change asks for, and the reason the marking attenuates
+/// rather than deletes. Ordering against unmarked sources is not
+/// preserved: a stale source above neutral loses to a fresh one of
+/// equal quality, while one below neutral beats it. Both follow from
+/// the same discount, and neither is worth correcting — a source scored
+/// from the wrong vantage is one the walk is about to re-probe anyway.
+const double _kStaleScoreWeight = 0.25;
+
 /// Durable quality statistics for one time source.
 ///
 /// The persistable subset of [SourceQualityTracker]'s state: smoothed
@@ -45,6 +64,7 @@ final class SourceQualityStats {
     this.ewmaRttMs,
     this.ewmaJitterMs,
     this.stratum,
+    this.vantageStale = false,
   });
 
   /// EWMA of the measured network delay (`TimeSample.delayMs`, a whole
@@ -70,6 +90,19 @@ final class SourceQualityStats {
   /// Last observed NTP stratum (1–15), or null when unknown.
   final int? stratum;
 
+  /// Whether these metrics were measured from a vantage the device has
+  /// since left.
+  ///
+  /// Persisted because the mark outlives the process that set it: a
+  /// restart between the vantage change and the re-sweep must not hand
+  /// back full weight to readings taken somewhere else. The epoch that
+  /// triggered the marking is itself persisted, so it will not fire
+  /// again to re-mark them.
+  ///
+  /// Omitted from [toJson] when false, which is both the common case
+  /// and what an older payload without the key means.
+  final bool vantageStale;
+
   /// Serializes to a JSON-compatible map. Null fields are omitted.
   Map<String, Object?> toJson() => {
     if (ewmaRttMs != null) 'ewmaRttMs': ewmaRttMs,
@@ -77,6 +110,7 @@ final class SourceQualityStats {
     'successRate': successRate,
     'lastProbedUtcMs': lastProbedUtcMs,
     if (stratum != null) 'stratum': stratum,
+    if (vantageStale) 'vantageStale': true,
   };
 
   /// Deserializes one stats entry, returning null when [json] is not a
@@ -96,6 +130,7 @@ final class SourceQualityStats {
       successRate: successRate.toDouble().clamp(0.0, 1.0),
       lastProbedUtcMs: lastProbedUtcMs,
       stratum: stratum is int && stratum >= 1 && stratum <= 15 ? stratum : null,
+      vantageStale: json['vantageStale'] == true,
     );
   }
 }
@@ -106,6 +141,12 @@ class _SourceStats {
   double? ewmaJitterMs;
   double successRate = 1.0;
   int lastProbedUtcMs = 0;
+
+  /// Whether these metrics were measured from a vantage the device has
+  /// since left. Set by [SourceQualityTracker.markVantageStale] and
+  /// cleared by the next probe of this source, success or failure —
+  /// either outcome is a measurement from the current vantage.
+  bool vantageStale = false;
 }
 
 /// Per-source observation recorded after each successful `TimeSample`.
@@ -144,6 +185,12 @@ class _SourceObservation {
 /// [restore], persisted through `AnchorStorage`. The observation history
 /// and cycle counters are process-local and deliberately not persisted —
 /// their cycle indices are meaningless across restarts.
+///
+/// **Vantage changes**: [markVantageStale] flags every source's metrics
+/// as measured from a network the device has left. Marked sources report
+/// a null [lastProbedUtcMs] so the explorer walk re-sweeps them, and
+/// score toward neutral so retained data still breaks ties. Each mark
+/// clears on that source's next probe.
 ///
 /// **Starvation guard**: [isStarved] flags a source that has not been
 /// queried within [_kStarvationCycles] cycles. The engine pairs this with
@@ -222,6 +269,7 @@ final class SourceQualityTracker {
     }
     stats.successRate = _ewma(stats.successRate, 1.0);
     stats.lastProbedUtcMs = _wallClock();
+    stats.vantageStale = false;
   }
 
   /// Records a failure for a source: the query cycle is noted so
@@ -233,7 +281,48 @@ final class SourceQualityTracker {
     final stats = _stats.putIfAbsent(sourceId, _SourceStats.new);
     stats.successRate = _ewma(stats.successRate, 0.0);
     stats.lastProbedUtcMs = _wallClock();
+    // A failure is still a measurement from the current vantage: the
+    // host was reachable enough to try and did not answer. Leaving the
+    // mark set would keep re-offering it at the head of the walk every
+    // cycle, so an unreachable host would crowd out the rest of the
+    // re-exploration the vantage change asked for.
+    stats.vantageStale = false;
   }
+
+  /// Marks every known source's durable stats as measured from a
+  /// vantage the device has since left.
+  ///
+  /// Called on a vantage-epoch change. Nothing is deleted: the metrics
+  /// stay available to break ties, but each marked source reports a
+  /// null [lastProbedUtcMs], which puts the whole inventory back at the
+  /// unprobed end of the explorer walk so it is re-swept from the new
+  /// vantage. Scores are attenuated toward neutral by
+  /// [_kStaleScoreWeight], which discounts old evidence without
+  /// reordering the stale sources among themselves.
+  ///
+  /// Deleting instead would lose the tie-break data and, worse, make
+  /// the two cases indistinguishable: a source that has never answered
+  /// from anywhere would look exactly like one that simply hasn't been
+  /// re-probed yet.
+  ///
+  /// The mark clears per source on its next probe, so recovery is
+  /// incremental — sources come back to full weight as they are
+  /// re-measured, rather than all at once on some later signal. It
+  /// survives process death via [snapshot] / [restore], since a restart
+  /// is not a return to the old vantage and the epoch that raised the
+  /// mark persists alongside it.
+  void markVantageStale() {
+    for (final stats in _stats.values) {
+      stats.vantageStale = true;
+    }
+  }
+
+  /// Whether [sourceId]'s durable stats predate the current vantage.
+  ///
+  /// False for a source with no stats at all: absent is not stale.
+  @visibleForTesting
+  bool isVantageStale(String sourceId) =>
+      _stats[sourceId]?.vantageStale ?? false;
 
   /// Optionally registers an NTP stratum hint for a source.
   ///
@@ -261,6 +350,7 @@ final class SourceQualityTracker {
           successRate: _stats[id]!.successRate,
           lastProbedUtcMs: _stats[id]!.lastProbedUtcMs,
           stratum: _stratumHints[id],
+          vantageStale: _stats[id]!.vantageStale,
         ),
     };
   }
@@ -279,6 +369,12 @@ final class SourceQualityTracker {
   /// the staleness cutoff forever. In-process recording always stamps
   /// from the current clock, so restore is the only entry point for
   /// future values.
+  ///
+  /// A vantage mark is restored with the entry. It records that the
+  /// reading came from a network the device has left, which a restart
+  /// does not undo, and the epoch that would have re-marked it persists
+  /// too — so dropping the mark here would quietly restore full weight
+  /// to readings taken somewhere else.
   void restore(Map<String, SourceQualityStats> stats) {
     final now = _wallClock();
     stats.forEach((id, s) {
@@ -287,7 +383,8 @@ final class SourceQualityTracker {
         ..ewmaRttMs = s.ewmaRttMs
         ..ewmaJitterMs = s.ewmaJitterMs
         ..successRate = s.successRate.clamp(0.0, 1.0)
-        ..lastProbedUtcMs = s.lastProbedUtcMs > now ? now : s.lastProbedUtcMs;
+        ..lastProbedUtcMs = s.lastProbedUtcMs > now ? now : s.lastProbedUtcMs
+        ..vantageStale = s.vantageStale;
       final stratum = s.stratum;
       if (stratum != null) setStratum(id, stratum);
     });
@@ -315,13 +412,27 @@ final class SourceQualityTracker {
   }
 
   /// When [sourceId] was last probed, in UTC milliseconds, or `null` if
-  /// it has never been probed.
+  /// no probe of it counts from here — either it has never been probed,
+  /// or it was probed from a vantage the device has since left.
   ///
   /// Survives process death via [snapshot] / [restore], which is what
   /// lets the explorer walk resume where it left off without persisting
   /// a separate cursor. Advisory: the value is stamped from the wall
   /// clock, so it moves if the clock is corrected.
-  int? lastProbedUtcMs(String sourceId) => _stats[sourceId]?.lastProbedUtcMs;
+  ///
+  /// A vantage-stale source reports `null`, the same as one never
+  /// probed. This is the whole mechanism by which a vantage change
+  /// restarts the explorer walk: `partitionInventory` orders candidates
+  /// by this cursor and sorts null first, so marking the inventory
+  /// stale returns all of it to the head of the walk without the
+  /// partition needing to know that vantages exist. The underlying
+  /// timestamp is unchanged and still governs snapshot pruning and
+  /// restore staleness, which are about age rather than vantage.
+  int? lastProbedUtcMs(String sourceId) {
+    final stats = _stats[sourceId];
+    if (stats == null || stats.vantageStale) return null;
+    return stats.lastProbedUtcMs;
+  }
 
   /// Returns `true` if [sourceId] should be force-included this cycle to
   /// prevent starvation, regardless of its quality rank.
@@ -390,11 +501,24 @@ final class SourceQualityTracker {
     final stratumScore = stratum != null ? (15 - stratum) / 14.0 : 0.5;
 
     // Weighted combination.
-    return (rttScore * 0.3) +
+    final score =
+        (rttScore * 0.3) +
         (participationRate * 0.25) +
         (successRate * 0.25) +
         (jitterScore * 0.1) +
         (stratumScore * 0.1);
+
+    // Vantage-stale metrics describe a network the device has left, so
+    // they are evidence about the wrong place. Pulling the score toward
+    // the 0.5 neutral rather than discarding it keeps the ordering
+    // among stale sources — the only ordering available until fresh
+    // measurements land. The pull is symmetric, so it moves a stale
+    // source across an unmarked one in either direction; see
+    // [_kStaleScoreWeight].
+    if (stats != null && stats.vantageStale) {
+      return 0.5 + (score - 0.5) * _kStaleScoreWeight;
+    }
+    return score;
   }
 
   static double _ewma(double? previous, double sample) => previous == null
