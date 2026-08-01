@@ -235,11 +235,22 @@ class TelemetryRecorder extends ChangeNotifier implements SyncObserver {
     // stay positionally stable for log parsers.
     final backend = sample.trustBackend;
     final backendField = backend == null ? '' : ' backend=${backend.name}';
+    // The diversity token the quorum is graded on, and it is not the
+    // same kind of thing across source types: NTS reports the
+    // registrable domain, NTP the ASN observed at sample time (or the
+    // `asn-unknown` sentinel when the lookup fails). Two hosts sharing
+    // a group count once towards diversity, so surfacing it is what
+    // lets an operator tell a genuinely independent quorum from one
+    // that merely looks wide — the Beauty Parade's NTP mode makes this
+    // legible, since the engine picks those hosts itself. Appended
+    // after backend for the same reason backend was: the columns
+    // already in the row keep their positions.
     _add(
       TelemetryKind.sample,
       '${sample.sourceId} '
       'window=${sample.interval.endMs - sample.interval.startMs}ms '
-      'auth=${sample.authLevel.name}$backendField',
+      'auth=${sample.authLevel.name}$backendField '
+      'group=${sample.groupId}',
     );
   }
 

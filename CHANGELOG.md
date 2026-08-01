@@ -243,6 +243,28 @@
 
 ### Added
 
+- **Example app: the Beauty Parade can now benchmark NTP, and every
+  sample row reports its group.** Section 7 gains an "Include curated
+  NTP inventory" toggle that drops the `disableNtpForTesting` seam
+  from the next reconfigure, so the engine builds sources for all 51
+  hosts and narrows them per cycle through its own quorum/explorer
+  partition. With the chip grid empty and the toggle on, the run is
+  NTP-only.
+
+  There is no per-host NTP chip grid, and that is the point. NTP host
+  selection is not consumer-settable, so anything resembling the NTS
+  chips would have to reach around the library — and would measure a
+  hand-picked subset rather than the partition that actually ships.
+  The toggle exercises the selection logic itself.
+
+  Separately, the telemetry row now carries `group=`. It was already
+  on `TimeSample` but never rendered, which hid the one field that
+  distinguishes a genuinely independent quorum from a wide-looking
+  one — and hid that the token means different things per source
+  type: registrable domain for NTS, ASN observed at sample time for
+  NTP. Appended after `backend` so existing columns keep their
+  positions.
+
 - **`NtpServerInfo`, `NtpServerTier`, `NtpLeapPolicy`, and
   `config.ntpInventory`.** The curated inventory carries per-host
   metadata rather than bare strings: the curation tier a host was

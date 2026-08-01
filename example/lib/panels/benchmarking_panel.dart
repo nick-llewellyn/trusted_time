@@ -11,6 +11,8 @@ class BenchmarkingPanel extends StatelessWidget {
     required this.pool,
     required this.worldwidePoolSize,
     required this.selected,
+    required this.ntpEnabled,
+    required this.ntpInventorySize,
     required this.worldwideRotationActive,
     required this.worldwideRotationOffset,
     required this.worldwideSubsetSize,
@@ -23,6 +25,7 @@ class BenchmarkingPanel extends StatelessWidget {
     required this.onRunWorldwide,
     required this.onDnsCapOverrideChanged,
     required this.onToggleServer,
+    required this.onToggleNtp,
     required this.onToggleContinuous,
     required this.onDelayChanged,
     required this.onApply,
@@ -45,6 +48,12 @@ class BenchmarkingPanel extends StatelessWidget {
 
   /// Hosts currently picked via the manual chips.
   final Set<String> selected;
+
+  /// Whether the curated NTP inventory joins the next reconfigure.
+  final bool ntpEnabled;
+
+  /// Number of hosts in the library's curated NTP inventory.
+  final int ntpInventorySize;
 
   /// Whether a forceResync is chained after every cycle.
   final bool continuousEnabled;
@@ -72,6 +81,9 @@ class BenchmarkingPanel extends StatelessWidget {
 
   /// Reports a manual chip toggle for [host].
   final void Function(String host, bool picked) onToggleServer;
+
+  /// Reports a change to NTP participation.
+  final ValueChanged<bool> onToggleNtp;
 
   /// Reports a change to the continuous-sync toggle.
   final ValueChanged<bool> onToggleContinuous;
@@ -211,6 +223,31 @@ class BenchmarkingPanel extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 8),
+        // NTP participation. Unlike the NTS chips above there is no
+        // per-host control: the curated NTP inventory is not
+        // consumer-settable, so the engine builds sources for all of
+        // it and narrows them per cycle through its own quorum and
+        // explorer partition. Enabling this therefore benchmarks the
+        // selection logic the library ships rather than a hand-picked
+        // subset. Takes effect on the next Apply Selection or
+        // worldwide run.
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+          title: const Text('Include curated NTP inventory'),
+          subtitle: Text(
+            ntpEnabled
+                ? 'Engine partitions $ntpInventorySize NTP hosts per '
+                      'cycle (quorum + explorers) alongside the NTS '
+                      'selection. Applies on next reconfigure.'
+                : 'NTS only — NTP suppressed so it cannot contend for '
+                      'the cycle budget.',
+            style: const TextStyle(fontSize: 12),
+          ),
+          value: ntpEnabled,
+          onChanged: reconfiguring ? null : onToggleNtp,
+        ),
+        const SizedBox(height: 4),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           dense: true,
@@ -270,9 +307,16 @@ class BenchmarkingPanel extends StatelessWidget {
             label: Text(
               reconfiguring
                   ? 'Reconfiguring…'
+                  : selected.isEmpty && ntpEnabled
+                  ? 'Apply Selection (NTP only)'
                   : 'Apply Selection (${selected.length})',
             ),
-            onPressed: (reconfiguring || selected.isEmpty) ? null : onApply,
+            // An empty chip set is applicable once NTP is on — that is
+            // how an NTP-only run is requested. Without it the engine
+            // would come up with no sources at all.
+            onPressed: (reconfiguring || (selected.isEmpty && !ntpEnabled))
+                ? null
+                : onApply,
           ),
         ),
         const SizedBox(height: 8),

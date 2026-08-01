@@ -48,6 +48,20 @@ class BenchmarkController extends ChangeNotifier {
     TrustedTime.config.ntsServers,
   );
 
+  /// Whether the library's curated NTP inventory participates in the
+  /// parade alongside the selected NTS hosts.
+  ///
+  /// Off by default: the NTS measurements are the ones the chip grid
+  /// and the rotation are built around, and NTP contends with them for
+  /// each cycle's budget. Turning it on drops the `disableNtpForTesting`
+  /// seam from the next reconfigure, at which point the engine builds
+  /// sources for the curated inventory and narrows them per cycle
+  /// through its own quorum/explorer partition. There is deliberately
+  /// no per-host NTP selection: unlike [ntsServers], the NTP host list
+  /// is not consumer-settable, so the parade measures the partition the
+  /// library actually ships rather than a hand-picked subset.
+  bool _ntpEnabled = false;
+
   /// [_continuousSyncEnabled] gates the cycle-end auto-resync hook,
   /// which is wired in [start] via the recorder's cycle-end listener
   /// so it survives reconfiguration cycles without re-subscription.
@@ -101,6 +115,7 @@ class BenchmarkController extends ChangeNotifier {
   bool _disposed = false;
 
   Set<String> get selectedServers => UnmodifiableSetView(_selectedServers);
+  bool get ntpEnabled => _ntpEnabled;
   bool get continuousSyncEnabled => _continuousSyncEnabled;
   bool get reconfiguring => _reconfiguring;
   int get interCycleDelaySeconds => _interCycleDelaySeconds;
@@ -178,6 +193,17 @@ class BenchmarkController extends ChangeNotifier {
     } else {
       _selectedServers.remove(host);
     }
+    notifyListeners();
+  }
+
+  /// Flips NTP participation for the *next* reconfigure.
+  ///
+  /// Deliberately does not reconfigure on its own: the operator presses
+  /// Apply Selection (or Run Worldwide Beauty Parade) to adopt it, which
+  /// keeps the "nothing changes under the engine until you say so"
+  /// contract the chip grid already has.
+  void setNtpEnabled(bool enabled) {
+    _ntpEnabled = enabled;
     notifyListeners();
   }
 
@@ -406,7 +432,11 @@ class BenchmarkController extends ChangeNotifier {
   /// "go back to chip-driven control" gesture. Delegates to
   /// [_reconfigureEngine] for the actual init.
   Future<void> applySelectedServers() async {
-    if (_selectedServers.isEmpty || _reconfiguring) return;
+    // An empty chip set is a valid configuration once NTP is on — it
+    // is how an operator asks for an NTP-only run. Without NTP it
+    // would leave the engine with no sources at all, so the guard
+    // stays for that case.
+    if ((_selectedServers.isEmpty && !_ntpEnabled) || _reconfiguring) return;
     if (_worldwideRotationActive) {
       _worldwideRotationActive = false;
       notifyListeners();
@@ -428,7 +458,7 @@ class BenchmarkController extends ChangeNotifier {
   /// Run Worldwide Beauty Parade press, and every per-cycle rotation
   /// step inside the worldwide mode.
   Future<void> _reconfigureEngine(List<String> servers) async {
-    if (servers.isEmpty || _reconfiguring) return;
+    if ((servers.isEmpty && !_ntpEnabled) || _reconfiguring) return;
     // Drop any in-flight inter-cycle timer so it cannot fire a
     // forceResync against the engine instance we are about to dispose.
     _cancelInterCycleTimer();
@@ -441,12 +471,16 @@ class BenchmarkController extends ChangeNotifier {
       )..shuffle(Random())).toList(growable: false);
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
-          // The Beauty Parade benchmarks NTS hosts in isolation; the
-          // library's curated NTP inventory would contend with them for
-          // every cycle's budget. Diagnostic harness, so the test seam
-          // is used deliberately.
+          // NTP is suppressed by default so the Beauty Parade
+          // benchmarks NTS hosts in isolation — the curated inventory
+          // would otherwise contend with them for every cycle's
+          // budget. When the operator enables it the seam is dropped
+          // and the engine builds sources for the whole inventory,
+          // narrowing them per cycle through its own quorum/explorer
+          // partition. Diagnostic harness, so the test seam is used
+          // deliberately.
           // ignore: invalid_use_of_visible_for_testing_member
-          disableNtpForTesting: true,
+          disableNtpForTesting: !_ntpEnabled,
           ntsServers: shuffled,
           maxConcurrentDnsLookups: _maxConcurrentDnsLookupsOverride,
           minimumQuorum: 2,
