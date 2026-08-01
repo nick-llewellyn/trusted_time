@@ -445,6 +445,14 @@ final class TrustedTimeImpl {
         await _store.loadExplorerBoostRemaining() ??
             SyncEngine.explorerBoostCycles,
       );
+      // Adopt the anycast baseline this install last measured. Without
+      // it the detector re-warms from cold every launch, and the case
+      // it exists for is the one it would miss: a device is most often
+      // moved while the app is closed, and the first observation after
+      // launch would become the baseline -- so the new network reads as
+      // where this install has always been.
+      final baseline = await _store.loadVantageBaseline();
+      if (baseline != null) _syncEngine.restoreVantageBaseline(baseline);
     }
 
     // The persisted-anchor restore check runs before any network-bound
@@ -618,25 +626,11 @@ final class TrustedTimeImpl {
       // identically. Save runs before _applyAnchor: a storage failure
       // surfaces as a failed cycle rather than leaving in-memory state
       // ahead of what the next warm restore will read back.
-      final boostBefore = _syncEngine.explorerBoostRemaining;
       final anchor = await performSyncCycle(
         engine: _syncEngine,
         store: _store,
         config: _config,
       );
-      // Persist the decayed front-load so it spans launches instead of
-      // restarting every process start. Foreground only — the boost is
-      // never armed headlessly — and written only on the cycles where
-      // the count actually moved, so it stops being written once the
-      // front-load is spent. Best-effort for the same reason the stats
-      // snapshot is: the anchor is already banked, and losing one
-      // decrement costs an install one extra wide cycle.
-      final boostAfter = _syncEngine.explorerBoostRemaining;
-      if (_config.persistState && boostAfter != boostBefore) {
-        try {
-          await _store.saveExplorerBoostRemaining(boostAfter);
-        } catch (_) {}
-      }
       // The anchor's readings are backdated to the consensus reference
       // instant (see SyncEngine._createAnchor), so the projection must
       // be seeded with the gap between that instant and now — the same

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
 import 'package:trusted_time/src/domain/explorer_shuffle.dart';
+import 'package:trusted_time/src/domain/vantage_baseline.dart';
 import 'package:trusted_time/src/drift_history.dart';
 import 'package:trusted_time/src/source_quality_tracker.dart';
 
@@ -337,6 +338,25 @@ void main() {
     });
   });
 
+  group('InMemoryAnchorStorage vantage baseline', () {
+    test('starts absent, round-trips, and clears with clear()', () async {
+      final storage = InMemoryAnchorStorage();
+      expect(await storage.loadVantageBaseline(), isNull);
+
+      const baseline = VantageBaseline(
+        ewmaRttMs: 27.5,
+        observationCount: 4,
+        pendingShiftCount: 1,
+        epoch: 3,
+      );
+      await storage.saveVantageBaseline(baseline);
+      expect(await storage.loadVantageBaseline(), baseline);
+
+      await storage.clear();
+      expect(await storage.loadVantageBaseline(), isNull);
+    });
+  });
+
   group('AnchorStore source stats (mocked secure storage)', () {
     const storageChannel = MethodChannel(
       'plugins.it_nomads.com/flutter_secure_storage',
@@ -647,6 +667,136 @@ void main() {
 
       expect(
         deletedKeys.where((k) => k.startsWith(boostKeyPrefix)),
+        hasLength(1),
+      );
+    });
+  });
+
+  group('AnchorStore vantage baseline (mocked secure storage)', () {
+    const storageChannel = MethodChannel(
+      'plugins.it_nomads.com/flutter_secure_storage',
+    );
+    const baselineKeyPrefix = 'tt_vantage_baseline_';
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, null);
+    });
+
+    void mockRead(String? stored, {List<String>? deletedKeys}) {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            final key = (call.arguments as Map)['key'] as String?;
+            if (call.method == 'delete') {
+              if (key != null) deletedKeys?.add(key);
+              return null;
+            }
+            if (call.method == 'read' &&
+                (key?.startsWith(baselineKeyPrefix) ?? false)) {
+              return stored;
+            }
+            return null;
+          });
+    }
+
+    test('returns null when nothing is stored', () async {
+      mockRead(null);
+      expect(await AnchorStore().loadVantageBaseline(), isNull);
+    });
+
+    test('decodes a stored baseline', () async {
+      mockRead(
+        jsonEncode({
+          'ewmaRttMs': 27.5,
+          'observationCount': 4,
+          'pendingShiftCount': 1,
+          'epoch': 3,
+        }),
+      );
+      expect(
+        await AnchorStore().loadVantageBaseline(),
+        const VantageBaseline(
+          ewmaRttMs: 27.5,
+          observationCount: 4,
+          pendingShiftCount: 1,
+          epoch: 3,
+        ),
+      );
+    });
+
+    test('a corrupt baseline is treated as absent and deleted', () async {
+      // Absence re-warms the detector, so corruption costs an install
+      // its warmup cycles, never a bootstrap. The NaN case is the one
+      // that matters most: it would never register the shift that
+      // would replace it, leaving the detector dead for the install.
+      final payloads = [
+        'not-json',
+        jsonEncode([1, 2, 3]),
+        jsonEncode({
+          'observationCount': -1,
+          'pendingShiftCount': 0,
+          'epoch': 0,
+        }),
+        jsonEncode({
+          'ewmaRttMs': 'NaN',
+          'observationCount': 1,
+          'pendingShiftCount': 0,
+          'epoch': 0,
+        }),
+      ];
+      for (final raw in payloads) {
+        final deletedKeys = <String>[];
+        mockRead(raw, deletedKeys: deletedKeys);
+
+        expect(await AnchorStore().loadVantageBaseline(), isNull, reason: raw);
+        expect(
+          deletedKeys.where((k) => k.startsWith(baselineKeyPrefix)),
+          hasLength(1),
+          reason: raw,
+        );
+      }
+    });
+
+    test('writes the baseline JSON under the baseline key', () async {
+      final written = <String, String?>{};
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            if (call.method == 'write') {
+              final args = call.arguments as Map;
+              written[args['key'] as String] = args['value'] as String?;
+            }
+            return null;
+          });
+
+      await AnchorStore().saveVantageBaseline(
+        const VantageBaseline(ewmaRttMs: 30, observationCount: 2, epoch: 1),
+      );
+
+      final raw = written.entries
+          .singleWhere((e) => e.key.startsWith(baselineKeyPrefix))
+          .value;
+      expect(jsonDecode(raw!), {
+        'ewmaRttMs': 30.0,
+        'observationCount': 2,
+        'pendingShiftCount': 0,
+        'epoch': 1,
+      });
+    });
+
+    test('clear() deletes the persisted baseline', () async {
+      final deletedKeys = <String>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(storageChannel, (call) async {
+            if (call.method == 'delete') {
+              deletedKeys.add((call.arguments as Map)['key'] as String);
+            }
+            return null;
+          });
+
+      await AnchorStore().clear();
+
+      expect(
+        deletedKeys.where((k) => k.startsWith(baselineKeyPrefix)),
         hasLength(1),
       );
     });

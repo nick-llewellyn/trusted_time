@@ -52,6 +52,7 @@ class FakeSource implements TimeSource {
     required this.utc,
     this.shouldThrow = false,
     this.failuresBeforeSuccess = 0,
+    this.delayMs = 30,
   });
 
   final String idValue;
@@ -59,6 +60,10 @@ class FakeSource implements TimeSource {
   final DateTime utc;
   final bool shouldThrow;
   final int failuresBeforeSuccess;
+
+  /// Round trip reported on every sample, mutable so one source can be
+  /// walked across a simulated network move between cycles.
+  int delayMs;
 
   /// Total [getTime] invocations, across engine instances.
   int calls = 0;
@@ -80,7 +85,7 @@ class FakeSource implements TimeSource {
       interval: TimeInterval(startMs: mid - 15, endMs: mid + 15),
       sourceId: idValue,
       groupId: groupIdValue,
-      delayMs: 30,
+      delayMs: delayMs,
     );
   }
 }

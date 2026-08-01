@@ -4,6 +4,7 @@ import 'package:trusted_time/src/anchor_store.dart';
 import 'package:trusted_time/src/background_sync.dart';
 import 'package:trusted_time/src/domain/explorer_shuffle.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
+import 'package:trusted_time/src/domain/vantage_baseline.dart';
 import 'package:trusted_time/src/models.dart';
 
 import 'support/fake_clocks.dart';
@@ -441,6 +442,94 @@ void main() {
             reason: '$platform should reuse the Android schedule',
           );
         }
+      });
+    });
+
+    // A device is most often moved while the app is closed, which is
+    // the window only the headless worker covers. Restoring without
+    // saving would be worse than not restoring: every run would
+    // re-detect the same shift against a baseline that never advanced,
+    // and re-mark every source stale, indefinitely.
+    group('vantage baseline', () {
+      /// Three anycast hosts (the baseline's responder floor) answering
+      /// at [rttMs], each in its own group so consensus is reachable.
+      TrustedTimeConfig anycastConfig(int rttMs, {bool persistState = true}) =>
+          TrustedTimeConfig(
+            disableNtpForTesting: true,
+            ntsServers: const [],
+            persistState: persistState,
+            minimumQuorum: 2,
+            minGroupCount: 1,
+            ntpInventoryForTesting: [
+              for (var i = 0; i < 3; i++)
+                NtpServerInfo(
+                  host: 'any$i.test',
+                  tier: NtpServerTier.anycast,
+                  observedStratum: 1,
+                  observedGroupId: 'g$i',
+                  leapPolicy: NtpLeapPolicy.documentedStepping,
+                ),
+            ],
+            additionalSources: [
+              for (var i = 0; i < 3; i++)
+                FakeSource(
+                  idValue: '${TimeSource.prefixNtp}any$i.test',
+                  groupIdValue: 'g$i',
+                  utc: consensusUtc,
+                  delayMs: rttMs,
+                ),
+            ],
+          );
+
+      test('a headless cycle banks the baseline it measured', () async {
+        final store = InMemoryAnchorStorage();
+        final result = await runBackgroundSync(
+          config: anycastConfig(25),
+          store: store,
+          clock: FakeMonotonicClock(value: 5000),
+        );
+
+        expect(result, isA<BackgroundSyncSuccess>());
+        expect((await store.loadVantageBaseline())?.ewmaRttMs, 25);
+      });
+
+      test('a move is detected across two runs', () async {
+        // The detector debounces over two observations, so this can
+        // only pass if each run restores what the last one saved: a
+        // run that started cold would see one out-of-band cycle and
+        // stop there, every time.
+        final store = InMemoryAnchorStorage();
+        await store.saveVantageBaseline(
+          const VantageBaseline(ewmaRttMs: 25, observationCount: 5),
+        );
+
+        await runBackgroundSync(
+          config: anycastConfig(400),
+          store: store,
+          clock: FakeMonotonicClock(value: 5000),
+        );
+        expect(
+          (await store.loadVantageBaseline())?.epoch,
+          0,
+          reason: 'one out-of-band cycle is weather',
+        );
+
+        await runBackgroundSync(
+          config: anycastConfig(400),
+          store: store,
+          clock: FakeMonotonicClock(value: 6000),
+        );
+        expect((await store.loadVantageBaseline())?.epoch, 1);
+      });
+
+      test('persistState: false neither reads nor writes it', () async {
+        final store = InMemoryAnchorStorage();
+        await runBackgroundSync(
+          config: anycastConfig(25, persistState: false),
+          store: store,
+          clock: FakeMonotonicClock(value: 5000),
+        );
+        expect(await store.loadVantageBaseline(), isNull);
       });
     });
 

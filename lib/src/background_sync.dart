@@ -323,6 +323,17 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
       ? await anchorStore.loadSourceStats()
       : const <String, SourceQualityStats>{};
 
+  // Likewise once per run. The detector has to run headlessly or it
+  // misses the case it was written for: a device is most often moved
+  // while the app is closed, so the background worker covers the window
+  // the foreground path cannot see. performSyncCycle persists whatever
+  // the banked cycle leaves behind, which keeps the two symmetric --
+  // restoring without saving would have each run re-detect the same
+  // shift against a baseline that never advanced.
+  final persistedBaseline = effectiveConfig.persistState
+      ? await anchorStore.loadVantageBaseline()
+      : null;
+
   // Likewise resolved once per run, not per attempt: the walk order is
   // a property of the install, so retries within one run must explore
   // the same hosts rather than re-drawing the explorer set each time.
@@ -346,6 +357,9 @@ Future<TrustedTimeBackgroundResult> runBackgroundSync({
       clock: monotonicClock,
       explorerShuffle: explorerShuffle,
     )..restoreSourceStats(persistedStats);
+    if (persistedBaseline != null) {
+      engine.restoreVantageBaseline(persistedBaseline);
+    }
     try {
       // Shared query-and-bank unit (sync + persistState-gated save) —
       // the same cycle the foreground engine runs, so a headless anchor
