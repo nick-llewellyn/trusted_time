@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'domain/explorer_shuffle.dart';
+import 'domain/vantage_baseline.dart';
 import 'drift_history.dart';
 import 'models.dart';
 import 'source_quality_tracker.dart';
@@ -79,10 +80,28 @@ abstract interface class AnchorStorage {
   /// re-arm the boost on the next launch. Implementations enforce this
   /// with a [RangeError] in all build modes.
   ///
-  /// Written by the foreground path only, and only on the cycles where
-  /// the count actually changes — so it stops being written entirely
-  /// once the boost is spent.
+  /// Written only on the cycles where the count actually changes — so
+  /// it stops being written entirely once the boost is spent, and a
+  /// headless cycle (which never arms a front-load at start, and so
+  /// holds zero unless a vantage change arms one) cannot overwrite a
+  /// foreground install's remaining boost with its own zero.
   Future<void> saveExplorerBoostRemaining(int remaining);
+
+  /// Loads the persisted anycast RTT baseline, or `null` when none is
+  /// stored or the stored data is corrupt.
+  ///
+  /// A null return means "re-warm from cold", which costs an install
+  /// the detector's warmup cycles but never fails a bootstrap. See
+  /// [VantageBaseline.fromJson] for which payloads count as corrupt and
+  /// why the bar is deliberately low.
+  Future<VantageBaseline?> loadVantageBaseline();
+
+  /// Persists the anycast RTT baseline, replacing any prior value.
+  ///
+  /// Written only on the cycles where the baseline actually moves, so
+  /// an unobservable cycle — one where too few anycast hosts
+  /// answered — costs no write.
+  Future<void> saveVantageBaseline(VantageBaseline baseline);
 
   /// Wipes all persisted temporal data.
   Future<void> clear();
@@ -95,10 +114,12 @@ abstract interface class AnchorStorage {
 /// the engine to resume trusted time without a network sync after a non-reboot
 /// restart.
 ///
-/// Three values are stored:
+/// The values stored are:
 /// - The full anchor JSON (for warm-start restoration)
 /// - The per-boot drift history JSON (diagnostics across boots)
 /// - The per-source quality stats JSON (durable server ranking)
+/// - The explorer walk seed and remaining front-load (exploration)
+/// - The anycast RTT baseline JSON (vantage-change detection)
 final class AnchorStore implements AnchorStorage {
   /// Hardware-backed secure storage with platform-appropriate configuration.
   static const _storage = FlutterSecureStorage(
@@ -112,6 +133,7 @@ final class AnchorStore implements AnchorStorage {
   static const _keySourceStats = 'tt_source_stats_v1';
   static const _keyExplorerSeed = 'tt_explorer_seed_v1';
   static const _keyExplorerBoost = 'tt_explorer_boost_v1';
+  static const _keyVantageBaseline = 'tt_vantage_baseline_v1';
 
   // Legacy offline-estimation keys (removed feature). Never written or
   // read anymore; still deleted by [clear] so installs upgrading from
@@ -284,6 +306,39 @@ final class AnchorStore implements AnchorStorage {
     await _storage.write(key: _keyExplorerBoost, value: '$remaining');
   }
 
+  /// Loads the anycast RTT baseline, if available.
+  ///
+  /// Corruption is treated as absence: the entry is deleted and `null`
+  /// returned, so the detector re-warms rather than seeding itself with
+  /// a number that would make every subsequent cycle look like a shift.
+  @override
+  Future<VantageBaseline?> loadVantageBaseline() async {
+    try {
+      final raw = await _storage.read(key: _keyVantageBaseline);
+      if (raw == null) return null;
+      final baseline = VantageBaseline.fromJson(
+        jsonDecode(raw) as Map<String, dynamic>,
+      );
+      if (baseline == null) {
+        await _bestEffortDelete(_keyVantageBaseline);
+        return null;
+      }
+      return baseline;
+    } catch (_) {
+      await _bestEffortDelete(_keyVantageBaseline);
+      return null;
+    }
+  }
+
+  /// Persists the anycast RTT baseline as JSON, replacing prior data.
+  @override
+  Future<void> saveVantageBaseline(VantageBaseline baseline) async {
+    await _storage.write(
+      key: _keyVantageBaseline,
+      value: jsonEncode(baseline.toJson()),
+    );
+  }
+
   /// Wipes all persisted temporal data from secure storage.
   @override
   Future<void> clear() async {
@@ -293,6 +348,7 @@ final class AnchorStore implements AnchorStorage {
       _storage.delete(key: _keySourceStats),
       _storage.delete(key: _keyExplorerSeed),
       _storage.delete(key: _keyExplorerBoost),
+      _storage.delete(key: _keyVantageBaseline),
       _storage.delete(key: _keyLegacyLastTrustedUtcMs),
       _storage.delete(key: _keyLegacyLastAnchorWallMs),
     ]);
@@ -311,6 +367,7 @@ final class InMemoryAnchorStorage implements AnchorStorage {
   Map<String, SourceQualityStats> _sourceStats = const {};
   int? _explorerSeed;
   int? _explorerBoostRemaining;
+  VantageBaseline? _vantageBaseline;
 
   @override
   Future<TrustAnchor?> load() async => _anchor;
@@ -374,6 +431,17 @@ final class InMemoryAnchorStorage implements AnchorStorage {
     );
   }
 
+  // No corruption branch either: VantageBaseline is immutable and its
+  // constructor asserts the same invariants fromJson enforces, so a
+  // held instance is one AnchorStore would also hand back.
+  @override
+  Future<VantageBaseline?> loadVantageBaseline() async => _vantageBaseline;
+
+  @override
+  Future<void> saveVantageBaseline(VantageBaseline baseline) async {
+    _vantageBaseline = baseline;
+  }
+
   @override
   Future<void> clear() async {
     _anchor = null;
@@ -381,5 +449,6 @@ final class InMemoryAnchorStorage implements AnchorStorage {
     _sourceStats = const {};
     _explorerSeed = null;
     _explorerBoostRemaining = null;
+    _vantageBaseline = null;
   }
 }

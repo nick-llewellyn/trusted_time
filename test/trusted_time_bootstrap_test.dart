@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/anchor_store.dart';
+import 'package:trusted_time/src/domain/vantage_baseline.dart';
 import 'package:trusted_time/src/source_quality_tracker.dart';
 import 'package:trusted_time/src/sync_engine.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
@@ -632,6 +633,31 @@ void main() {
       expect(await store.loadExplorerBoostRemaining(), 0);
       expect(store.boostWrites, 0);
     });
+
+    test('adopts the persisted vantage baseline', () async {
+      // Without this the detector re-warms from cold every launch, and
+      // the move it exists to catch is the one made while the app was
+      // closed: the first observation after launch would become the
+      // baseline, so the new network reads as home.
+      const persisted = VantageBaseline(
+        ewmaRttMs: 30,
+        observationCount: 5,
+        epoch: 2,
+      );
+      final store = InMemoryAnchorStorage();
+      await store.saveVantageBaseline(persisted);
+
+      final impl = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      addTearDown(impl.dispose);
+      await impl.firstSyncSettled;
+
+      // These sources carry no anycast inventory, so the banked cycle
+      // observes nothing and the restored baseline stands untouched.
+      expect(impl.debugSyncEngine.vantageBaseline, persisted);
+    });
   });
 }
 
@@ -685,6 +711,14 @@ class _CountingBoostStore implements AnchorStorage {
 
   @override
   Future<void> saveExplorerSeed(int seed) => _inner.saveExplorerSeed(seed);
+
+  @override
+  Future<VantageBaseline?> loadVantageBaseline() =>
+      _inner.loadVantageBaseline();
+
+  @override
+  Future<void> saveVantageBaseline(VantageBaseline baseline) =>
+      _inner.saveVantageBaseline(baseline);
 
   @override
   Future<void> clear() => _inner.clear();
