@@ -1,10 +1,11 @@
+import 'time_server_entry.dart';
 import 'time_server_tier.dart';
 
 /// One host in the library's curated plain-NTP inventory, with what a
 /// live probe established about it.
 ///
 /// See `curatedNtpInventory` for the list and its provenance.
-class NtpServerInfo {
+class NtpServerInfo implements TimeServerEntry {
   /// Creates an inventory entry.
   const NtpServerInfo({
     required this.host,
@@ -15,9 +16,11 @@ class NtpServerInfo {
   });
 
   /// The hostname queried over plain NTP.
+  @override
   final String host;
 
   /// Why the host is in the inventory and how it is reached.
+  @override
   final TimeServerTier tier;
 
   /// The stratum reported during the verification probe.

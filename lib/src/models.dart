@@ -3,6 +3,7 @@ export 'data/nts_inventory.dart' show curatedNtsInventory;
 export 'models/confidence_level.dart';
 export 'models/ntp_server_info.dart';
 export 'models/nts_server_info.dart';
+export 'models/time_server_entry.dart';
 export 'models/time_server_tier.dart';
 export 'models/sync_metrics.dart';
 export 'models/trust_anchor.dart';

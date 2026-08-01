@@ -1,8 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/data/ntp_inventory.dart';
+import 'package:trusted_time/src/data/nts_inventory.dart';
 import 'package:trusted_time/src/domain/explorer_shuffle.dart';
 import 'package:trusted_time/src/domain/inventory_partition.dart';
 import 'package:trusted_time/src/models/ntp_server_info.dart';
+import 'package:trusted_time/src/models/nts_server_info.dart';
 import 'package:trusted_time/src/models/time_server_tier.dart';
 
 NtpServerInfo _entry(String host, TimeServerTier tier) => NtpServerInfo(
@@ -174,6 +176,61 @@ void main() {
         lastProbedUtcMs: (_) => null,
       );
       expect(p.all, hasLength(15));
+    });
+  });
+
+  group('partitionInventory over the NTS inventory', () {
+    NtsServerInfo ntsEntry(String host, TimeServerTier tier) => NtsServerInfo(
+      host: host,
+      tier: tier,
+      observedStratum: 2,
+      leapPolicy: LeapPolicy.presumedStepping,
+    );
+
+    test('splits an NTS list on the same tier rule', () {
+      final p = partitionInventory(
+        inventory: [
+          ntsEntry('any.nts.test', TimeServerTier.anycast),
+          ntsEntry('s1.nts.test', TimeServerTier.unicastStratum1),
+          ntsEntry('s2.nts.test', TimeServerTier.unicastStratum2),
+        ],
+        shuffle: const ExplorerShuffle(7),
+        explorerBudget: 99,
+        lastProbedUtcMs: (_) => null,
+      );
+      expect(p.quorum, equals(['any.nts.test']));
+      expect(p.explorers.toSet(), equals({'s1.nts.test', 's2.nts.test'}));
+    });
+
+    test('splits the curated 57 hosts into 3 quorum / 54 explorable', () {
+      final p = partitionInventory(
+        inventory: curatedNtsInventory,
+        shuffle: const ExplorerShuffle(7),
+        explorerBudget: 1000,
+        lastProbedUtcMs: (_) => null,
+      );
+      expect(p.quorum, hasLength(3));
+      expect(p.explorers, hasLength(54));
+      expect(p.all.toSet(), hasLength(57));
+    });
+
+    test('a mixed-protocol list partitions as one pool', () {
+      // Not how the engine uses it — each protocol gets its own call,
+      // with its own budget and staleness lookup. This pins that the
+      // split is keyed on the entry contract and nothing else.
+      final p = partitionInventory(
+        inventory: [
+          _entry('any.ntp.test', TimeServerTier.anycast),
+          ntsEntry('any.nts.test', TimeServerTier.anycast),
+          _entry('uni.ntp.test', TimeServerTier.unicastStratum2),
+          ntsEntry('uni.nts.test', TimeServerTier.unicastStratum2),
+        ],
+        shuffle: const ExplorerShuffle(7),
+        explorerBudget: 99,
+        lastProbedUtcMs: (_) => null,
+      );
+      expect(p.quorum, equals(['any.ntp.test', 'any.nts.test']));
+      expect(p.explorers.toSet(), equals({'uni.ntp.test', 'uni.nts.test'}));
     });
   });
 
