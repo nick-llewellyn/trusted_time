@@ -1724,11 +1724,23 @@ final class SyncEngine {
   /// would let a source's uncertainty estimate read as a move.
   ///
   /// The caller passes the cycle's accumulated queries rather than the
-  /// consensus population: under [TrustedTimeConfig.earlyExit] the
-  /// latter is whoever answered first, and a median of the fast tail is
-  /// systematically below the vantage it is meant to describe. Which
-  /// hosts contributed to the anchor is the wrong question here — the
-  /// measurement is of the network, not of the agreement.
+  /// consensus population, which is a wider set by two kinds of sample:
+  /// one that returned after the anchor was banked, and one the
+  /// listener dropped as an outlier or as invalid. Neither says
+  /// anything about the anchor, and both are round trips the device
+  /// actually measured — which hosts agreed is the wrong question here,
+  /// since the measurement is of the network, not of the agreement.
+  ///
+  /// It is not the full response set. The cycle ends when the completer
+  /// resolves, and under [TrustedTimeConfig.earlyExit] that is before
+  /// the slow half has answered, so a query still in flight at that
+  /// instant is missing here as well. The residual bias is toward the
+  /// fast tail, and where fewer than three anycast hosts have answered
+  /// by then the cycle is simply unobservable and [VantageBaseline]
+  /// leaves the baseline untouched — the detector runs late rather than
+  /// wrong. Waiting for the stragglers would put the baseline behind
+  /// the slowest source in the inventory, which is the latency early
+  /// exit exists to avoid paying, and this detector is not worth it.
   ///
   /// The response keys off the epoch, not off any individual reading:
   /// the baseline debounces internally, so by the time the epoch
@@ -1945,8 +1957,11 @@ class _CycleRescueState {
   /// estimate without a second network round trip.
   ///
   /// Also the vantage baseline's population, for the property that
-  /// motivated the list in the first place: it accumulates every query
-  /// that returned, not only those the consensus happened to be built
-  /// from, so early exit cannot narrow it.
+  /// motivated the list in the first place: it accumulates on the query
+  /// returning rather than on the consensus being built from it, so it
+  /// retains the late and the rejected alike. It is not a record of the
+  /// whole cycle — [SyncEngine._observeVantage] reads it the moment the
+  /// anchor is banked, and under early exit that is before every query
+  /// has landed.
   final ntpSamples = <TimeSample>[];
 }
