@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:trusted_time/src/domain/vantage_baseline.dart';
 
@@ -179,6 +181,159 @@ void main() {
       expect(b.epoch, 1);
       b = settle(b, 25, cycles: 5);
       expect(b.epoch, 2);
+    });
+  });
+
+  group('serialization', () {
+    test('a mid-debounce baseline survives a round trip intact', () {
+      // The pending count has to persist or a process restart would
+      // silently reset the debounce, and a device that moved while
+      // backgrounded would need to re-earn a run it had already half
+      // completed.
+      final source = settle(
+        const VantageBaseline(),
+        25,
+      ).observe([180, 180, 180, 180]);
+      expect(source.pendingShiftCount, 1);
+
+      final restored = VantageBaseline.fromJson(
+        jsonDecode(jsonEncode(source.toJson())),
+      );
+      expect(restored, source);
+    });
+
+    test('a null baseline round trips as null rather than zero', () {
+      // Omitted, not encoded as 0.0 — a zero baseline would read as a
+      // warm vantage at 0 ms and make the first real cycle a shift.
+      const fresh = VantageBaseline();
+      expect(fresh.toJson().containsKey('ewmaRttMs'), isFalse);
+
+      final restored = VantageBaseline.fromJson(
+        jsonDecode(jsonEncode(fresh.toJson())),
+      );
+      expect(restored, fresh);
+      expect(restored?.ewmaRttMs, isNull);
+    });
+
+    test('a malformed payload degrades to no baseline', () {
+      // Null rather than a partially-populated record: losing the
+      // warmup costs three cycles, whereas seeding the detector with a
+      // salvaged number makes every subsequent cycle look like a
+      // shift.
+      expect(VantageBaseline.fromJson(null), isNull);
+      expect(VantageBaseline.fromJson('nonsense'), isNull);
+      expect(VantageBaseline.fromJson(const <String, dynamic>{}), isNull);
+    });
+
+    test('an out-of-range field rejects the whole record', () {
+      Map<String, dynamic> payload({
+        Object? rtt = 25.0,
+        Object? observations = 4,
+        Object? pending = 0,
+        Object? epoch = 1,
+      }) => {
+        'ewmaRttMs': rtt,
+        'observationCount': observations,
+        'pendingShiftCount': pending,
+        'epoch': epoch,
+      };
+
+      expect(VantageBaseline.fromJson(payload()), isNotNull);
+      expect(VantageBaseline.fromJson(payload(rtt: -1)), isNull);
+      expect(VantageBaseline.fromJson(payload(rtt: 'fast')), isNull);
+      expect(VantageBaseline.fromJson(payload(observations: -1)), isNull);
+      expect(VantageBaseline.fromJson(payload(observations: 1.5)), isNull);
+      expect(VantageBaseline.fromJson(payload(pending: -1)), isNull);
+      expect(VantageBaseline.fromJson(payload(epoch: -1)), isNull);
+      expect(VantageBaseline.fromJson(payload(epoch: null)), isNull);
+    });
+
+    test('an integral round trip time decodes as a double', () {
+      // jsonEncode collapses 25.0 to `25`, so the decode has to widen
+      // it back or an equality check against the pre-save value fails.
+      final restored = VantageBaseline.fromJson(
+        jsonDecode(
+          '{"ewmaRttMs":25,"observationCount":4,'
+          '"pendingShiftCount":0,"epoch":1}',
+        ),
+      );
+      expect(restored?.ewmaRttMs, 25.0);
+    });
+  });
+
+  group('value semantics', () {
+    const base = VantageBaseline(
+      ewmaRttMs: 25,
+      observationCount: 4,
+      pendingShiftCount: 1,
+      epoch: 2,
+    );
+
+    test('equality covers every field', () {
+      expect(
+        base,
+        const VantageBaseline(
+          ewmaRttMs: 25,
+          observationCount: 4,
+          pendingShiftCount: 1,
+          epoch: 2,
+        ),
+      );
+      expect(
+        base.hashCode,
+        const VantageBaseline(
+          ewmaRttMs: 25,
+          observationCount: 4,
+          pendingShiftCount: 1,
+          epoch: 2,
+        ).hashCode,
+      );
+
+      expect(
+        base,
+        isNot(
+          const VantageBaseline(
+            observationCount: 4,
+            pendingShiftCount: 1,
+            epoch: 2,
+          ),
+        ),
+      );
+      expect(
+        base,
+        isNot(
+          const VantageBaseline(
+            ewmaRttMs: 25,
+            observationCount: 5,
+            pendingShiftCount: 1,
+            epoch: 2,
+          ),
+        ),
+      );
+      expect(
+        base,
+        isNot(
+          const VantageBaseline(ewmaRttMs: 25, observationCount: 4, epoch: 2),
+        ),
+      );
+      expect(
+        base,
+        isNot(
+          const VantageBaseline(
+            ewmaRttMs: 25,
+            observationCount: 4,
+            pendingShiftCount: 1,
+          ),
+        ),
+      );
+      expect(base, isNot('not a baseline'));
+    });
+
+    test('toString names the epoch and the pending run', () {
+      // Diagnostic only, but these two fields are what a log reader
+      // needs to tell a settled vantage from one mid-debounce.
+      expect(base.toString(), contains('epoch: 2'));
+      expect(base.toString(), contains('pending: 1'));
     });
   });
 }
