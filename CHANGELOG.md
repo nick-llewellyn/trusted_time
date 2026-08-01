@@ -337,7 +337,10 @@
   process death and stops on its own; an install upgrading from a
   version before the counter existed gets one front-load, the same
   posture as a fresh install. Headless background cycles are never
-  front-loaded, so the iOS deadline is unaffected.
+  front-loaded for install age, so the iOS deadline is unaffected;
+  a vantage change (below) can arm one from either path, since that is
+  a condition the device is in whether or not the app is in front of
+  anyone.
 
   Exploratory probes run outside the cycle's critical path under their
   own 2 s timeout: they feed the ranking only and cannot contribute to
@@ -346,6 +349,43 @@
   For the same reason the reported `confidence` breakdown divides by
   the consensus-eligible sources only — the coverage ratios do not move
   with the exploration width.
+
+- **A server ranking is now discarded when the device changes network
+  position.** The ranking is a proximity ordering, so it is only valid
+  from where it was measured: after intercontinental travel, a VPN
+  toggled, or Wi-Fi handed over to cellular, an install keeps preferring
+  the hosts that were nearest to somewhere it no longer is, and only
+  unlearns them one slow probe at a time.
+
+  Each cycle now folds the median round trip of the anycast quorum into
+  a smoothed baseline. Those hosts resolve to whatever instance is
+  nearest the caller, so their round trip measures the caller's position
+  rather than any property of a server — which is what makes them a
+  vantage signal at all, and why the unicast tier is excluded from it.
+  RTT is used rather than a geographic signal because geography lies
+  under a VPN and lags under travel, while the round trip is measured
+  rather than asserted.
+
+  A move must clear both a 1.8x ratio against the baseline and a 40 ms
+  absolute floor, and must hold for two consecutive observations, before
+  it counts. When it does, every source returns to the unprobed head of
+  the explorer walk and the front-load is re-armed for eight cycles, so
+  the inventory is re-ranked from the new position in a handful of
+  cycles rather than the dozen-plus a narrow platform budget would take.
+  A cycle where fewer than three anycast hosts answered is not evidence
+  either way and leaves the baseline untouched; the detector runs late
+  rather than wrong.
+
+  The baseline is persisted (`tt_vantage_baseline_v1`, gated on
+  `persistState` like the anchor) and maintained by the headless
+  background worker as well as the foreground. Both halves matter: a
+  device is most often moved while the app is closed, and a detector
+  that re-warmed from cold each launch would take its first
+  post-launch observation as the baseline and read the new network as
+  home. Losing the payload costs an install its warmup and nothing else.
+
+  No configuration surface changed, and no public symbol was added —
+  the detection is internal to source selection.
 
 ### Fixed
 
