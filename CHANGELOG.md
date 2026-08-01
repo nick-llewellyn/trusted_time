@@ -265,6 +265,24 @@
   NTP. Appended after `backend` so existing columns keep their
   positions.
 
+- **`NtsServerInfo` and `curatedNtsInventory`.** The 57 NTS hosts
+  verified by live NTS-KE + AEAD-NTPv4 exchange (`trusted_time-cln`,
+  `trusted_time-2tx`) now ship as library data with per-host metadata,
+  rather than living in the example app as a bare string list. Three
+  anycast hosts spanning three operators, 27 unicast stratum 1, 27
+  unicast stratum 2, across 24 registrable-domain groups.
+
+  Exported but not yet wired into the engine: `ntsServers` still
+  comes from `TrustedTimeConfig`, and NTS still passes through the
+  per-cycle partition unnarrowed. Both change in a following release
+  note.
+
+  `NtsServerInfo` records no group id, unlike `NtpServerInfo`. An NTS
+  group is the registrable domain of the hostname, which is derivable
+  from the host and identical at every vantage, so there is nothing to
+  observe and record — where the plain-NTP group is an autonomous
+  system a probe had to resolve.
+
 - **`NtpServerInfo`, `TimeServerTier`, `LeapPolicy`, and
   `config.ntpInventory`.** The curated inventory carries per-host
   metadata rather than bare strings: the curation tier a host was
