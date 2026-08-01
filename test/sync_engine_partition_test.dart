@@ -113,23 +113,23 @@ class _CountingNtpSource implements TimeSource {
     for (var i = 0; i < anycast; i++)
       NtpServerInfo(
         host: 'any$i.test',
-        tier: NtpServerTier.anycast,
+        tier: TimeServerTier.anycast,
         observedStratum: 1,
         observedGroupId: 'as1',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       ),
     for (var i = 0; i < unicast; i++)
       NtpServerInfo(
         host: 'uni$i.test',
-        tier: NtpServerTier.unicastStratum1,
+        tier: TimeServerTier.unicastStratum1,
         observedStratum: 1,
         observedGroupId: 'as1',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       ),
   ];
   final sources = [
     for (final e in entries)
-      if (hangingUnicast && e.tier != NtpServerTier.anycast)
+      if (hangingUnicast && e.tier != TimeServerTier.anycast)
         _HangingNtpSource(e.host)
       else
         _FakeNtpSource(e.host),

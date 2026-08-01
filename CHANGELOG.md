@@ -265,11 +265,16 @@
   NTP. Appended after `backend` so existing columns keep their
   positions.
 
-- **`NtpServerInfo`, `NtpServerTier`, `NtpLeapPolicy`, and
+- **`NtpServerInfo`, `TimeServerTier`, `LeapPolicy`, and
   `config.ntpInventory`.** The curated inventory carries per-host
   metadata rather than bare strings: the curation tier a host was
   admitted under, the stratum and autonomous system a live probe
   observed, and how firmly its leap-second behaviour is established.
+  The tier and leap-policy enums are deliberately protocol-neutral:
+  neither describes anything NTP-specific, so the NTS inventory
+  classifies its hosts on the same three-way split and the same
+  evidence grades, and the per-cycle partition reads a tier without
+  knowing which protocol will carry the query.
   Source selection needs the tier to know which hosts are
   self-localizing, and the group id to avoid drawing a quorum that
   counts one operator eleven times; both were previously recoverable
@@ -326,7 +331,7 @@
   the device is and need no per-install ranking — plus a bounded sample
   of the 41 vantage-dependent unicast hosts, whose proximity varies by
   where the device happens to be and so has to be measured. That is the
-  `NtpServerTier.anycast` tier in full, against a rotating slice of the
+  `TimeServerTier.anycast` tier in full, against a rotating slice of the
   two unicast tiers, rather than all 51 hosts every cycle. The unicast
   sample rotates by staleness, never-probed first, so every host is
   still measured; it just takes a few cycles rather than one. An

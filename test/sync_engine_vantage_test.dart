@@ -64,18 +64,18 @@ const _explorerRttMs = 900;
     for (var i = 0; i < 4; i++)
       NtpServerInfo(
         host: 'any$i.test',
-        tier: NtpServerTier.anycast,
+        tier: TimeServerTier.anycast,
         observedStratum: 1,
         observedGroupId: 'as1',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       ),
     for (var i = 0; i < 4; i++)
       NtpServerInfo(
         host: 'uni$i.test',
-        tier: NtpServerTier.unicastStratum1,
+        tier: TimeServerTier.unicastStratum1,
         observedStratum: 1,
         observedGroupId: 'as1',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       ),
   ];
   final anycast = [for (var i = 0; i < 4; i++) _RttSource('any$i.test', rttMs)];
@@ -151,10 +151,10 @@ void main() {
         for (final host in ['dup.test', 'any.test'])
           NtpServerInfo(
             host: host,
-            tier: NtpServerTier.anycast,
+            tier: TimeServerTier.anycast,
             observedStratum: 1,
             observedGroupId: 'as1',
-            leapPolicy: NtpLeapPolicy.documentedStepping,
+            leapPolicy: LeapPolicy.documentedStepping,
           ),
       ];
       final engine = _engine(
