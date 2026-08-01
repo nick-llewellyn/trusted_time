@@ -401,6 +401,24 @@ void main() {
         expect(t.ranked(['wasFast', 'wasSlow']).first, equals('wasSlow'));
       });
 
+      test('a stale source below neutral stays below a never-seen one', () {
+        // The attenuation is a discount on confidence, not a penalty:
+        // it shrinks the distance from neutral in both directions, so a
+        // source whose record was bad keeps ranking below one with no
+        // record. Nothing has been learned about the new vantage that
+        // would justify promoting it over an unknown.
+        final t = SourceQualityTracker(wallClock: () => 1000);
+        for (var i = 0; i < 8; i++) {
+          t.recordFailure('deadbeat');
+        }
+        t.markVantageStale();
+
+        expect(
+          t.ranked(['deadbeat', 'unknown']),
+          equals(['unknown', 'deadbeat']),
+        );
+      });
+
       test('a probe clears the mark for that source alone', () {
         var wall = 1000;
         final t = SourceQualityTracker(wallClock: () => wall);

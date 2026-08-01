@@ -30,12 +30,21 @@ const int _kStatsStalenessMs = 30 * 24 * 60 * 60 * 1000;
 
 /// How much of a vantage-stale source's score survives the marking.
 ///
-/// The score is pulled toward the 0.5 neutral by this factor, so a stale
-/// entry still outranks a source that has never been seen — its metrics
-/// are old, not absent — while any freshly measured source outranks it.
-/// That is the "breaks ties until fresh measurements arrive" behaviour a
-/// vantage change asks for, and the reason the marking attenuates rather
-/// than deletes.
+/// The score is pulled toward the 0.5 neutral by this factor. Old
+/// metrics are evidence about the wrong network, so the attenuation is
+/// a discount on confidence, not a penalty: it shrinks the distance
+/// from neutral in both directions, leaving a stale source's optimism
+/// and its pessimism equally unearned.
+///
+/// Two consequences follow, and only the first is a guarantee. Ordering
+/// among stale sources is preserved, since the map is monotonic — that
+/// is the "breaks ties until fresh measurements arrive" behaviour a
+/// vantage change asks for, and the reason the marking attenuates
+/// rather than deletes. Ordering against unmarked sources is not
+/// preserved: a stale source above neutral loses to a fresh one of
+/// equal quality, while one below neutral beats it. Both follow from
+/// the same discount, and neither is worth correcting — a source scored
+/// from the wrong vantage is one the walk is about to re-probe anyway.
 const double _kStaleScoreWeight = 0.25;
 
 /// Durable quality statistics for one time source.
@@ -288,8 +297,8 @@ final class SourceQualityTracker {
   /// null [lastProbedUtcMs], which puts the whole inventory back at the
   /// unprobed end of the explorer walk so it is re-swept from the new
   /// vantage. Scores are attenuated toward neutral by
-  /// [_kStaleScoreWeight] so a stale entry ranks above a never-seen
-  /// source and below a freshly measured one.
+  /// [_kStaleScoreWeight], which discounts old evidence without
+  /// reordering the stale sources among themselves.
   ///
   /// Deleting instead would lose the tie-break data and, worse, make
   /// the two cases indistinguishable: a source that has never answered
@@ -403,7 +412,8 @@ final class SourceQualityTracker {
   }
 
   /// When [sourceId] was last probed, in UTC milliseconds, or `null` if
-  /// it has never been probed.
+  /// no probe of it counts from here — either it has never been probed,
+  /// or it was probed from a vantage the device has since left.
   ///
   /// Survives process death via [snapshot] / [restore], which is what
   /// lets the explorer walk resume where it left off without persisting
@@ -502,8 +512,9 @@ final class SourceQualityTracker {
     // they are evidence about the wrong place. Pulling the score toward
     // the 0.5 neutral rather than discarding it keeps the ordering
     // among stale sources — the only ordering available until fresh
-    // measurements land — while guaranteeing a stale source cannot
-    // outrank a freshly measured one of equal quality.
+    // measurements land. The pull is symmetric, so it moves a stale
+    // source across an unmarked one in either direction; see
+    // [_kStaleScoreWeight].
     if (stats != null && stats.vantageStale) {
       return 0.5 + (score - 0.5) * _kStaleScoreWeight;
     }
