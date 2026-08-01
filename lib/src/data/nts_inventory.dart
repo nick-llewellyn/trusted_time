@@ -1,12 +1,31 @@
 /// The curated NTS host inventory shipped with the library.
 ///
-/// 57 verified hosts: the 52 recorded on `trusted_time-cln`
-/// (2026-07-25, UK vantage) plus 5 admitted by the `trusted_time-2tx`
-/// geographic-gap sweep (2026-07-27, same vantage). Every host
-/// completed a full live NTS-KE + AEAD-NTPv4 exchange
-/// (AES-SIV-CMAC-256, platform trust) during its verification probe;
-/// the five later admissions each passed three or more consecutive
-/// exchanges.
+/// 57 verified hosts. Every one completed a full live NTS-KE +
+/// AEAD-NTPv4 exchange (AES-SIV-CMAC-256, platform trust) via
+/// `nts_cli.dart` (`example/bin` of the `nts` package — the NTS
+/// counterpart to this repo's `bin/ntp_cli.dart`), from a UK vantage.
+/// Stratum values are live-measured and win over the upstream YAML
+/// where the two disagree; country codes were cross-referenced against
+/// `jauderho/nts-servers` @ 49994db.
+///
+/// The evidence is not uniform across the three probe runs, and the
+/// difference is worth knowing before treating the list as one batch:
+///
+/// | Run                 | Date       | Hosts | Bar                  |
+/// |---------------------|------------|-------|----------------------|
+/// | `trusted_time-cln`  | 2026-07-25 | 51    | one clean exchange   |
+/// | `trusted_time-cln`  | 2026-07-26 | 1     | one clean exchange   |
+/// | `trusted_time-2tx`  | 2026-07-27 | 5     | 3+ consecutive       |
+///
+/// The 2026-07-26 entry is `sth1.nts.netnod.se`, re-probed during a
+/// reconciliation that found the original table had 51 rows against a
+/// prose count of 52. The `2tx` sweep raised the bar to three or more
+/// consecutive clean exchanges, which is what caught `ntppool1.time.nl`
+/// and `ntppool2.time.nl` — NTS-KE succeeded but the NTP phase was
+/// flaky, so neither was admitted. The 52 earlier hosts were not
+/// re-probed against that stricter bar, so a comparably flaky host
+/// among them would not have been caught. `SourceQualityTracker` is
+/// what surfaces one at runtime.
 ///
 /// ## What is recorded, and what is not
 ///
