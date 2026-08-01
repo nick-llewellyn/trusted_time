@@ -268,14 +268,18 @@
 - **`NtsServerInfo` and `curatedNtsInventory`.** The 57 NTS hosts
   verified by live NTS-KE + AEAD-NTPv4 exchange (`trusted_time-cln`,
   `trusted_time-2tx`) now ship as library data with per-host metadata,
-  rather than living in the example app as a bare string list. Three
-  anycast hosts spanning three operators, 27 unicast stratum 1, 27
-  unicast stratum 2, across 24 registrable-domain groups.
+  where previously the only shipped form was a bare string list in the
+  example app. Three anycast hosts spanning three operators, 27
+  unicast stratum 1, 27 unicast stratum 2, across 24
+  registrable-domain groups.
 
-  Exported but not yet wired into the engine: `ntsServers` still
-  comes from `TrustedTimeConfig`, and NTS still passes through the
-  per-cycle partition unnarrowed. Both change in a following release
-  note.
+  Exported but not yet wired into anything: `ntsServers` still comes
+  from `TrustedTimeConfig`, NTS still passes through the per-cycle
+  partition unnarrowed, and the example app still drives itself from
+  its own `extendedNtsPool` rather than from this inventory. All
+  three change in following release notes; the example is migrated
+  last, once the engine reads the inventory and pointing the example
+  at it means something.
 
   `NtsServerInfo` records no group id, unlike `NtpServerInfo`. An NTS
   group is the registrable domain of the hostname, which is derivable
