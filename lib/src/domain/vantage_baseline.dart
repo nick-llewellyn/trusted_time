@@ -68,7 +68,16 @@ final class VantageBaseline {
     this.observationCount = 0,
     this.pendingShiftCount = 0,
     this.epoch = 0,
-  }) : assert(observationCount >= 0, 'observationCount must be non-negative'),
+  }) : // Written as a pair of comparisons rather than `isFinite` so the
+       // assert stays a potentially-constant expression. NaN fails the
+       // first one, since every comparison against NaN is false; that
+       // is the same property that would make a NaN baseline unable to
+       // ever report the shift that would replace it.
+       assert(
+         ewmaRttMs == null || (ewmaRttMs >= 0 && ewmaRttMs < double.infinity),
+         'ewmaRttMs must be finite and non-negative',
+       ),
+       assert(observationCount >= 0, 'observationCount must be non-negative'),
        assert(pendingShiftCount >= 0, 'pendingShiftCount must be non-negative'),
        assert(epoch >= 0, 'epoch must be non-negative');
 

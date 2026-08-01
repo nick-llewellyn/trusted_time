@@ -273,6 +273,21 @@ void main() {
       );
     });
 
+    test('the constructor rejects the same values fromJson does', () {
+      // fromJson returns null on a bad payload because untrusted input
+      // is an expected condition. In code the same value is a mistake,
+      // so it asserts instead — but the boundary must agree, or the
+      // debug build permits a state the persistence layer refuses.
+      expect(() => VantageBaseline(ewmaRttMs: double.nan), throwsA(anything));
+      expect(
+        () => VantageBaseline(ewmaRttMs: double.infinity),
+        throwsA(anything),
+      );
+      expect(() => VantageBaseline(ewmaRttMs: -1), throwsA(anything));
+      expect(() => const VantageBaseline(ewmaRttMs: 25), returnsNormally);
+      expect(() => const VantageBaseline(), returnsNormally);
+    });
+
     test('a baseline no observation could produce is restored anyway', () {
       // Cross-field consistency is deliberately not enforced. Each of
       // these is unreachable through observe, and each is also erased
