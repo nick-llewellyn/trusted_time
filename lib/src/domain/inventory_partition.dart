@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-import '../models/ntp_server_info.dart';
+import '../models/time_server_entry.dart';
 import '../models/time_server_tier.dart';
 import 'explorer_shuffle.dart';
 
@@ -78,8 +78,15 @@ final class InventoryPartition {
 /// reorders the walk; it exempts nothing from it.
 ///
 /// A non-positive [explorerBudget] yields quorum-only cycles.
+///
+/// Keyed on [TimeServerEntry], so the same split serves the plain-NTP
+/// and the NTS inventories. Nothing here is protocol-specific: the
+/// tier decides the role and the host names the walk, and both
+/// inventories carry those. Callers keep the protocols' budgets and
+/// staleness lookups separate, since an NTS probe costs a TLS
+/// handshake an NTP probe does not.
 InventoryPartition partitionInventory({
-  required List<NtpServerInfo> inventory,
+  required List<TimeServerEntry> inventory,
   required ExplorerShuffle shuffle,
   required int explorerBudget,
   required int? Function(String host) lastProbedUtcMs,

@@ -1,3 +1,4 @@
+import 'time_server_entry.dart';
 import 'time_server_tier.dart';
 
 /// One host in the library's curated NTS inventory, with what a live
@@ -11,7 +12,7 @@ import 'time_server_tier.dart';
 /// [host] alone and identical at every vantage, so recording it here
 /// would store a value that can be computed rather than one that had
 /// to be observed.
-class NtsServerInfo {
+class NtsServerInfo implements TimeServerEntry {
   /// Creates an inventory entry.
   const NtsServerInfo({
     required this.host,
@@ -25,9 +26,11 @@ class NtsServerInfo {
   /// Also the operator identifier: NTS-KE binds the name to a TLS
   /// certificate, so the registrable domain of this string is a
   /// cryptographically backed group key rather than a heuristic.
+  @override
   final String host;
 
   /// Why the host is in the inventory and how it is reached.
+  @override
   final TimeServerTier tier;
 
   /// The stratum reported during the verification probe.

@@ -84,6 +84,7 @@ export 'src/models.dart'
         SyncMetrics,
         NtpServerInfo,
         NtsServerInfo,
+        TimeServerEntry,
         TimeServerTier,
         LeapPolicy,
         curatedNtpInventory,
