@@ -108,6 +108,37 @@ void main() {
       expect(recovered.ewmaRttMs, closeTo(25.2, 0.5));
     });
 
+    test('an unobservable cycle neither advances nor resets the debounce', () {
+      // Consecutiveness is counted over observations, not over cycles.
+      // A partial outage is silence, and silence is not evidence
+      // against a move — it is frequently the move itself, since the
+      // handover that changed the vantage is what suppressed the
+      // quorum.
+      final home = settle(const VantageBaseline(), 25);
+      final pending = home.observe([180, 180, 180, 180]);
+      expect(pending.pendingShiftCount, 1);
+
+      final gap = pending.observe([180, 180]);
+      expect(gap, pending, reason: 'an unobservable cycle changes nothing');
+
+      final moved = gap.observe([180, 180, 180, 180]);
+      expect(moved.epoch, 1, reason: 'the gap did not break the run');
+    });
+
+    test('an in-band cycle across a gap still breaks the run', () {
+      // The reset is the in-band observation's job, and it keeps doing
+      // it regardless of what unobservable cycles sit either side.
+      final home = settle(const VantageBaseline(), 25);
+      var b = home.observe([180, 180, 180, 180]);
+      b = b.observe([180, 180]);
+      b = b.observe([26, 26, 26, 26]);
+      expect(b.pendingShiftCount, 0);
+
+      b = b.observe([180, 180, 180, 180]);
+      expect(b.epoch, 0, reason: 'the run restarted at one');
+      expect(b.pendingShiftCount, 1);
+    });
+
     test('a move toward the network fires on the same evidence', () {
       // Symmetric by construction: leaving a high-latency vantage
       // invalidates the rankings exactly as much as entering one.

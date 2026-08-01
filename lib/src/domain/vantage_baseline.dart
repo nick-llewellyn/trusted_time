@@ -82,7 +82,13 @@ final class VantageBaseline {
   /// Consecutive observations that fell outside the shift band.
   ///
   /// Reset to zero by any in-band observation, so only a sustained
-  /// departure reaches [_kShiftDebounceCycles].
+  /// departure reaches [_kShiftDebounceCycles]. Counted over
+  /// *observations*, not over wall-clock cycles: an unobservable cycle
+  /// neither advances nor resets it, for the same reason it does not
+  /// move the baseline. Clearing it there would make a partial outage
+  /// evidence *against* a shift, which is exactly backwards when the
+  /// network disruption that suppressed the quorum is often the move
+  /// itself.
   final int pendingShiftCount;
 
   /// How many times a vantage change has been detected on this install.
