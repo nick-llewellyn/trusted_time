@@ -3,6 +3,8 @@ import 'dart:convert';
 
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/anchor_store.dart';
+import 'package:trusted_time/src/source_quality_tracker.dart';
 import 'package:trusted_time/src/sync_engine.dart';
 import 'package:trusted_time/src/trusted_time_impl.dart';
 import 'package:trusted_time/trusted_time.dart';
@@ -511,6 +513,181 @@ void main() {
       expect(TrustedTime.getAssessment().syncInProgress, isFalse);
     });
   });
+
+  group('bootstrap restores persisted exploration state', () {
+    // The explore/exploit slices put two reads on the bootstrap path —
+    // the per-install explorer shuffle seed and the front-load counter —
+    // and both fail silently: the engine still syncs, it just walks a
+    // throwaway permutation or never front-loads. Neither is observable
+    // through the assessment, so they are pinned here against an
+    // injected store, at the same entry point production uses.
+    TrustedTimeConfig configWith(List<TimeSource> sources) => TrustedTimeConfig(
+      disableNtpForTesting: true,
+      ntsServers: const [],
+      persistState: true,
+      minimumQuorum: 2,
+      minGroupCount: 1,
+      earlyExit: false,
+      additionalSources: sources,
+    );
+
+    List<TimeSource> twoGoodSources() {
+      final utc = DateTime.utc(2024, 6, 1);
+      return [
+        FakeSource(idValue: 'nts:a', groupIdValue: 'g1', utc: utc),
+        FakeSource(idValue: 'nts:b', groupIdValue: 'g2', utc: utc),
+      ];
+    }
+
+    test('mints an explorer seed on first launch and adopts the same '
+        'one on the next', () async {
+      final store = InMemoryAnchorStorage();
+
+      final first = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      // Registered as well as called inline: the inline dispose is
+      // ordering (the second launch must follow a torn-down first), the
+      // tearDown is containment, so a failing expect above it cannot
+      // leak timers into the next test. dispose is idempotent.
+      addTearDown(first.dispose);
+      await first.firstSyncSettled;
+      final minted = first.debugSyncEngine.explorerShuffle.seed;
+      // Adopted, not merely stored: the engine's own shuffle must be the
+      // persisted one, which is what makes the walk order stable.
+      expect(await store.loadExplorerSeed(), minted);
+      first.dispose();
+
+      // Second "launch" against the same store: no re-mint.
+      final second = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      addTearDown(second.dispose);
+      await second.firstSyncSettled;
+      expect(second.debugSyncEngine.explorerShuffle.seed, minted);
+    });
+
+    test('arms a full front-load when nothing is persisted', () async {
+      // An absent count is a fresh install (or an upgrade from before
+      // the counter existed), not an exhausted boost — the distinction
+      // a stored zero carries.
+      final store = InMemoryAnchorStorage();
+      final impl = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      addTearDown(impl.dispose);
+      await impl.firstSyncSettled;
+
+      // One cycle has banked by now, so the armed count has already
+      // decayed by exactly one.
+      expect(
+        impl.debugSyncEngine.explorerBoostRemaining,
+        SyncEngine.explorerBoostCycles - 1,
+      );
+      expect(
+        await store.loadExplorerBoostRemaining(),
+        SyncEngine.explorerBoostCycles - 1,
+      );
+    });
+
+    test('arms the front-load from the persisted count and banks the '
+        'decrement', () async {
+      final store = InMemoryAnchorStorage();
+      await store.saveExplorerBoostRemaining(3);
+
+      final impl = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      addTearDown(impl.dispose);
+      await impl.firstSyncSettled;
+
+      expect(impl.debugSyncEngine.explorerBoostRemaining, 2);
+      expect(await store.loadExplorerBoostRemaining(), 2);
+    });
+
+    test('a persisted zero leaves the front-load spent', () async {
+      // The write side stops once the count stops moving, so a spent
+      // boost must neither re-arm nor rewrite.
+      final inner = InMemoryAnchorStorage();
+      // Seeded through the inner store so the counter starts at zero and
+      // every write it sees belongs to a cycle. Asserting the *value*
+      // stayed 0 would not pin this: rewriting 0 on every cycle also
+      // leaves it 0, so the guard that stops the writes could be
+      // deleted with the test still green.
+      await inner.saveExplorerBoostRemaining(0);
+      final store = _CountingBoostStore(inner);
+
+      final impl = await TrustedTimeImpl.init(
+        configWith(twoGoodSources()),
+        store: store,
+      );
+      addTearDown(impl.dispose);
+      await impl.firstSyncSettled;
+
+      expect(impl.debugSyncEngine.explorerBoostRemaining, 0);
+      expect(await store.loadExplorerBoostRemaining(), 0);
+      expect(store.boostWrites, 0);
+    });
+  });
+}
+
+/// An [AnchorStorage] that tallies front-load writes, delegating the
+/// rest to a real [InMemoryAnchorStorage].
+///
+/// Delegation rather than a subclass because [InMemoryAnchorStorage] is
+/// `final`; the tally is only meaningful against real storage
+/// behaviour, so the reads still have to round-trip through it.
+class _CountingBoostStore implements AnchorStorage {
+  _CountingBoostStore(this._inner);
+
+  final InMemoryAnchorStorage _inner;
+
+  /// How many times [saveExplorerBoostRemaining] has been called.
+  int boostWrites = 0;
+
+  @override
+  Future<void> saveExplorerBoostRemaining(int remaining) {
+    boostWrites++;
+    return _inner.saveExplorerBoostRemaining(remaining);
+  }
+
+  @override
+  Future<int?> loadExplorerBoostRemaining() =>
+      _inner.loadExplorerBoostRemaining();
+
+  @override
+  Future<TrustAnchor?> load() => _inner.load();
+
+  @override
+  Future<void> save(TrustAnchor anchor) => _inner.save(anchor);
+
+  @override
+  Future<List<DriftBootRecord>> loadDriftHistory() => _inner.loadDriftHistory();
+
+  @override
+  Future<void> saveDriftHistory(List<DriftBootRecord> records) =>
+      _inner.saveDriftHistory(records);
+
+  @override
+  Future<Map<String, SourceQualityStats>> loadSourceStats() =>
+      _inner.loadSourceStats();
+
+  @override
+  Future<void> saveSourceStats(Map<String, SourceQualityStats> stats) =>
+      _inner.saveSourceStats(stats);
+
+  @override
+  Future<int?> loadExplorerSeed() => _inner.loadExplorerSeed();
+
+  @override
+  Future<void> saveExplorerSeed(int seed) => _inner.saveExplorerSeed(seed);
+
+  @override
+  Future<void> clear() => _inner.clear();
 }
 
 /// A [TimeSource] whose [warm] completes after a delay, to exercise a

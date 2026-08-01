@@ -35,7 +35,7 @@ import 'time_assessment.dart';
 final class TrustedTimeImpl {
   TrustedTimeImpl._({
     required TrustedTimeConfig config,
-    required AnchorStore store,
+    required AnchorStorage store,
     required MonotonicClock clock,
   }) : _config = config,
        _store = store,
@@ -67,12 +67,23 @@ final class TrustedTimeImpl {
   }
 
   /// Documented.
-  static Future<TrustedTimeImpl> init(TrustedTimeConfig config) async {
+  ///
+  /// [store] is a testability seam, mirroring the one [runBackgroundSync]
+  /// carries: production callers omit it and get the real secure-storage
+  /// [AnchorStore]. It exists because the bootstrap glue that reads
+  /// persisted state — the explorer shuffle seed and the front-load
+  /// counter — is only reachable through this entry point, and a
+  /// regression in either is silent (the engine still syncs, it just
+  /// walks a throwaway permutation or never front-loads).
+  static Future<TrustedTimeImpl> init(
+    TrustedTimeConfig config, {
+    @visibleForTesting AnchorStorage? store,
+  }) async {
     _instance?.dispose();
     _instance = null;
     final impl = TrustedTimeImpl._(
       config: config,
-      store: AnchorStore(),
+      store: store ?? AnchorStore(),
       clock: PlatformMonotonicClock(),
     );
     // Assign the singleton *before* bootstrapping: _bootstrap() fires
@@ -99,7 +110,7 @@ final class TrustedTimeImpl {
   }
 
   final TrustedTimeConfig _config;
-  final AnchorStore _store;
+  final AnchorStorage _store;
   final MonotonicClock _clock;
   late final SyncEngine _syncEngine;
   final IntegrityMonitor _monitor;
@@ -838,6 +849,15 @@ final class TrustedTimeImpl {
   /// Whether the foreground-resume lifecycle observer is installed.
   @visibleForTesting
   bool get debugLifecycleObserverInstalled => _lifecycle.installed;
+
+  /// The engine this instance bootstrapped.
+  ///
+  /// Exposed so tests can assert what [_bootstrap] restored into it —
+  /// the explorer walk order and the front-load counter — which the
+  /// store alone cannot show: a persisted seed read back out proves the
+  /// store round-tripped, not that the engine adopted the value.
+  @visibleForTesting
+  SyncEngine get debugSyncEngine => _syncEngine;
 
   /// The desktop in-isolate periodic background-sync timer, if armed.
   ///
