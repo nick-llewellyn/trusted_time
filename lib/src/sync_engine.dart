@@ -1224,7 +1224,7 @@ final class SyncEngine {
       if (_explorerBoostRemaining > 0) _explorerBoostRemaining--;
       // After the decay, so a change detected on this cycle arms its
       // full width rather than immediately losing a cycle of it.
-      _observeVantage(samples);
+      _observeVantage(rescueState.ntpSamples);
       return anchor;
     } catch (e) {
       _markSyncFailed(e);
@@ -1723,10 +1723,17 @@ final class SyncEngine {
   /// half-width carries server-side dispersion too, so mixing the two
   /// would let a source's uncertainty estimate read as a move.
   ///
+  /// The caller passes the cycle's accumulated queries rather than the
+  /// consensus population: under [TrustedTimeConfig.earlyExit] the
+  /// latter is whoever answered first, and a median of the fast tail is
+  /// systematically below the vantage it is meant to describe. Which
+  /// hosts contributed to the anchor is the wrong question here — the
+  /// measurement is of the network, not of the agreement.
+  ///
   /// The response keys off the epoch, not off any individual reading:
   /// the baseline debounces internally, so by the time the epoch
   /// advances the shift has already been sustained.
-  void _observeVantage(List<TimeSample> samples) {
+  void _observeVantage(Iterable<TimeSample> samples) {
     final rtts = <int>[
       for (final s in samples)
         if (_anycastIds.contains(s.sourceId) && s.delayMs != null) s.delayMs!,
@@ -1936,5 +1943,10 @@ class _CycleRescueState {
   /// NTP samples collected during this cycle, retained so a rescue
   /// triggered by the cycle's failure can reuse them as its coarse
   /// estimate without a second network round trip.
+  ///
+  /// Also the vantage baseline's population, for the property that
+  /// motivated the list in the first place: it accumulates every query
+  /// that returned, not only those the consensus happened to be built
+  /// from, so early exit cannot narrow it.
   final ntpSamples = <TimeSample>[];
 }
