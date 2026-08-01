@@ -331,6 +331,124 @@ void main() {
       });
     });
 
+    group('vantage staleness', () {
+      /// Gives [id] a settled, high-quality history at [delayMs].
+      void settle(SourceQualityTracker t, String id, int delayMs) {
+        for (var i = 0; i < 8; i++) {
+          t.record(
+            sourceId: id,
+            uncertaintyMs: 10,
+            participatedInConsensus: true,
+            delayMs: delayMs,
+            jitterMs: 2,
+          );
+          t.advanceCycle();
+        }
+      }
+
+      test('marking retains the metrics rather than deleting them', () {
+        var wall = 1000;
+        final t = SourceQualityTracker(wallClock: () => wall);
+        settle(t, 'near', 20);
+        wall = 2000;
+
+        t.markVantageStale();
+
+        final snap = t.snapshot();
+        expect(snap['near']!.ewmaRttMs, closeTo(20, 1));
+        expect(
+          snap['near']!.lastProbedUtcMs,
+          equals(1000),
+          reason: 'the underlying timestamp still governs age-based pruning',
+        );
+      });
+
+      test('a marked source rejoins the unprobed end of the walk', () {
+        // partitionInventory reads lastProbedUtcMs and sorts null
+        // first, so reporting null is what re-sweeps the inventory.
+        final t = SourceQualityTracker(wallClock: () => 1000);
+        settle(t, 'near', 20);
+        expect(t.lastProbedUtcMs('near'), equals(1000));
+
+        t.markVantageStale();
+        expect(t.lastProbedUtcMs('near'), isNull);
+      });
+
+      test('stale data still breaks ties against a never-seen source', () {
+        final t = SourceQualityTracker(wallClock: () => 1000);
+        settle(t, 'near', 20);
+        settle(t, 'far', 900);
+        t.markVantageStale();
+
+        expect(
+          t.ranked(['far', 'unknown', 'near']),
+          equals(['near', 'far', 'unknown']),
+          reason: 'old metrics are wrong about the new vantage, not absent',
+        );
+      });
+
+      test('a fresh measurement outranks a better stale one', () {
+        final t = SourceQualityTracker(wallClock: () => 1000);
+        settle(t, 'wasFast', 20);
+        settle(t, 'wasSlow', 400);
+        t.markVantageStale();
+
+        // wasSlow is re-measured from the new vantage; wasFast is not.
+        // The attenuation has to be strong enough that a 20 ms stale
+        // reading cannot hold its lead over a 400 ms fresh one.
+        t.recordProbe(sourceId: 'wasSlow', delayMs: 400, jitterMs: 2);
+
+        expect(t.ranked(['wasFast', 'wasSlow']).first, equals('wasSlow'));
+      });
+
+      test('a probe clears the mark for that source alone', () {
+        var wall = 1000;
+        final t = SourceQualityTracker(wallClock: () => wall);
+        settle(t, 'a', 20);
+        settle(t, 'b', 20);
+        t.markVantageStale();
+        wall = 2000;
+
+        t.recordProbe(sourceId: 'a', delayMs: 25);
+
+        expect(t.isVantageStale('a'), isFalse);
+        expect(t.lastProbedUtcMs('a'), equals(2000));
+        expect(
+          t.isVantageStale('b'),
+          isTrue,
+          reason: 'recovery is per source, as each is re-measured',
+        );
+      });
+
+      test('a failed probe clears the mark too', () {
+        // Otherwise an unreachable host stays null-cursored and is
+        // re-offered at the head of the walk every cycle, crowding out
+        // the re-exploration the vantage change asked for.
+        final t = SourceQualityTracker(wallClock: () => 1000);
+        settle(t, 'dead', 20);
+        t.markVantageStale();
+
+        t.recordFailure('dead');
+
+        expect(t.isVantageStale('dead'), isFalse);
+        expect(t.lastProbedUtcMs('dead'), equals(1000));
+      });
+
+      test('marking an empty tracker is a no-op', () {
+        final t = SourceQualityTracker()..markVantageStale();
+        expect(t.isVantageStale('never'), isFalse);
+        expect(t.lastProbedUtcMs('never'), isNull);
+        expect(t.ranked(['never']), equals(['never']));
+      });
+
+      test('a source first seen after the mark is not stale', () {
+        final t = SourceQualityTracker(wallClock: () => 1000)
+          ..markVantageStale();
+        t.recordProbe(sourceId: 'new', delayMs: 20);
+        expect(t.isVantageStale('new'), isFalse);
+      });
+    });
+
     group('SourceQualityStats JSON', () {
       test('round-trips all fields', () {
         const stats = SourceQualityStats(
