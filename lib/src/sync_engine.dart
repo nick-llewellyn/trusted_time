@@ -9,6 +9,7 @@ import 'domain/marzullo_engine.dart';
 import 'domain/time_sample.dart';
 import 'domain/time_source.dart';
 import 'domain/time_interval.dart';
+import 'domain/vantage_baseline.dart';
 import 'exceptions.dart' show TransientSourceError, TrustedTimeSyncException;
 import 'models.dart';
 import 'monotonic_clock.dart';
@@ -163,11 +164,33 @@ final class SyncEngine {
 
   /// Foreground cycles still owed the front-loaded explorer budget.
   ///
-  /// Zero — the steady state — everywhere the boost was never armed,
-  /// which includes every headless engine: [armExplorerBoost] is called
-  /// only from the foreground bootstrap, so a background cycle keeps
-  /// the platform budget throughout.
+  /// Zero — the steady state — until something arms it. A headless
+  /// engine is never armed for install age, since only the foreground
+  /// bootstrap calls [armExplorerBoost] for that; it can still be armed
+  /// mid-run by a vantage change, which is a condition the device is in
+  /// whether or not the app is in front of anyone.
   int _explorerBoostRemaining = 0;
+
+  /// The smoothed anycast round trip this install last measured.
+  ///
+  /// Folded once per banked cycle from the quorum's round trips; a rise
+  /// in its epoch is the vantage-change signal. Starts cold, so an
+  /// engine that is never given a persisted baseline spends its first
+  /// [VantageBaseline] warmup cycles unable to report a shift.
+  VantageBaseline _vantageBaseline = const VantageBaseline();
+
+  /// Source ids of the inventory's self-localizing hosts.
+  ///
+  /// The vantage signal is theirs alone: a unicast host's round trip
+  /// moves with where that host is, whereas an anycast one resolves to
+  /// whatever instance is nearest the caller and so moves only with
+  /// where the caller is. Mixing the two would read a distant unicast
+  /// server as a vantage change.
+  late final Set<String> _anycastIds = {
+    for (final entry in _config.ntpInventory)
+      if (entry.tier == NtpServerTier.anycast)
+        '${TimeSource.prefixNtp}${entry.host}',
+  };
 
   /// Shared DNS concurrency budget (ADR 0008).
   ///
@@ -408,18 +431,37 @@ final class SyncEngine {
   /// This install's explorer walk order.
   ExplorerShuffle get explorerShuffle => _explorerShuffle;
 
+  /// Adopts a persisted anycast baseline. Call before the first [sync].
+  ///
+  /// Without it the detector re-warms from cold on every process start,
+  /// and a vantage change that happened while the process was dead is
+  /// never seen: the first observation after launch becomes the
+  /// baseline, so the new network is simply where this install has
+  /// always been.
+  void restoreVantageBaseline(VantageBaseline baseline) =>
+      _vantageBaseline = baseline;
+
+  /// The current anycast baseline, for persistence.
+  VantageBaseline get vantageBaseline => _vantageBaseline;
+
   /// Widens the explorer budget to [boostedExplorerBudget] for the next
   /// [cycles] cycles, then decays to the platform steady state.
   ///
   /// Called by the foreground bootstrap with the persisted remaining
   /// count, so a front-load spans launches instead of restarting (or
-  /// evaporating) on every process start. Background runs never call
-  /// it, which is what keeps the boost foreground-only.
+  /// evaporating) on every process start. No background *bootstrap*
+  /// calls it, so the install-age front-load stays foreground-only.
   ///
   /// Parameterized by count rather than latched to "is this a new
-  /// install" because the same primitive serves vantage-epoch recovery
-  /// (`trusted_time-s34`), which re-arms a temporarily enlarged
-  /// explorer set on a trigger that has nothing to do with install age.
+  /// install" because the same primitive serves vantage-epoch recovery,
+  /// which re-arms on a trigger that has nothing to do with install
+  /// age. That path runs from inside a cycle and so can arm a headless
+  /// engine — deliberately, since a device that moved networks needs
+  /// re-exploration whether or not anyone is looking at it. The boost
+  /// it arms lives only as long as that process: only the foreground
+  /// path persists the remaining count, so a headless recovery is
+  /// re-armed by the next observation instead of resumed.
+  ///
   /// Re-arming while a boost is live replaces the remainder rather than
   /// accumulating: two overlapping triggers mean the exploration should
   /// stay wide for [cycles] more cycles, not for the sum.
@@ -1180,6 +1222,9 @@ final class SyncEngine {
       // is read once, at selection, and the count it depends on cannot
       // move again until that cycle has completed.
       if (_explorerBoostRemaining > 0) _explorerBoostRemaining--;
+      // After the decay, so a change detected on this cycle arms its
+      // full width rather than immediately losing a cycle of it.
+      _observeVantage(rescueState.ntpSamples);
       return anchor;
     } catch (e) {
       _markSyncFailed(e);
@@ -1666,6 +1711,82 @@ final class SyncEngine {
     }
   }
 
+  /// Folds this cycle's anycast round trips into the vantage baseline
+  /// and, on an epoch change, restarts exploration from the new
+  /// vantage.
+  ///
+  /// Fed from [samples] — the blocking population, which is where the
+  /// anycast quorum lands — rather than from the explorer probes, whose
+  /// hosts are unicast and so measure the server's position rather than
+  /// the caller's. A sample without a measured round trip is skipped
+  /// rather than approximated from the interval half-width: the
+  /// half-width carries server-side dispersion too, so mixing the two
+  /// would let a source's uncertainty estimate read as a move.
+  ///
+  /// The caller passes the cycle's accumulated queries rather than the
+  /// consensus population, which is a wider set by two kinds of sample:
+  /// one that returned after the anchor was banked, and one the
+  /// listener dropped as an outlier or as invalid. Neither says
+  /// anything about the anchor, and both are round trips the device
+  /// actually measured — which hosts agreed is the wrong question here,
+  /// since the measurement is of the network, not of the agreement.
+  ///
+  /// It is not the full response set. The cycle ends when the completer
+  /// resolves, and under [TrustedTimeConfig.earlyExit] that is before
+  /// the slow half has answered, so a query still in flight at that
+  /// instant is missing here as well. The residual bias is toward the
+  /// fast tail, and where fewer than three anycast hosts have answered
+  /// by then the cycle is simply unobservable and [VantageBaseline]
+  /// leaves the baseline untouched — the detector runs late rather than
+  /// wrong. Waiting for the stragglers would put the baseline behind
+  /// the slowest source in the inventory, which is the latency early
+  /// exit exists to avoid paying, and this detector is not worth it.
+  ///
+  /// One round trip per host, first answer winning, on the same
+  /// first-seen rule the blocking path's `healthyById` and
+  /// [_launchExplorerProbes] already dedup a colliding id by. A cycle
+  /// can query one id twice — two sources sharing it are collapsed
+  /// while both are healthy, but the starvation rescue re-admits from
+  /// [_sources] directly, so a blacklisted id backed by two instances
+  /// is queried once per instance. The floor is what makes that worth
+  /// guarding rather than the median: [VantageBaseline] counts
+  /// responders to decide whether a cycle is observable at all, and a
+  /// duplicate would let two hosts clear a bar set at three.
+  ///
+  /// The response keys off the epoch, not off any individual reading:
+  /// the baseline debounces internally, so by the time the epoch
+  /// advances the shift has already been sustained.
+  void _observeVantage(Iterable<TimeSample> samples) {
+    final byHost = <String, int>{};
+    for (final s in samples) {
+      final rtt = s.delayMs;
+      if (rtt == null || !_anycastIds.contains(s.sourceId)) continue;
+      byHost.putIfAbsent(s.sourceId, () => rtt);
+    }
+    final rtts = byHost.values;
+    if (rtts.isEmpty) return;
+
+    final previous = _vantageBaseline;
+    _vantageBaseline = previous.observe(rtts);
+    if (_vantageBaseline.epoch == previous.epoch) return;
+
+    if (TrustedTimeLog.enabled) {
+      TrustedTimeLog.log(
+        TrustedTimeLogLevel.info,
+        '[TrustedTime] vantage change detected: anycast baseline moved '
+        '${previous.ewmaRttMs?.round()}ms -> '
+        '${_vantageBaseline.ewmaRttMs?.round()}ms '
+        '(epoch ${_vantageBaseline.epoch}). Re-exploring the inventory.',
+      );
+    }
+    // Both halves of the recovery. The marking returns every source to
+    // the unprobed end of the walk; the boost widens the walk, so the
+    // sweep it just queued completes in a handful of cycles rather than
+    // the dozen-plus a narrow platform budget would take.
+    _qualityTracker.markVantageStale();
+    armExplorerBoost(explorerBoostCycles);
+  }
+
   /// Wraps a source query with timeout and health-tracking logic.
   ///
   /// [rescueState] is the invoking cycle's rescue bookkeeping holder;
@@ -1848,5 +1969,13 @@ class _CycleRescueState {
   /// NTP samples collected during this cycle, retained so a rescue
   /// triggered by the cycle's failure can reuse them as its coarse
   /// estimate without a second network round trip.
+  ///
+  /// Also the vantage baseline's population, for the property that
+  /// motivated the list in the first place: it accumulates on the query
+  /// returning rather than on the consensus being built from it, so it
+  /// retains the late and the rejected alike. It is not a record of the
+  /// whole cycle — [SyncEngine._observeVantage] reads it the moment the
+  /// anchor is banked, and under early exit that is before every query
+  /// has landed.
   final ntpSamples = <TimeSample>[];
 }
