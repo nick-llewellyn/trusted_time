@@ -213,13 +213,13 @@ void main() {
     test('the anycast core spans the tiers it claims', () {
       // mvq partitions on tier: the anycast core is self-localizing
       // and always queried, the unicast hosts are the explore pool.
-      final byTier = <NtpServerTier, int>{};
+      final byTier = <TimeServerTier, int>{};
       for (final entry in curatedNtpInventory) {
         byTier[entry.tier] = (byTier[entry.tier] ?? 0) + 1;
       }
-      expect(byTier[NtpServerTier.anycast], 10);
-      expect(byTier[NtpServerTier.unicastStratum1], 34);
-      expect(byTier[NtpServerTier.unicastStratum2], 7);
+      expect(byTier[TimeServerTier.anycast], 10);
+      expect(byTier[TimeServerTier.unicastStratum1], 34);
+      expect(byTier[TimeServerTier.unicastStratum2], 7);
     });
 
     test('disableNtpForTesting empties the NTP pool', () {
@@ -233,10 +233,10 @@ void main() {
       // can control its shape without the curated 51.
       const entry = NtpServerInfo(
         host: 'fake.test',
-        tier: NtpServerTier.anycast,
+        tier: TimeServerTier.anycast,
         observedStratum: 1,
         observedGroupId: 'as1',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       );
       const config = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
       expect(config.ntpInventory, equals(const [entry]));
@@ -249,10 +249,10 @@ void main() {
       // through unpartitioned for want of a matching inventory entry.
       const entry = NtpServerInfo(
         host: 'fake.test',
-        tier: NtpServerTier.anycast,
+        tier: TimeServerTier.anycast,
         observedStratum: 1,
         observedGroupId: 'as1',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       );
       const config = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
       expect(config.ntpServers, isEmpty);
@@ -266,10 +266,10 @@ void main() {
       // narrow" branch and assert vacuously.
       const entry = NtpServerInfo(
         host: 'fake.test',
-        tier: NtpServerTier.anycast,
+        tier: TimeServerTier.anycast,
         observedStratum: 1,
         observedGroupId: 'as1',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       );
       const config = TrustedTimeConfig(
         disableNtpForTesting: true,
@@ -283,10 +283,10 @@ void main() {
     test('ntpInventoryForTesting participates in equality and hashCode', () {
       const entry = NtpServerInfo(
         host: 'fake.test',
-        tier: NtpServerTier.anycast,
+        tier: TimeServerTier.anycast,
         observedStratum: 1,
         observedGroupId: 'as1',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       );
       const a = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
       const b = TrustedTimeConfig(ntpInventoryForTesting: [entry]);
@@ -318,24 +318,24 @@ void main() {
       // expectation.
       const a = NtpServerInfo(
         host: 'time.example',
-        tier: NtpServerTier.anycast,
+        tier: TimeServerTier.anycast,
         observedStratum: 2,
         observedGroupId: 'as13335',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       );
       const same = NtpServerInfo(
         host: 'time.example',
-        tier: NtpServerTier.anycast,
+        tier: TimeServerTier.anycast,
         observedStratum: 2,
         observedGroupId: 'as13335',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       );
       const differentStratum = NtpServerInfo(
         host: 'time.example',
-        tier: NtpServerTier.anycast,
+        tier: TimeServerTier.anycast,
         observedStratum: 3,
         observedGroupId: 'as13335',
-        leapPolicy: NtpLeapPolicy.documentedStepping,
+        leapPolicy: LeapPolicy.documentedStepping,
       );
 
       expect(a, same);

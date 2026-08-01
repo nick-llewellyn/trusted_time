@@ -464,10 +464,10 @@ void main() {
               for (var i = 0; i < 3; i++)
                 NtpServerInfo(
                   host: 'any$i.test',
-                  tier: NtpServerTier.anycast,
+                  tier: TimeServerTier.anycast,
                   observedStratum: 1,
                   observedGroupId: 'g$i',
-                  leapPolicy: NtpLeapPolicy.documentedStepping,
+                  leapPolicy: LeapPolicy.documentedStepping,
                 ),
             ],
             additionalSources: [

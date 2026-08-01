@@ -188,7 +188,7 @@ final class SyncEngine {
   /// server as a vantage change.
   late final Set<String> _anycastIds = {
     for (final entry in _config.ntpInventory)
-      if (entry.tier == NtpServerTier.anycast)
+      if (entry.tier == TimeServerTier.anycast)
         '${TimeSource.prefixNtp}${entry.host}',
   };
 

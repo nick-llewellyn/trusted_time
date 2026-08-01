@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../models/ntp_server_info.dart';
+import '../models/time_server_tier.dart';
 import 'explorer_shuffle.dart';
 
 /// The hosts one sync cycle queries, split by the role they play.
@@ -46,7 +47,7 @@ final class InventoryPartition {
 
 /// Splits [inventory] into the hosts one cycle queries.
 ///
-/// [NtpServerTier.anycast] hosts become the quorum: they are
+/// [TimeServerTier.anycast] hosts become the quorum: they are
 /// DNS-steered or anycast, so they resolve to something near the caller
 /// from any vantage and need no per-install ranking. Querying all of
 /// them every cycle is what makes day-one time quality independent of
@@ -87,10 +88,10 @@ InventoryPartition partitionInventory({
   final candidates = <String>[];
   for (final entry in inventory) {
     switch (entry.tier) {
-      case NtpServerTier.anycast:
+      case TimeServerTier.anycast:
         quorum.add(entry.host);
-      case NtpServerTier.unicastStratum1:
-      case NtpServerTier.unicastStratum2:
+      case TimeServerTier.unicastStratum1:
+      case TimeServerTier.unicastStratum2:
         candidates.add(entry.host);
     }
   }

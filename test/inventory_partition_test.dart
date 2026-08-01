@@ -3,20 +3,22 @@ import 'package:trusted_time/src/data/ntp_inventory.dart';
 import 'package:trusted_time/src/domain/explorer_shuffle.dart';
 import 'package:trusted_time/src/domain/inventory_partition.dart';
 import 'package:trusted_time/src/models/ntp_server_info.dart';
+import 'package:trusted_time/src/models/time_server_tier.dart';
 
-NtpServerInfo _entry(String host, NtpServerTier tier) => NtpServerInfo(
+NtpServerInfo _entry(String host, TimeServerTier tier) => NtpServerInfo(
   host: host,
   tier: tier,
   observedStratum: 2,
   observedGroupId: 'as1',
-  leapPolicy: NtpLeapPolicy.presumedStepping,
+  leapPolicy: LeapPolicy.presumedStepping,
 );
 
 /// Ten unicast candidates plus two anycast, enough to see a budget bite.
 List<NtpServerInfo> _inventory({int unicast = 10, int anycast = 2}) => [
-  for (var i = 0; i < anycast; i++) _entry('any$i.test', NtpServerTier.anycast),
+  for (var i = 0; i < anycast; i++)
+    _entry('any$i.test', TimeServerTier.anycast),
   for (var i = 0; i < unicast; i++)
-    _entry('uni$i.test', NtpServerTier.unicastStratum2),
+    _entry('uni$i.test', TimeServerTier.unicastStratum2),
 ];
 
 InventoryPartition _partition({
@@ -142,8 +144,8 @@ void main() {
     test('stratum 1 and 2 unicast both explore', () {
       final p = _partition(
         inventory: [
-          _entry('s1.test', NtpServerTier.unicastStratum1),
-          _entry('s2.test', NtpServerTier.unicastStratum2),
+          _entry('s1.test', TimeServerTier.unicastStratum1),
+          _entry('s2.test', TimeServerTier.unicastStratum2),
         ],
         budget: 99,
       );
