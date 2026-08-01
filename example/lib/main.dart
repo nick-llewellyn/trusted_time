@@ -338,6 +338,11 @@ class _HomePageState extends State<HomePage> {
                   worldwideRotationOffset: _benchmark.worldwideRotationOffset,
                   worldwideSubsetSize: BenchmarkController.worldwideSubsetSize,
                   selected: _benchmark.selectedServers,
+                  ntpEnabled: _benchmark.ntpEnabled,
+                  // Read from the library's exported inventory rather
+                  // than a local constant so the count cannot drift
+                  // from what the engine actually partitions.
+                  ntpInventorySize: curatedNtpInventory.length,
                   continuousEnabled: _benchmark.continuousSyncEnabled,
                   reconfiguring: _benchmark.reconfiguring,
                   interCycleDelaySeconds: _benchmark.interCycleDelaySeconds,
@@ -355,6 +360,7 @@ class _HomePageState extends State<HomePage> {
                   onDnsCapOverrideChanged:
                       _benchmark.setMaxConcurrentDnsLookupsOverride,
                   onToggleServer: _benchmark.toggleServer,
+                  onToggleNtp: _benchmark.setNtpEnabled,
                   onToggleContinuous: _benchmark.setContinuousSync,
                   onDelayChanged: _benchmark.setInterCycleDelaySeconds,
                   onApply: _benchmark.applySelectedServers,
