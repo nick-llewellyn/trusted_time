@@ -273,7 +273,7 @@ void main() {
       );
     });
 
-    test('a state observe cannot produce is restored, not discarded', () {
+    test('a baseline no observation could produce is restored anyway', () {
       // Cross-field consistency is deliberately not enforced. Each of
       // these is unreachable through observe, and each is also erased
       // by the very next observation — while rejecting the record
