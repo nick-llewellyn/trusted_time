@@ -283,4 +283,35 @@ void main() {
       }
     },
   );
+
+  group('inventoryFor', () {
+    test('resolves the benchmark pools in the order requested', () {
+      final entries = inventoryFor(curatedNtsPool);
+      expect([for (final entry in entries) entry.host], equals(curatedNtsPool));
+    });
+
+    test('every benchmark chip host resolves', () {
+      // The chip grid can offer any host in the union pool, and the
+      // controller feeds the operator's selection straight to
+      // inventoryFor. A pool edit that adds a host the library has not
+      // admitted would otherwise only surface at runtime.
+      expect(() => inventoryFor(benchmarkChipPool), returnsNormally);
+    });
+
+    test('throws on a host absent from the curated inventory', () {
+      // Fail fast rather than drop: a silently shortened list looks
+      // identical to a host that produced no samples, which is the one
+      // ambiguity a benchmarking harness cannot tolerate.
+      expect(
+        () => inventoryFor(const ['time.cloudflare.com', 'nope.invalid']),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.invalidValue,
+            'invalidValue',
+            equals(['nope.invalid']),
+          ),
+        ),
+      );
+    });
+  });
 }

@@ -168,10 +168,26 @@ final List<String> benchmarkChipPool = List<String>.unmodifiable([
 /// would carry a tier and leap policy nothing observed, and the engine
 /// partitions on tier.
 ///
-/// Hosts absent from the inventory are dropped. The pools above are
-/// currently a permutation of it, so nothing is dropped today; the
-/// filter is what keeps a future pool edit from silently failing.
+/// Throws [ArgumentError] if any host is absent from the inventory.
+/// The pools above are currently a permutation of it, so nothing is
+/// unresolvable today. Dropping the unknown host instead would let a
+/// future pool edit — or an operator-supplied chip selection — quietly
+/// shrink the benchmark's coverage, which is the one failure mode a
+/// diagnostic harness cannot afford: the run still completes, and the
+/// missing host looks like a host that produced no samples.
 List<NtsServerInfo> inventoryFor(Iterable<String> hosts) {
   final byHost = {for (final e in curatedNtsInventory) e.host: e};
-  return [for (final host in hosts) ?byHost[host]];
+  final requested = hosts.toList(growable: false);
+  final unknown = [
+    for (final host in requested)
+      if (!byHost.containsKey(host)) host,
+  ];
+  if (unknown.isNotEmpty) {
+    throw ArgumentError.value(
+      unknown,
+      'hosts',
+      'not present in the curated NTS inventory',
+    );
+  }
+  return [for (final host in requested) byHost[host]!];
 }

@@ -404,6 +404,27 @@ void main() {
       expect(config.ntsInventory, isEmpty);
     });
 
+    test('toString disambiguates an empty pool from a disable flag', () {
+      // Both pools summarise to a count, and a zero has two causes: the
+      // disable flag, or a seam supplying an empty inventory. The dump
+      // has to carry the flags for the count to be readable.
+      const disabled = TrustedTimeConfig(
+        disableNts: true,
+        disableNtpForTesting: true,
+      );
+      expect(disabled.toString(), contains('disableNts: true'));
+      expect(disabled.toString(), contains('disableNtpForTesting: true'));
+
+      const emptied = TrustedTimeConfig(
+        ntsInventoryForTesting: [],
+        ntpInventoryForTesting: [],
+      );
+      expect(emptied.ntsServers, isEmpty);
+      expect(emptied.ntpServers, isEmpty);
+      expect(emptied.toString(), contains('disableNts: false'));
+      expect(emptied.toString(), contains('disableNtpForTesting: false'));
+    });
+
     test('ntsInventoryForTesting replaces the inventory', () {
       const config = TrustedTimeConfig(ntsInventoryForTesting: [_ntsEntry]);
       expect(config.ntsInventory, equals(const [_ntsEntry]));

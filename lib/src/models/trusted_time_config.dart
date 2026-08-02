@@ -738,11 +738,15 @@ final class TrustedTimeConfig {
     return 'TrustedTimeConfig(\n'
         // Summarise rather than interpolate: the curated inventories are
         // fixed and dozens of entries long, so dumping them verbatim
-        // would bury every other field. The count (and the zero that
-        // disableNtpForTesting / disableNts produce) is what an operator
-        // needs.
+        // would bury every other field. The count is what an operator
+        // needs — paired with the two disable flags, since a zero on
+        // either pool has more than one cause (the flag, or a seam
+        // supplying an empty inventory) and the count alone cannot
+        // tell them apart.
         '  ntpServers: ${ntpServers.length} hosts,\n'
+        '  disableNtpForTesting: $disableNtpForTesting,\n'
         '  ntsServers: ${ntsServers.length} hosts,\n'
+        '  disableNts: $disableNts,\n'
         '  ntsPort: $ntsPort,\n'
         '  maxConcurrentDnsLookups: $maxConcurrentDnsLookups,\n'
         // ignore: deprecated_member_use_from_same_package
