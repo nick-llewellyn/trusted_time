@@ -412,17 +412,27 @@ already narrows the plain-NTP inventory. Decision tracked as
 
 `SyncEngine._selectCycleHosts` partitions `ntpInventory` only. An NTS
 source id is in neither the explorer set nor the NTP inventory id set,
-so it falls to the `blocking` branch — every host in `ntsInventory`
-blocks every cycle, and `warmAllSources()` opens one concurrent NTS-KE
-handshake per host at bootstrap and again at each cycle's warming
-barrier. On the default posture that getter yields the curated 57, so
-57 is the number this postscript quotes throughout; `disableNts`
-empties it and `ntsInventoryForTesting` substitutes for it, neither of
-which is the configuration the cost argument is about.
-Each is a TCP connect plus a TLS handshake plus a key exchange, so
-this is not the NTP tier's cost profile scaled up; it is a
-qualitatively heavier fan-out that the shared `DnsBudget` (ADR 0008)
-throttles but does not bound.
+so it falls to the `blocking` branch — every host in `ntsInventory` is
+classified as a blocking host every cycle, and `warmAllSources()`
+opens one concurrent NTS-KE handshake per host at bootstrap and again
+at each cycle's warming barrier. On the default posture that getter
+yields the curated 57, so 57 is the number this postscript quotes
+throughout; `disableNts` empties it and `ntsInventoryForTesting`
+substitutes for it, neither of which is the configuration the cost
+argument is about. Each handshake is a TCP connect plus a TLS
+handshake plus a key exchange, so this is not the NTP tier's cost
+profile scaled up; it is a qualitatively heavier fan-out that the
+shared `DnsBudget` (ADR 0008) throttles but does not bound.
+
+Classification is a ceiling rather than a count. `sync()` narrows the
+blocking set by `_blacklistUntil` before querying, so a host on
+cooldown is blocking-by-role yet gates nothing that cycle. The
+handshake fan-out does not get that relief: `warmAllSources()`
+iterates every `Warmable` source, not the cycle's hosts, so the
+NTS-KE cost is paid on the full inventory whatever the health filter
+concludes. The argument below is about that ceiling — a partition
+lowers it, whereas cooldown only masks it host-by-host, and only
+after the failures that arm it have already been paid for.
 
 The engine's own dartdoc justified the pass-through on three grounds:
 there are few NTS hosts, they are the authenticated half of the

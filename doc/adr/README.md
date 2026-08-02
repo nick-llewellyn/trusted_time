@@ -99,8 +99,10 @@ PR, three Accepted ADRs are known to diverge from current code:
 - **ADR 0007**'s 2026-08-02 postscript (NTS tier partitioned per
   cycle) is decided but not implemented. `_selectCycleHosts` still
   partitions the NTP inventory alone, so with NTS enabled every host
-  in `ntsInventory` blocks every cycle and `warmAllSources()` fans out
-  across all of them, and `MarzulloEngine._resolveCore` still floors
+  in `ntsInventory` is classified `blocking` every cycle — gating it
+  unless `sync()`'s cooldown filter drops it first — and
+  `warmAllSources()` fans out across all of them regardless of that
+  filter, and `MarzulloEngine._resolveCore` still floors
   the truth-box pass at 2 responders rather than the 3 the postscript
   requires. Tracked as `trusted_time-1ww` (decision:
   `trusted_time-ky3`); the ADR's three earlier implementation pieces

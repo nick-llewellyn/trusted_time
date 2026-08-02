@@ -306,10 +306,13 @@ final class SyncEngine {
   /// walk over the rest — and answers the two clauses that did survive
   /// the migration (NTS is the authenticated half; rotation must not make
   /// an anchor's authentication level cycle-dependent). Until that
-  /// lands, a cycle blocks on every entry
-  /// [TrustedTimeConfig.ntsInventory] yields — the curated 57 on the
-  /// default posture, none under `disableNts`, and whatever
+  /// lands, every entry [TrustedTimeConfig.ntsInventory] yields is
+  /// classified `blocking` — the curated 57 on the default posture,
+  /// none under `disableNts`, and whatever
   /// [TrustedTimeConfig.ntsInventoryForTesting] supplies otherwise.
+  /// Classification is the ceiling, not the count: [sync] then drops
+  /// the ids still inside their `_blacklistUntil` cooldown, so a
+  /// blocking host gates a cycle only if it survives that filter.
   ///
   /// Eligibility is decided by source id, not by where the source came
   /// from. A source passes through unpartitioned when its id is absent
