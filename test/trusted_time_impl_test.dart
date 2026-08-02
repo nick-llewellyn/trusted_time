@@ -110,7 +110,7 @@ void main() {
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: [],
+            disableNts: true,
             persistState: false,
           ),
         );
@@ -155,7 +155,7 @@ void main() {
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: [],
+            disableNts: true,
             persistState: false,
           ),
         );
@@ -217,13 +217,13 @@ void main() {
       () async {
         // Empty source lists keep the test fully offline: the engine
         // constructs, but the bootstrap sync fails fast (no quorum)
-        // and never touches the network. `ntsServers: []` also skips
-        // the `NtsRustLib.init` -> `copyWith(ntsServers: [])` rewrite in
+        // and never touches the network. `disableNts: true` also skips
+        // the `NtsRustLib.init` -> `copyWith(disableNts: true)` rewrite in
         // TrustedTime.initialize, so the exact instance we pass in is
         // what gets stashed on TrustedTimeImpl._config.
         const config = TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
           refreshInterval: Duration(minutes: 7),
           minimumQuorum: 3,
           persistState: false,
@@ -257,12 +257,12 @@ void main() {
       // object identities. Equality must therefore come from the new
       // operator==/hashCode, not from `identical`.
       final a = TrustedTimeConfig(
-        ntsServers: const ['time.cloudflare.com'],
+        ntsInventoryForTesting: _inventory(const ['time.cloudflare.com']),
         refreshInterval: const Duration(minutes: 5),
         minimumQuorum: 3,
       );
       final b = TrustedTimeConfig(
-        ntsServers: const ['time.cloudflare.com'],
+        ntsInventoryForTesting: _inventory(const ['time.cloudflare.com']),
         refreshInterval: const Duration(minutes: 5),
         minimumQuorum: 3,
       );
@@ -273,14 +273,32 @@ void main() {
     });
 
     test('list field divergence breaks equality', () {
-      final a = TrustedTimeConfig(ntsServers: const ['a', 'b']);
-      final b = TrustedTimeConfig(ntsServers: const ['a', 'b', 'c']);
-      final c = TrustedTimeConfig(ntsServers: const ['b', 'a']);
+      final a = TrustedTimeConfig(
+        ntsInventoryForTesting: _inventory(const ['a', 'b']),
+      );
+      final b = TrustedTimeConfig(
+        ntsInventoryForTesting: _inventory(const ['a', 'b', 'c']),
+      );
+      final c = TrustedTimeConfig(
+        ntsInventoryForTesting: _inventory(const ['b', 'a']),
+      );
 
       expect(a, isNot(equals(b)));
       // Element order matters — server order influences shuffle and
       // cycle iteration, so unordered equality would be a regression.
       expect(a, isNot(equals(c)));
+    });
+
+    test('an absent inventory override is distinct from an empty one', () {
+      // The presence bit in hashCode exists for exactly this pair: both
+      // yield an empty ntsServers view, so a comparison that only read
+      // the derived list would collapse them.
+      final absent = TrustedTimeConfig(disableNts: true);
+      final empty = TrustedTimeConfig(ntsInventoryForTesting: const []);
+
+      expect(absent.ntsServers, isEmpty);
+      expect(empty.ntsServers, isEmpty);
+      expect(absent, isNot(equals(empty)));
     });
 
     test('scalar field divergence breaks equality', () {
@@ -294,22 +312,33 @@ void main() {
 
     test('toString surfaces the source pools and quorum knobs', () {
       final config = TrustedTimeConfig(
-        ntsServers: const ['time.cloudflare.com', 'mmo1.nts.netnod.se'],
         minimumQuorum: 4,
         refreshInterval: const Duration(minutes: 2),
       );
       final text = config.toString();
 
       expect(text, startsWith('TrustedTimeConfig('));
-      // Summarised, not enumerated: the curated inventory is fixed and
-      // 51 entries long.
+      // Summarised, not enumerated: both curated inventories are fixed
+      // and dozens of entries long.
       expect(text, contains('ntpServers: ${curatedNtpInventory.length} hosts'));
-      expect(
-        text,
-        contains('ntsServers: [time.cloudflare.com, mmo1.nts.netnod.se]'),
-      );
+      expect(text, contains('ntsServers: ${curatedNtsInventory.length} hosts'));
       expect(text, contains('minimumQuorum: 4'));
       expect(text, contains('refreshInterval: 0:02:00.000000'));
     });
   });
 }
+
+/// Builds a substitute NTS inventory from bare hostnames.
+///
+/// The metadata is uniform on purpose: these tests vary only the host
+/// set, so holding every other field constant keeps the assertions
+/// pinned on the dimension under test.
+List<NtsServerInfo> _inventory(List<String> hosts) => [
+  for (final host in hosts)
+    NtsServerInfo(
+      host: host,
+      tier: TimeServerTier.unicastStratum1,
+      observedStratum: 1,
+      leapPolicy: LeapPolicy.documentedStepping,
+    ),
+];

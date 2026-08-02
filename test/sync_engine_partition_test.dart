@@ -34,7 +34,7 @@ class _StubSource implements TimeSource {
 
 /// Real curated inventory, NTS suppressed so the assertions are about
 /// the NTP partition alone.
-const _liveInventory = TrustedTimeConfig(ntsServers: []);
+const _liveInventory = TrustedTimeConfig(disableNts: true);
 
 /// A [TimeSource] under an `ntp:`-prefixed id, so the partition treats
 /// it as inventory-backed rather than caller-supplied.
@@ -136,7 +136,7 @@ class _CountingNtpSource implements TimeSource {
   ];
   return (
     config: TrustedTimeConfig(
-      ntsServers: const [],
+      disableNts: true,
       disableNtpForTesting: true,
       ntpInventoryForTesting: entries,
       additionalSources: sources,
@@ -388,7 +388,16 @@ void main() {
 
     test('NTS sources are always eligible', () {
       final selected = _engine(
-        config: const TrustedTimeConfig(ntsServers: ['nts.example']),
+        config: const TrustedTimeConfig(
+          ntsInventoryForTesting: [
+            NtsServerInfo(
+              host: 'nts.example',
+              tier: TimeServerTier.anycast,
+              observedStratum: 1,
+              leapPolicy: LeapPolicy.documentedStepping,
+            ),
+          ],
+        ),
       ).selectCycleHostsForTesting();
       expect(selected, contains('${TimeSource.prefixNts}nts.example'));
     });
@@ -416,7 +425,7 @@ void main() {
       final selected = _engine(
         config: const TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
         ).copyWith(additionalSources: [_StubSource('a'), _StubSource('b')]),
       ).selectCycleHostsForTesting();
       expect(selected, equals({'a', 'b'}));
@@ -544,7 +553,7 @@ void main() {
     test('caller-supplied sources are never demoted to explorers', () {
       final roles = SyncEngine(
         config: TrustedTimeConfig(
-          ntsServers: const [],
+          disableNts: true,
           additionalSources: [_StubSource('custom')],
         ),
         clock: FakeMonotonicClock(),
@@ -636,7 +645,7 @@ void main() {
       ];
       await SyncEngine(
         config: TrustedTimeConfig(
-          ntsServers: const [],
+          disableNts: true,
           disableNtpForTesting: true,
           ntpInventoryForTesting: fake.config.ntpInventoryForTesting,
           additionalSources: shadowed,

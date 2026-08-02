@@ -481,7 +481,12 @@ class BenchmarkController extends ChangeNotifier {
           // deliberately.
           // ignore: invalid_use_of_visible_for_testing_member
           disableNtpForTesting: !_ntpEnabled,
-          ntsServers: shuffled,
+          // The chip grid selects arbitrary subsets of the library's
+          // curated NTS inventory, and the inventory seam is the only
+          // way to narrow it. Diagnostic harness, so the seam is used
+          // deliberately.
+          // ignore: invalid_use_of_visible_for_testing_member
+          ntsInventoryForTesting: inventoryFor(shuffled),
           maxConcurrentDnsLookups: _maxConcurrentDnsLookupsOverride,
           minimumQuorum: 2,
           minQuorumRatio: 0.4,

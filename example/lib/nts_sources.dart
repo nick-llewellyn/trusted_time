@@ -1,3 +1,5 @@
+import 'package:trusted_time/trusted_time.dart';
+
 /// Worldwide NTS server pool for the Beauty Parade benchmarking mode.
 ///
 /// 57 verified hosts: the 52 recorded on `trusted_time-cln`
@@ -154,3 +156,22 @@ final List<String> benchmarkChipPool = List<String>.unmodifiable([
   for (final host in curatedNtsPool)
     if (!extendedNtsPool.contains(host)) host,
 ]);
+
+/// Resolves [hosts] to their entries in the library's curated NTS
+/// inventory, preserving the order of [hosts].
+///
+/// `TrustedTimeConfig` no longer accepts a hostname list — the NTS pool
+/// is derived from the curated inventory, and the only way to narrow it
+/// is the inventory seam. The benchmarking harness exists to drive
+/// arbitrary subsets, so it maps its own pools back onto the shipped
+/// entries rather than inventing metadata: an entry fabricated here
+/// would carry a tier and leap policy nothing observed, and the engine
+/// partitions on tier.
+///
+/// Hosts absent from the inventory are dropped. The pools above are
+/// currently a permutation of it, so nothing is dropped today; the
+/// filter is what keeps a future pool edit from silently failing.
+List<NtsServerInfo> inventoryFor(Iterable<String> hosts) {
+  final byHost = {for (final e in curatedNtsInventory) e.host: e};
+  return [for (final host in hosts) ?byHost[host]];
+}

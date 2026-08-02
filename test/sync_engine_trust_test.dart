@@ -104,7 +104,7 @@ void main() {
         final engine = SyncEngine(
           config: const TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: [],
+            disableNts: true,
             usePlatformTrust: true,
             customRootCerts: [1, 2, 3],
           ),
@@ -127,7 +127,7 @@ void main() {
         final engine = SyncEngine(
           config: const TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: [],
+            disableNts: true,
           ),
           clock: clock,
         );
@@ -187,7 +187,7 @@ void main() {
         SyncEngine(
           config: TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: const [],
+            disableNts: true,
             minimumQuorum: minimumQuorum,
             minGroupCount: 1,
             additionalSources: sources,

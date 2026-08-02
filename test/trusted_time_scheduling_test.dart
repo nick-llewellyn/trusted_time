@@ -145,7 +145,7 @@ void main() {
       await public_api.TrustedTime.initialize(
         config: const public_api.TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
           persistState: false,
         ),
       );

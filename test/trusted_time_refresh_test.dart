@@ -38,7 +38,7 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
           persistState: false,
           refreshInterval: Duration(minutes: 5),
         ),
@@ -175,7 +175,7 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: const [],
+          disableNts: true,
           persistState: false,
           additionalSources: [
             FailingSource(id: 'ntp:a', groupId: 'g1'),
@@ -200,7 +200,7 @@ void main() {
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: [],
+            disableNts: true,
             persistState: false,
           ),
         );
@@ -235,7 +235,7 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: const [],
+          disableNts: true,
           additionalSources: [
             BoxedSource(box, id: 'ntp:a', groupId: 'g1'),
             BoxedSource(box, id: 'https:b', groupId: 'g2'),
@@ -308,7 +308,7 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: const [],
+          disableNts: true,
           earlyExit: false,
           additionalSources: [
             BoxedSource(box, id: 'ntp:a', groupId: 'g1'),

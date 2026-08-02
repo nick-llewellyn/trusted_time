@@ -34,7 +34,7 @@ void main() {
           TrustedTimeImpl.init(
             TrustedTimeConfig(
               disableNtpForTesting: true,
-              ntsServers: const [],
+              disableNts: true,
               persistState: false,
               // Shrink the first cycle's outer safety timeout
               // (maxLatency + 6s) so the settle window this test
@@ -149,7 +149,7 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: const [],
+          disableNts: true,
           earlyExit: false,
           additionalSources: [
             BoxedCountingSource(
@@ -247,7 +247,7 @@ void main() {
           TrustedTimeImpl.init(
             TrustedTimeConfig(
               disableNtpForTesting: true,
-              ntsServers: const [],
+              disableNts: true,
               additionalSources: [_HungWarmSource()],
             ),
           ).then((i) => impl = i),
@@ -283,7 +283,7 @@ void main() {
           TrustedTimeImpl.init(
             const TrustedTimeConfig(
               disableNtpForTesting: true,
-              ntsServers: [],
+              disableNts: true,
               usePlatformTrust: true,
               customRootCerts: [1, 2, 3],
             ),
@@ -307,7 +307,7 @@ void main() {
           TrustedTimeImpl.init(
             TrustedTimeConfig(
               disableNtpForTesting: true,
-              ntsServers: const [],
+              disableNts: true,
               additionalSources: [_SlowWarmSource()],
             ),
           ).then((i) => impl = i),
@@ -335,7 +335,10 @@ void main() {
         TrustedTimeImpl? impl;
         unawaited(
           TrustedTimeImpl.init(
-            const TrustedTimeConfig(disableNtpForTesting: true, ntsServers: []),
+            const TrustedTimeConfig(
+              disableNtpForTesting: true,
+              disableNts: true,
+            ),
           ).then((i) => impl = i),
         );
         async.flushMicrotasks();
@@ -360,7 +363,7 @@ void main() {
     // syncInProgress and awaitable via firstSyncSettled.
     const config = TrustedTimeConfig(
       disableNtpForTesting: true,
-      ntsServers: [],
+      disableNts: true,
       persistState: false,
       minimumQuorum: 2,
       minGroupCount: 1,
@@ -524,7 +527,7 @@ void main() {
     // injected store, at the same entry point production uses.
     TrustedTimeConfig configWith(List<TimeSource> sources) => TrustedTimeConfig(
       disableNtpForTesting: true,
-      ntsServers: const [],
+      disableNts: true,
       persistState: true,
       minimumQuorum: 2,
       minGroupCount: 1,

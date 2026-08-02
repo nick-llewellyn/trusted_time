@@ -33,7 +33,11 @@ TrustedTimeConfig buildStressConfig() {
     // diagnostic app, so it deliberately reaches for the test seam.
     // ignore: invalid_use_of_visible_for_testing_member
     disableNtpForTesting: true,
-    ntsServers: ntsSubset,
+    // The curated NTS pool is a subset of the library's inventory, and
+    // the inventory seam is the only way to narrow it. Diagnostic app,
+    // so it reaches for the seam deliberately.
+    // ignore: invalid_use_of_visible_for_testing_member
+    ntsInventoryForTesting: inventoryFor(ntsSubset),
     minimumQuorum: 2,
     minQuorumRatio: 0.4,
     refreshInterval: const Duration(seconds: 30),

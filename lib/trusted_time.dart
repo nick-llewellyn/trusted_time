@@ -320,8 +320,8 @@ abstract final class TrustedTime {
   ///
   /// The returned object is typically the same instance that was
   /// passed to [initialize], but [initialize] may normalise it before
-  /// handing it to the engine — most notably by stripping
-  /// [TrustedTimeConfig.ntsServers] when the underlying NTS runtime
+  /// handing it to the engine — most notably by setting
+  /// [TrustedTimeConfig.disableNts] when the underlying NTS runtime
   /// fails to load — so do not rely on
   /// `identical(TrustedTime.config, suppliedConfig)` holding.
   ///
@@ -396,7 +396,8 @@ abstract final class TrustedTime {
   /// [TrustedTime.initialize] performs the FFI bootstrap when
   /// [TrustedTimeConfig.ntsServers] is non-empty; calling this
   /// method before [initialize], or after [initialize] when the
-  /// active config has empty `ntsServers`, may surface that error.
+  /// active config has [TrustedTimeConfig.disableNts] set, may
+  /// surface that error.
   // The return type is the unprefixed `NtsTrustStatus` so the
   // public dartdoc matches what consumers see after this library's
   // re-export above; using `nts.NtsTrustStatus` here would leak

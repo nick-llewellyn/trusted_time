@@ -22,7 +22,7 @@ Three constraints drive this decision:
 - Native build (`dart.library.io`): real `NtsSource` exporting authenticated samples.
 - Web build (default export): stub `NtsSource` whose `fetch()` throws `UnsupportedError`, swallowed by `SyncEngine._querySafe`.
 - Web users continue to rely on `HttpsSource` as the primary authority. No web behavior changes.
-- API surface adds: `TimeSourceKind.nts`, `TimeSourceMetadata.authenticated` (defaulting to `false` for `ntp`/`https`/`custom`), `TrustedTimeConfig.ntsServers` (opt-in, empty by default). *(Historical note: the default has since changed — `ntsServers` now ships enabled with two anycast anchors, `['time.cloudflare.com', 'nts.netnod.se']`; see `trusted_time-cln` and the [implementation status caveat](README.md#implementation-status-caveat).)*
+- API surface adds: `TimeSourceKind.nts`, `TimeSourceMetadata.authenticated` (defaulting to `false` for `ntp`/`https`/`custom`), `TrustedTimeConfig.ntsServers` (opt-in, empty by default). *(Historical note: this has since changed twice — NTS first shipped enabled with two anycast anchors, and `ntsServers` is now not a config field at all but a read-only view of a fixed curated inventory of 57 live-verified hosts, with `disableNts` as the only consumer control; see `trusted_time-cln`, `trusted_time-2tx`, `trusted_time-7pb`, and the [implementation status caveat](README.md#implementation-status-caveat).)*
 
 This is a hybrid of the two paths originally proposed in the issue's design note:
 - It keeps a single distribution (Option A) — no separate `trusted_time_nts` package to publish, version, and document.

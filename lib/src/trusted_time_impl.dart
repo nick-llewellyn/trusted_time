@@ -222,7 +222,7 @@ final class TrustedTimeImpl {
   /// pool, quorum thresholds, refresh interval, etc.) without
   /// shadowing the configuration on the call site. The returned
   /// instance is the same object passed to [init]; reading
-  /// list-typed fields like [TrustedTimeConfig.ntsServers] is safe
+  /// list-typed fields like [TrustedTimeConfig.customRootCerts] is safe
   /// without defensive copying as long as the caller honours
   /// [TrustedTimeConfig]'s "do not mutate after construction"
   /// contract.
@@ -269,8 +269,8 @@ final class TrustedTimeImpl {
         'requireSleepAwareProjection is set but the active projection '
         'rides a suspend-frozen Stopwatch timeline: the nts bridge is '
         'not initialized, so projected time would silently fall behind '
-        'by the duration of any device sleep. Configure reachable '
-        'ntsServers (whose FFI bootstrap must succeed) or relax the '
+        'by the duration of any device sleep. Leave disableNts unset '
+        'and ensure the FFI bootstrap succeeds, or relax the '
         'requirement.',
       );
     }
@@ -374,7 +374,7 @@ final class TrustedTimeImpl {
   Future<void> _bootstrap() async {
     // Fail-fast gate for the sleep-aware hard requirement: by this
     // point the nts bridge bootstrap (ensureNtsRuntime) has already
-    // run — including the degrade path that strips ntsServers on a
+    // run — including the degrade path that sets disableNts on a
     // genuine init failure — so the reader the engine will project on
     // is decidable now. Surfacing the misconfiguration here, before
     // any sync or persistence work, beats throwing from the first
@@ -383,10 +383,10 @@ final class TrustedTimeImpl {
       throw const TrustedTimeSecurityException(
         'requireSleepAwareProjection is set but no sleep-aware '
         'monotonic clock is available: the nts bridge is not '
-        'initialized (NTP-only config, or the bridge '
+        'initialized (disableNts is set, or the bridge '
         'bootstrap failed and NTS was disabled). Projection would '
-        'silently freeze during device sleep. Configure reachable '
-        'ntsServers (whose FFI bootstrap must succeed) or relax the '
+        'silently freeze during device sleep. Leave disableNts unset '
+        'and ensure the FFI bootstrap succeeds, or relax the '
         'requirement.',
       );
     }

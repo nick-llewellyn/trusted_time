@@ -25,15 +25,28 @@
   `ntpd`/`chrony`; the runtime defence against a smeared outlier
   remains the Marzullo intersection.
 
-- **Default NTS list rebuilt around a stepping-only leap-second
-  policy and administrative diversity.** `ntsServers` now defaults to
-  `['time.cloudflare.com', 'nts.netnod.se']`: two anycast anchors
-  from distinct operators, so the out-of-the-box config satisfies the
-  default `minGroupCount` of 2 and can mint a verified truth box on
-  its own (the previous single-host default never could). Every
-  default host steps. Consumers pinning the old defaults explicitly
-  are unaffected; consumers relying on the implicit defaults get the
-  new list on their next sync.
+- **`ntsServers` is no longer settable; the library ships a curated
+  57-host inventory.** Mirrors the `ntpServers` change above. The
+  `TrustedTimeConfig` constructor parameter is removed and
+  `ntsServers` becomes a read-only getter over the inventory in
+  `lib/src/data/nts_inventory.dart` — 57 hosts, each verified by a
+  full live NTS-KE and AEAD-NTPv4 exchange (`trusted_time-cln`,
+  `trusted_time-2tx`), tiered anycast / unicast S1 / unicast S2 and
+  narrowed per cycle by the same quorum/explorer partition NTP uses.
+  The previous two-host default gave explore/exploit no headroom.
+  `ntsInventory` exposes each host's `tier`, `observedStratum`, and
+  `leapPolicy` as `NtsServerInfo`; there is no group id, because
+  NTS-KE binds the hostname to a TLS certificate and the registrable
+  domain is therefore derivable rather than observed.
+
+  Consumers passing `ntsServers:` must delete the argument. To turn
+  NTS off, pass `disableNts: true` (see below); there is no
+  replacement for a custom or enterprise NTS host list.
+
+  The inventory has no admissible unicast host in Oceania, Africa,
+  the Middle East, or Asia beyond the northern-Europe pair — those
+  regions are served anycast-only. A 57-host membership set is also
+  a fingerprint every install presents.
 
 - **NTS sources now group by registrable domain instead of full
   hostname.** `NtsSource.groupId` for `gbg1.nts.netnod.se`,
@@ -242,6 +255,16 @@
   intervals.
 
 ### Added
+
+- **`TrustedTimeConfig.disableNts`.** Suppresses every NTS source.
+  Unlike the NTP side's test-only seam this is a supported production
+  posture: NTS-KE runs over TCP/4460, which some corporate and
+  captive networks block outright, and on such a network every
+  handshake costs a connect timeout before failing. The cost is that
+  no cryptographically authenticated source remains, so the anchor
+  cannot reach `ConfidenceLevel.secure` and projection falls back to
+  a suspend-frozen `Stopwatch` timeline. The library sets the same
+  flag when the `package:nts` FFI bootstrap genuinely fails.
 
 - **Example app: the Beauty Parade can now benchmark NTP, and every
   sample row reports its group.** Section 7 gains an "Include curated
