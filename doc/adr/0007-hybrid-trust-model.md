@@ -426,13 +426,19 @@ shared `DnsBudget` (ADR 0008) throttles but does not bound.
 
 Classification is a ceiling rather than a count. `sync()` narrows the
 blocking set by `_blacklistUntil` before querying, so a host on
-cooldown is blocking-by-role yet gates nothing that cycle. The
-handshake fan-out does not get that relief: `warmAllSources()`
-iterates every `Warmable` source, not the cycle's hosts, so the
-NTS-KE cost is paid on the full inventory whatever the health filter
-concludes. The argument below is about that ceiling — a partition
-lowers it, whereas cooldown only masks it host-by-host, and only
-after the failures that arm it have already been paid for.
+cooldown is blocking-by-role yet usually gates nothing that cycle —
+usually, because the starvation rescue force-includes a cooled-down
+host that has gone unqueried for `_kStarvationCycles`, and that host
+gates like any other. Neither pass can widen the set: the rescue
+iterates `_sources` but admits only ids already in `cycleHosts`,
+deliberately, so that a host the partition left out stays out. The
+handshake fan-out gets no such narrowing at all: `warmAllSources()`
+iterates every `Warmable` source rather than the cycle's hosts, so
+the NTS-KE cost is paid across the full inventory whatever the
+downstream passes conclude. The argument below is about the ceiling —
+a partition lowers it, whereas cooldown only masks it host-by-host,
+after the failures that arm it have already been paid for, and the
+rescue exists precisely to keep that masking from becoming permanent.
 
 The engine's own dartdoc justified the pass-through on three grounds:
 there are few NTS hosts, they are the authenticated half of the

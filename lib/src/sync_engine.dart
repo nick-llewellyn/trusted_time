@@ -310,9 +310,12 @@ final class SyncEngine {
   /// classified `blocking` — the curated 57 on the default posture,
   /// none under `disableNts`, and whatever
   /// [TrustedTimeConfig.ntsInventoryForTesting] supplies otherwise.
-  /// Classification is the ceiling, not the count: [sync] then drops
-  /// the ids still inside their `_blacklistUntil` cooldown, so a
-  /// blocking host gates a cycle only if it survives that filter.
+  /// Classification is the ceiling, not the count: [sync] drops the
+  /// ids still inside their `_blacklistUntil` cooldown, then re-admits
+  /// any of them the starvation rescue finds overdue, so how many
+  /// blocking hosts actually gate a cycle is decided downstream. The
+  /// ceiling holds either way — the rescue only reaches ids already in
+  /// this set, never widening it.
   ///
   /// Eligibility is decided by source id, not by where the source came
   /// from. A source passes through unpartitioned when its id is absent
