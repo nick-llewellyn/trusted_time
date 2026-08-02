@@ -86,8 +86,10 @@ PR, three Accepted ADRs are known to diverge from current code:
   The `Decision` text is the original position; the implementation has
   deliberately moved on. The 57-host inventory is not a 57-host tier:
   ADR 0007's 2026-08-02 postscript decides that the engine narrows it
-  per cycle to a 3-host anycast quorum floor, filled to 5 by
-  promotion, plus a rotating explorer walk over the 54 unicast hosts
+  per cycle to a query target of 5 (configurable) — the 3 anycast
+  hosts pinned as fixed members plus promotion from the unicast
+  ranking — against a validity floor of 3 responders, with the
+  remaining unicast hosts on a rotating explorer walk
   (`trusted_time-ky3`). That partition is decided but not yet
   implemented — see the ADR 0007 row below.
 - **ADR 0002** decides on real headless background anchor refresh.
@@ -96,9 +98,11 @@ PR, three Accepted ADRs are known to diverge from current code:
 - **ADR 0007**'s 2026-08-02 postscript (NTS tier partitioned per
   cycle) is decided but not implemented. `_selectCycleHosts` still
   partitions the NTP inventory alone, so every NTS host blocks every
-  cycle and `warmAllSources()` fans out across the whole inventory.
-  Tracked as `trusted_time-ky3`; the ADR's three earlier
-  implementation pieces have all landed (see the note below).
+  cycle and `warmAllSources()` fans out across the whole inventory,
+  and `MarzulloEngine._resolveCore` still floors the truth-box pass at
+  2 responders rather than the 3 the postscript requires. Tracked as
+  `trusted_time-ky3`; the ADR's three earlier implementation pieces
+  have all landed (see the note below).
 
 Notes on previously-listed divergences:
 

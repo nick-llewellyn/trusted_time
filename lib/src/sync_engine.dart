@@ -299,12 +299,13 @@ final class SyncEngine {
   /// of them" premise this pass-through rested on held for the
   /// two-host default and does not hold for the 57-host curated
   /// inventory. ADR 0007's 2026-08-02 postscript decides to narrow the
-  /// NTS tier the same way — a fixed anycast quorum floor filled by
-  /// promotion, plus a rotating explorer walk over the unicast hosts —
-  /// and answers the two clauses that did survive the migration (NTS
-  /// is the authenticated half; rotation must not make an anchor's
-  /// authentication level cycle-dependent). Until that lands, a cycle
-  /// blocks on all 57 NTS hosts.
+  /// NTS tier the same way — the 3 anycast hosts pinned as fixed
+  /// members, a configurable query target above them filled by
+  /// promotion from the unicast ranking, and a rotating explorer walk
+  /// over the rest — and answers the two clauses that did survive the
+  /// migration (NTS is the authenticated half; rotation must not make
+  /// an anchor's authentication level cycle-dependent). Until that
+  /// lands, a cycle blocks on all 57 NTS hosts.
   ///
   /// Eligibility is decided by source id, not by where the source came
   /// from. A source passes through unpartitioned when its id is absent
