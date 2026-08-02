@@ -308,7 +308,7 @@ final class SyncEngine {
   /// an anchor's authentication level cycle-dependent). Until that
   /// lands, every entry [TrustedTimeConfig.ntsInventory] yields is
   /// classified `blocking` — the curated 57 on the default posture,
-  /// none under `disableNts`, and whatever
+  /// none under [TrustedTimeConfig.disableNts], and whatever
   /// [TrustedTimeConfig.ntsInventoryForTesting] supplies otherwise.
   /// Classification is the ceiling, not the count: [sync] drops the
   /// ids still inside their `_blacklistUntil` cooldown, then re-admits
