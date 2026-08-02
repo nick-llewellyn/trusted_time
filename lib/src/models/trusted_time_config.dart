@@ -134,7 +134,17 @@ final class TrustedTimeConfig {
   /// The curated inventory behind [ntpServers], with per-host metadata.
   ///
   /// Empty when [disableNtpForTesting] is set and no
-  /// [ntpInventoryForTesting] override is supplied.
+  /// [ntpInventoryForTesting] override is supplied: the override wins
+  /// over the flag, so a test can disable the live hosts and still give
+  /// the partition a shape to narrow. Both are test seams, so neither
+  /// carries a guarantee the other can violate.
+  ///
+  /// [ntsInventory] resolves the opposite way — there the flag wins,
+  /// because [disableNts] is a production posture that `ensureNtsRuntime`
+  /// writes on a genuine FFI failure, and no substitute inventory makes a
+  /// missing runtime work. The two getters differ because the precedence
+  /// question is not the same question on both sides, not because one has
+  /// drifted.
   List<NtpServerInfo> get ntpInventory =>
       ntpInventoryForTesting ??
       (disableNtpForTesting ? const [] : curatedNtpInventory);
@@ -158,6 +168,14 @@ final class TrustedTimeConfig {
   /// narrowing then lets through unpartitioned. A test supplies its own
   /// fakes through [additionalSources] under `ntp:`-prefixed ids
   /// matching these hosts; the partition narrows those with no network.
+  ///
+  /// [ntsInventoryForTesting] deliberately does not suppress in the same
+  /// way. Keeping the network out of a unit test is solved differently on
+  /// each side: an uninitialised [NtsSource] throws on its own, so the NTS
+  /// seam can leave sources built and still stay offline, which the
+  /// bootstrap-gate regressions require. An [NtpSource] has no equivalent
+  /// self-limiting failure — it would resolve and send — so suppression
+  /// has to happen here.
   ///
   /// Not a production knob: the inventory's provenance and leap-second
   /// vetting are what make the curated list safe to query, and an
@@ -208,6 +226,12 @@ final class TrustedTimeConfig {
   /// [ntsInventoryForTesting]: the flag is what `ensureNtsRuntime`
   /// writes when the FFI bootstrap fails, and a substitute inventory
   /// cannot make a missing runtime work.
+  ///
+  /// [ntpInventory] resolves the other way round, letting its override
+  /// win over [disableNtpForTesting]. That pair is two test seams, where
+  /// precedence is a convenience; this pair crosses the production
+  /// boundary, where it is a guarantee — so the production flag has to be
+  /// the final word.
   List<NtsServerInfo> get ntsInventory =>
       disableNts ? const [] : (ntsInventoryForTesting ?? curatedNtsInventory);
 
@@ -225,6 +249,9 @@ final class TrustedTimeConfig {
   /// `ensureNtsRuntime` ran, which is gated on [ntsServers] being
   /// non-empty. Those sources throw "not initialised" per-source without
   /// aborting the cycle, so no network is touched from a unit test.
+  /// Suppressing here would leave that gate untested; not suppressing on
+  /// the NTP side would put live DNS and UDP in a unit test. Neither side
+  /// is free to adopt the other's behaviour.
   ///
   /// Not a production knob: the inventory's provenance and leap-second
   /// vetting are what make the curated list safe to query, and an

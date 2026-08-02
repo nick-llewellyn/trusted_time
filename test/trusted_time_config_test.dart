@@ -272,6 +272,11 @@ void main() {
       // partition still has something to narrow. If the flag won, every
       // test pairing the two would silently take the "nothing to
       // narrow" branch and assert vacuously.
+      //
+      // The NTS pair resolves the opposite way — see 'disableNts
+      // overrides ntsInventoryForTesting'. Both are test seams here, so
+      // precedence is only a convenience; there the flag is a production
+      // posture, so it has to be the final word.
       const entry = NtpServerInfo(
         host: 'fake.test',
         tier: TimeServerTier.anycast,
@@ -389,9 +394,12 @@ void main() {
 
     test('disableNts overrides ntsInventoryForTesting', () {
       // Diverges from the NTP pair, where the override wins over the
-      // flag. disableNts is what ensureNtsRuntime writes when the FFI
-      // bootstrap fails, and no substitute inventory can make a missing
-      // runtime work — so the flag has to be the final word.
+      // flag ('ntpInventoryForTesting survives disableNtpForTesting'
+      // pins that direction). disableNts is what ensureNtsRuntime writes
+      // when the FFI bootstrap fails, and no substitute inventory can
+      // make a missing runtime work — so the flag has to be the final
+      // word. That pair is two test seams; this one crosses into
+      // production, which is what flips the precedence.
       const config = TrustedTimeConfig(
         disableNts: true,
         ntsInventoryForTesting: [_ntsEntry],
