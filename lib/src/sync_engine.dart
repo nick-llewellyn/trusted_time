@@ -301,9 +301,10 @@ final class SyncEngine {
   /// inventory. ADR 0007's 2026-08-02 postscript decides to narrow the
   /// NTS tier the same way — the 3 anycast hosts pinned as fixed
   /// members, a configurable query target above them filled by
-  /// promotion from the unicast ranking, and a rotating explorer walk
-  /// over the rest — and answers the two clauses that did survive the
-  /// migration (NTS is the authenticated half; rotation must not make
+  /// promotion from the unicast ranking (or, while that ranking is
+  /// empty, from the head of the walk order), and a rotating explorer
+  /// walk over the rest — and answers the two clauses that did survive
+  /// the migration (NTS is the authenticated half; rotation must not make
   /// an anchor's authentication level cycle-dependent). Until that
   /// lands, a cycle blocks on all 57 NTS hosts.
   ///

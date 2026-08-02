@@ -88,7 +88,8 @@ PR, three Accepted ADRs are known to diverge from current code:
   ADR 0007's 2026-08-02 postscript decides that the engine narrows it
   per cycle to a query target of 5 (configurable) — the 3 anycast
   hosts pinned as fixed members plus promotion from the unicast
-  ranking — against a validity floor of 3 responders, with the
+  ranking, or from the walk order while that ranking is empty —
+  against a validity floor of 3 responders, with the
   remaining unicast hosts on a rotating explorer walk
   (`trusted_time-ky3`). That partition is decided but not yet
   implemented — see the ADR 0007 row below.

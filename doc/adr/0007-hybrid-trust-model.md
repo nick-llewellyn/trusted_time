@@ -467,16 +467,21 @@ means one timeout degrades the cycle.
   a consumer: a discovered fast unicast host is one the truth box
   actually uses. It also supplies the failure headroom — with a
   target of 5 and 3 fixed members, two hosts can fail and the floor
-  is still met.
+  is still met. A host is promotable only on a *recorded success*, not
+  on the mere existence of a tracker entry: a host known solely from a
+  failed probe would otherwise fill a slot and make the target's
+  headroom nominal — a target of 5 carrying two hosts expected to fail
+  is three real responders wearing a five.
+- **Cold-start fill — with no ranking, the target is filled from the
+  walk order.** See the subsection below; this is the case where
+  "promote by rank" has no rank to consult.
 - **The query target is a config knob, clamped to the floor.**
   Defaulting to 5, which keeps the tier inside the table's stated 3–5
   band. Installs on a metered or battery-critical profile can lower
   it; installs that want more headroom can raise it. The setter
   rejects a value below the validity floor rather than silently
   clamping, since a target under the floor is a configuration that can
-  never produce a truth box. An install with no unicast history has
-  nothing to promote and runs the 3 fixed members regardless of the
-  knob.
+  never produce a truth box.
 - **Exploration — the 54 unicast S1/S2 hosts are an explorer walk**,
   probed a few per cycle under the staleness-ordered, per-install
   shuffled traversal `partitionInventory` already implements. Explorer
@@ -513,6 +518,93 @@ trust property: every member is `NtsAuthLevel.verified` whichever
 cycle it landed in, and `TrustAnchor.authLevel` is unaffected by which
 of them answered.
 
+### Cold installs, and why NTS needs a step NTP does not
+
+The partition above is the NTP shape applied to a second inventory,
+but the two tiers are not the same size, and the whole cold-start
+problem is that asymmetry:
+
+| Inventory | anycast (fixed members) | unicast (explorer pool) |
+|-----------|------------------------:|------------------------:|
+| NTP       | 11                      | 41                      |
+| NTS       | 3                       | 54                      |
+
+NTP's fixed members outnumber its floor of 2 by nine, so the NTP
+partition has never needed a promotion step: the quorum is whole on
+the first cycle of a fresh install and stays whole through several
+simultaneous failures. NTS pins 3 fixed members against a floor of 3.
+Promotion is not a refinement borrowed from the NTP side — it is the
+mechanism that supplies the headroom the NTS tier's population does
+not, and on a cold install it is the only thing standing between the
+floor and a single timeout.
+
+Promotion draws on `SourceQualityTracker`, which is empty on a fresh
+install. Explorer samples cannot fill the gap within the cycle: they
+are excluded from the consensus population by construction, so a
+cycle-1 explorer probe informs the *next* cycle's promotion and not
+this one's box. Taken literally, a cold install would therefore query
+exactly the 3 fixed members whatever the target is set to, and the
+knob would be inert in precisely the window where headroom matters
+most.
+
+**Resolution: on an empty ranking, fill the target from the walk
+order rather than skipping promotion.** `partitionInventory` already
+sorts never-probed hosts first with `ExplorerShuffle` breaking the
+ties, so on a cold install that ordering *is* a per-install random
+draw over the 54 unicast hosts. Filling from it introduces no new
+selection rule and no new randomness — it promotes the first entries
+of the traversal the partition computes anyway. Concretely, at a
+target of 5 the first two walk entries are marked `blocking` instead
+of `explorers`.
+
+The handshake cost is identical either way: those hosts are probed
+this cycle regardless. What the fill changes is only whether the
+cycle is *permitted to use* the result. Spending two NTS-KE
+handshakes and then discarding the samples, in the one cycle where
+the floor is otherwise unmet, is not defensible.
+
+What it does cost is latency. A blocking host gates the cycle, where
+an explorer is fire-and-forget under the 2 s `explorerTimeout`; a
+cold-start-filled host is unmeasured by definition, so cycle 1 waits
+on hosts nothing is known about. This is accepted: cycle 1 is also
+the cycle with no cached anchor, so its latency is already the
+install's worst, and `maxLatency` bounds it.
+
+Three qualifications keep this honest:
+
+- **The floor is a regression here, not merely a lack of headroom.**
+  Two verified responders that agree form a truth box *today* —
+  `_resolveCore` computes `requiredQuorum = ceil(2 × 0.6) = 2` and
+  passes. Raising the truth-box floor to 3 removes that case. The
+  cold window does not just lose tolerance; it loses a configuration
+  that currently works.
+- **The exposure is cycle 1, but cycle 1 is the expensive one.** One
+  cycle of explorers populates the tracker, so promotion has rank to
+  consult from cycle 2 onward. Narrow in count — but cycle 1 is the
+  install's first launch and the first anchor a consumer ever sees,
+  and at the 24 h establish cadence (ADR 0006) cycle 2 is a day away.
+  A lost or corrupt tracker returns an install to this state.
+- **The dominant cold failure is correlated, so headroom is worth
+  less than the arithmetic suggests.** The floor's reasoning assumes
+  independent host failures. The realistic cold-install NTS failure is
+  the client network — port 4460 blocked, TLS interception, a captive
+  portal — and that fails all three fixed members at once. The
+  outcomes cluster at 3 responders or 0, and the 2-responder middle
+  case the floor newly rejects is thin. This cuts both ways: it makes
+  the regression above smaller in practice, and it means headroom of
+  any size buys nothing against the failure that actually dominates.
+  The fill is justified by the wasted-handshake argument, not by an
+  expected-value claim about failure rates.
+
+**Degradation is not loss of time.** When the verified pass fails,
+`resolve()` falls back to a legacy single-tier reduction over every
+sample, NTP included, so a cold install that loses a fixed member
+still publishes an anchor — at `NtsAuthLevel.none` with
+`degradedTier` set. The cost is trust level and a
+`TrustStatusReason.degraded` assessment, not availability. A consumer
+gating on `verified` fails closed on day one; one reading wall time
+does not.
+
 ### Accepted costs
 
 - **The authenticated population per cycle drops from 57 to the
@@ -535,16 +627,18 @@ of them answered.
   already "tracks the NTS quorum's natural tightness"); the tightness
   is now also a function of how far this install's ranking has
   converged.
-- **Cold-start installs run the 3 fixed members with no headroom.**
-  Until the walk has measured unicast candidates there is nothing to
-  promote, so a cold install sits exactly on the floor whatever the
-  target is set to: one anycast host failing to answer degrades the
-  cycle. `wy3` burst-sampling and the front-loaded explorer budget
-  both shorten that window, but the first cycles of an install have
-  the narrowest box they will ever have and the least tolerance for a
-  failure — which is also when `minGroupCount` is doing the most work,
-  hence the requirement that the three anycast hosts span three
-  groups.
+- **Cold-start installs fill the target with unmeasured hosts.** The
+  fill above restores the count but not the quality: cycle 1's
+  promoted members are drawn from the walk, so they may be slow, far,
+  or down, and the cycle blocks on them under `maxLatency`. The
+  headroom is real — a fixed member can fail and the floor still holds
+  — but it is headroom against *host* failure specifically, and it
+  arrives at the cost of the install's slowest cycle. This is also
+  when `minGroupCount` is doing the most work, hence the requirement
+  that the three anycast hosts span three groups on their own rather
+  than relying on the fill for diversity. `wy3` burst-sampling and the
+  front-loaded explorer budget shorten the window in which any of this
+  applies.
 - **Sweep latency.** 54 candidates at a narrow NTS budget is many
   cycles at the 24h establish cadence (ADR 0006). A host that
   regressed between probes stays in the ranking on stale evidence for
@@ -553,6 +647,28 @@ of them answered.
 
 ### Alternatives considered
 
+- **Cold installs run the fixed members alone, with no fill.** The
+  literal reading of "promote by rank" when there is no rank.
+  Rejected: the hosts that would have filled the target are probed as
+  explorers in that same cycle anyway, so the cycle pays the NTS-KE
+  handshakes and then discards the samples at precisely the moment the
+  floor is unmet. It also makes the query-target knob inert on day
+  one, which is the window it was added for.
+- **Cold-start fill from explorer samples that already arrived**
+  (admit verified explorers when the blocking set lands below the
+  floor). Uses work already paid for, and gives the walk a second
+  consumer. Rejected as the primary shape: it makes the truth box's
+  membership depend on where the walk happens to be, in exactly the
+  failure case — reopening the cycle-invariance question the fixed
+  members close. Deciding membership *before* the probes are launched
+  keeps the invariant intact for the same handshake cost. Worth
+  revisiting only if blocking on unmeasured hosts proves too slow in
+  practice.
+- **A relaxed floor of 2 during a cold window only.** Would preserve
+  the case the floor removes without a fill step. Rejected: a fresh
+  install on an unknown network is the worst moment to lower the
+  tolerance, and a floor that varies with install age is a trust
+  property that varies with install age.
 - **A validity floor of 2 rather than 3.** Matches
   `TrustedTimeConfig.minimumQuorum` and `_resolveCore`'s existing
   guard, so it would need no new constraint. Rejected: at 2 responders
@@ -593,12 +709,21 @@ of them answered.
 ### Follow-up
 
 Implementation is a separate ticket: apply `partitionInventory` to
-`ntsInventory` in `_selectCycleHosts`, add the promotion step, the
-query-target knob with its floor clamp, and the NTS explorer budget
-constants, enforce the 3-responder validity floor on the truth-box
-pass, scope `warmAllSources()` to the cycle's hosts, and rewrite the
-`sync_engine.dart` dartdoc that still rests on the "there are few of
-them" premise.
+`ntsInventory` in `_selectCycleHosts`, add the promotion step with its
+recorded-success requirement and its cold-start fill from the walk
+order, the query-target knob with its floor clamp, and the NTS
+explorer budget constants, enforce the 3-responder validity floor on
+the truth-box pass, scope `warmAllSources()` to the cycle's hosts, and
+rewrite the `sync_engine.dart` dartdoc that still rests on the "there
+are few of them" premise.
+
+The cold-start fill is a promotion-source change, not a second
+mechanism: `partitionInventory` already returns the walk in staleness
+order with never-probed hosts first, so the fill takes its prefix and
+reclassifies those ids from `explorers` to `blocking`. The
+`explorerBudget` passed to the partition has to account for the ones
+promoted out, or the cycle widens by the fill rather than
+reallocating within it.
 
 The validity floor is the one piece that is not a `SyncEngine` change.
 `MarzulloEngine.resolve` reaches its degraded fallback when
