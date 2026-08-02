@@ -412,9 +412,13 @@ already narrows the plain-NTP inventory. Decision tracked as
 
 `SyncEngine._selectCycleHosts` partitions `ntpInventory` only. An NTS
 source id is in neither the explorer set nor the NTP inventory id set,
-so it falls to the `blocking` branch — every one of the 57 hosts
-blocks every cycle, and `warmAllSources()` opens 57 concurrent NTS-KE
-handshakes at bootstrap and again at each cycle's warming barrier.
+so it falls to the `blocking` branch — every host in `ntsInventory`
+blocks every cycle, and `warmAllSources()` opens one concurrent NTS-KE
+handshake per host at bootstrap and again at each cycle's warming
+barrier. On the default posture that getter yields the curated 57, so
+57 is the number this postscript quotes throughout; `disableNts`
+empties it and `ntsInventoryForTesting` substitutes for it, neither of
+which is the configuration the cost argument is about.
 Each is a TCP connect plus a TLS handshake plus a key exchange, so
 this is not the NTP tier's cost profile scaled up; it is a
 qualitatively heavier fan-out that the shared `DnsBudget` (ADR 0008)
@@ -708,14 +712,17 @@ does not.
 
 ### Follow-up
 
-Implementation is a separate ticket: apply `partitionInventory` to
-`ntsInventory` in `_selectCycleHosts`, add the promotion step with its
+Implementation is a separate ticket, `trusted_time-1ww` — this
+postscript is `trusted_time-ky3`, which closes on the decision, while
+the code divergence the ADR index lists clears only when `1ww` lands.
+It applies `partitionInventory` to `ntsInventory` in
+`_selectCycleHosts`, adds the promotion step with its
 recorded-success requirement and its cold-start fill from the walk
 order, the query-target knob with its floor clamp, and the NTS
-explorer budget constants, enforce the 3-responder validity floor on
-the truth-box pass, scope `warmAllSources()` to the cycle's hosts, and
-rewrite the `sync_engine.dart` dartdoc that still rests on the "there
-are few of them" premise.
+explorer budget constants; enforces the 3-responder validity floor on
+the truth-box pass; scopes `warmAllSources()` to the cycle's hosts;
+and rewrites the `sync_engine.dart` dartdoc that still rests on the
+"there are few of them" premise.
 
 The cold-start fill is a promotion-source change, not a second
 mechanism: `partitionInventory` already returns the walk in staleness

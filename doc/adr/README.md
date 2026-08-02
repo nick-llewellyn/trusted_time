@@ -90,19 +90,20 @@ PR, three Accepted ADRs are known to diverge from current code:
   hosts pinned as fixed members plus promotion from the unicast
   ranking, or from the walk order while that ranking is empty —
   against a validity floor of 3 responders, with the
-  remaining unicast hosts on a rotating explorer walk
-  (`trusted_time-ky3`). That partition is decided but not yet
-  implemented — see the ADR 0007 row below.
+  remaining unicast hosts on a rotating explorer walk. Decided in
+  `trusted_time-ky3`; the divergence clears with the implementation,
+  `trusted_time-1ww` — see the ADR 0007 row below.
 - **ADR 0002** decides on real headless background anchor refresh.
   Implementation is still in-progress (`trusted_time-e0v`) — the
   current native code performs only an HTTPS HEAD connectivity check.
 - **ADR 0007**'s 2026-08-02 postscript (NTS tier partitioned per
   cycle) is decided but not implemented. `_selectCycleHosts` still
-  partitions the NTP inventory alone, so every NTS host blocks every
-  cycle and `warmAllSources()` fans out across the whole inventory,
-  and `MarzulloEngine._resolveCore` still floors the truth-box pass at
-  2 responders rather than the 3 the postscript requires. Tracked as
-  `trusted_time-ky3`; the ADR's three earlier implementation pieces
+  partitions the NTP inventory alone, so with NTS enabled every host
+  in `ntsInventory` blocks every cycle and `warmAllSources()` fans out
+  across all of them, and `MarzulloEngine._resolveCore` still floors
+  the truth-box pass at 2 responders rather than the 3 the postscript
+  requires. Tracked as `trusted_time-1ww` (decision:
+  `trusted_time-ky3`); the ADR's three earlier implementation pieces
   have all landed (see the note below).
 
 Notes on previously-listed divergences:

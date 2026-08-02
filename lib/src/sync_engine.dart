@@ -306,7 +306,10 @@ final class SyncEngine {
   /// walk over the rest — and answers the two clauses that did survive
   /// the migration (NTS is the authenticated half; rotation must not make
   /// an anchor's authentication level cycle-dependent). Until that
-  /// lands, a cycle blocks on all 57 NTS hosts.
+  /// lands, a cycle blocks on every entry
+  /// [TrustedTimeConfig.ntsInventory] yields — the curated 57 on the
+  /// default posture, none under `disableNts`, and whatever
+  /// [TrustedTimeConfig.ntsInventoryForTesting] supplies otherwise.
   ///
   /// Eligibility is decided by source id, not by where the source came
   /// from. A source passes through unpartitioned when its id is absent
