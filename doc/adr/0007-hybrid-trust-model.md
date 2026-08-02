@@ -546,10 +546,10 @@ problem is that asymmetry:
 
 | Inventory | anycast (fixed members) | unicast (explorer pool) |
 |-----------|------------------------:|------------------------:|
-| NTP       | 11                      | 41                      |
+| NTP       | 10                      | 41                      |
 | NTS       | 3                       | 54                      |
 
-NTP's fixed members outnumber its floor of 2 by nine, so the NTP
+NTP's fixed members outnumber its floor of 2 by eight, so the NTP
 partition has never needed a promotion step: the quorum is whole on
 the first cycle of a fresh install and stays whole through several
 simultaneous failures. NTS pins 3 fixed members against a floor of 3.
