@@ -293,11 +293,18 @@ final class SyncEngine {
 
   /// The source ids this cycle may query.
   ///
-  /// Only the curated plain-NTP inventory is partitioned. NTS sources
-  /// are always eligible: there are few of them, they are the
-  /// authenticated half of the consensus, and rotating them would make
-  /// the authentication level of an anchor depend on which cycle it
-  /// landed in.
+  /// Only the curated plain-NTP inventory is partitioned. Every NTS
+  /// source is eligible every cycle, which is a known divergence from
+  /// ADR 0007 rather than the position of record: the "there are few
+  /// of them" premise this pass-through rested on held for the
+  /// two-host default and does not hold for the 57-host curated
+  /// inventory. ADR 0007's 2026-08-02 postscript decides to narrow the
+  /// NTS tier the same way — a fixed anycast quorum floor filled by
+  /// promotion, plus a rotating explorer walk over the unicast hosts —
+  /// and answers the two clauses that did survive the migration (NTS
+  /// is the authenticated half; rotation must not make an anchor's
+  /// authentication level cycle-dependent). Until that lands, a cycle
+  /// blocks on all 57 NTS hosts.
   ///
   /// Eligibility is decided by source id, not by where the source came
   /// from. A source passes through unpartitioned when its id is absent

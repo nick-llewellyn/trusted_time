@@ -395,3 +395,150 @@ authenticated vs degraded anchors via `confidenceScore`" is
 superseded: the discriminant is `TrustAnchor.authLevel` (and the
 `degradedTier` event), never the confidence surface. Decision
 tracked as `trusted_time-r9h`.
+
+## Postscript: the NTS tier is partitioned per cycle (2026-08-02)
+
+The tier table above sizes NTS at "3–5 hosts" and rules it "always
+admitted to its own quorum". `trusted_time-7pb` replaced the two-host
+NTS default with a curated 57-host inventory
+(`lib/src/data/nts_inventory.dart`) without revisiting either. This
+postscript records how the two are reconciled: the **tier size is a
+per-cycle property, not an inventory property**, and the engine
+narrows the 57-host inventory to that size every cycle the way it
+already narrows the plain-NTP inventory. Decision tracked as
+`trusted_time-ky3`.
+
+### What the inventory migration broke
+
+`SyncEngine._selectCycleHosts` partitions `ntpInventory` only. An NTS
+source id is in neither the explorer set nor the NTP inventory id set,
+so it falls to the `blocking` branch — every one of the 57 hosts
+blocks every cycle, and `warmAllSources()` opens 57 concurrent NTS-KE
+handshakes at bootstrap and again at each cycle's warming barrier.
+Each is a TCP connect plus a TLS handshake plus a key exchange, so
+this is not the NTP tier's cost profile scaled up; it is a
+qualitatively heavier fan-out that the shared `DnsBudget` (ADR 0008)
+throttles but does not bound.
+
+The engine's own dartdoc justified the pass-through on three grounds:
+there are few NTS hosts, they are the authenticated half of the
+consensus, and rotating them would make an anchor's authentication
+level depend on which cycle it landed in. Only the first was
+invalidated by the migration. The decision below is what the other
+two survive as.
+
+### Decision
+
+Apply `partitionInventory` (`lib/src/domain/inventory_partition.dart`)
+to `ntsInventory` on the same tier rule the NTP tier uses, with the
+quorum widened by promotion:
+
+- **Quorum floor — the 3 `TimeServerTier.anycast` hosts, every
+  cycle.** `time.cloudflare.com`, `nts.netnod.se`, and `any.time.nl`,
+  which sit in three distinct registrable-domain groups, so the floor
+  alone satisfies `minGroupCount = 2`. Anycast hosts need no
+  per-install ranking to be near the caller, which is what makes a
+  fixed floor viable on day one.
+- **Promotion — the quorum is filled to 5 from the top of the unicast
+  ranking.** This keeps the tier inside its stated 3–5 band rather
+  than shrinking it to 3, and it is the consumer of the exploration
+  below: a discovered fast unicast host is one the truth box actually
+  uses. Promotion is by `SourceQualityTracker` rank, so an install
+  with no unicast history runs a 3-host box until the walk has
+  measured something.
+- **Exploration — the 54 unicast S1/S2 hosts are an explorer walk**,
+  probed a few per cycle under the staleness-ordered, per-install
+  shuffled traversal `partitionInventory` already implements. Explorer
+  samples feed the ranking only: they reach neither the Marzullo
+  population nor the cycle's completion, exactly as on the NTP side.
+- **Separate budget from NTP.** `partitionInventory`'s dartdoc already
+  anticipates this ("callers keep the protocols' budgets and staleness
+  lookups separate, since an NTS probe costs a TLS handshake an NTP
+  probe does not"). The NTS explorer budget is sized independently and
+  is narrower.
+
+Per-cycle NTS-KE handshakes go from 57 to `quorum + ntsExplorerBudget`
+— single digits — and `warmAllSources()` is bounded by the same set,
+since warming must cover the cycle's hosts rather than the inventory.
+
+### "Always admitted" is unchanged; it was never a query rule
+
+The tier table's admission column says NTS is "always admitted to its
+own quorum". That governs **what happens to a sample that was
+collected**: an NTS sample is never gated against the truth box,
+because it is what defines the truth box. Partitioning governs **which
+hosts are queried**. Every NTS sample a partitioned cycle collects is
+still admitted unconditionally; there is simply no cycle in which all
+57 are collected. The rule and the partition are orthogonal, and the
+table needs no amendment.
+
+The "authentication level depends on which cycle" objection is
+answered by the quorum floor rather than dismissed. The three anycast
+hosts are queried every cycle, so an anchor's *access* to a verified
+truth box does not turn on where the walk happens to be. What does
+vary between cycles is the box's membership above the floor — the
+promoted hosts — and its width with it. That is a precision property,
+not a trust property: every member is `NtsAuthLevel.verified`
+whichever cycle it landed in, and `TrustAnchor.authLevel` is
+unaffected by which of them answered.
+
+### Accepted costs
+
+- **The authenticated population per cycle drops from 57 to 5.** The
+  truth box is correspondingly less able to outvote a compromised
+  member: at 5 hosts across at least three operators the Marzullo
+  intersection still tolerates a minority liar, but the margin is
+  thinner than a 57-host box would give. This is the deliberate
+  trade — a 57-host box was never affordable to collect, so the
+  comparison is against a box the engine could not build, not one it
+  was building.
+- **Truth-box width becomes install-dependent.** Two devices at the
+  same instant can have different promoted members and so differently
+  tight boxes. Consistent with open question 1 above (the box's width
+  already "tracks the NTS quorum's natural tightness"); the tightness
+  is now also a function of how far this install's ranking has
+  converged.
+- **Cold-start installs run the 3-host floor.** Until the walk has
+  measured unicast candidates there is nothing to promote. `wy3`
+  burst-sampling and the front-loaded explorer budget both shorten
+  that window, but the first cycles of an install have the narrowest
+  box they will ever have — which is also when `minGroupCount` is
+  doing the most work, hence the requirement that the three anycast
+  hosts span three groups.
+- **Sweep latency.** 54 candidates at a narrow NTS budget is many
+  cycles at the 24h establish cadence (ADR 0006). A host that
+  regressed between probes stays in the ranking on stale evidence for
+  correspondingly longer. The floor is unaffected, so the failure mode
+  is a suboptimal promotion, not a lost truth box.
+
+### Alternatives considered
+
+- **No promotion — a strictly fixed 3-host quorum.** The simplest
+  reading of the partition, and the tightest cycle-invariance
+  guarantee. Rejected: it puts the tier below its own stated band, and
+  it leaves the explorer walk with no consumer — 54 hosts measured
+  every install, none of which could ever contribute time. Measurement
+  with no consumer is cost with no benefit.
+- **Promotion only on anycast failure (backfill).** Preserves an
+  exactly-fixed quorum in the steady state and widens only when the
+  floor degrades. Rejected as the primary shape for the same
+  no-consumer reason — the walk would pay for itself only in the
+  degraded case — but it is the natural fallback if promotion is later
+  found to destabilise box width, and the implementation should keep
+  the failure path able to reach outside the floor regardless.
+- **Bound only the bootstrap warm fan-out, leave per-cycle
+  unpartitioned.** Addresses the loudest symptom and none of the
+  cause: every cycle would still open 57 handshakes at its warming
+  barrier. Rejected.
+- **Partition NTS on the NTP explorer budget.** Rejected: an NTS probe
+  is TCP + TLS + KE where an NTP probe is one UDP round trip, so the
+  budget that fits an iOS `BGAppRefreshTask` for one protocol does not
+  for the other.
+
+### Follow-up
+
+Implementation is a separate ticket: apply `partitionInventory` to
+`ntsInventory` in `_selectCycleHosts`, add the promotion step and the
+NTS explorer budget constants, scope `warmAllSources()` to the cycle's
+hosts, and rewrite the `sync_engine.dart` dartdoc that still rests on
+the "there are few of them" premise.

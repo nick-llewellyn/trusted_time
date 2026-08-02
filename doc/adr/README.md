@@ -84,10 +84,21 @@ PR, three Accepted ADRs are known to diverge from current code:
   `ntsInventory` (see `trusted_time-cln`, `trusted_time-2tx`,
   `trusted_time-7pb`). `disableNts` turns the feature off wholesale.
   The `Decision` text is the original position; the implementation has
-  deliberately moved on.
+  deliberately moved on. The 57-host inventory is not a 57-host tier:
+  ADR 0007's 2026-08-02 postscript decides that the engine narrows it
+  per cycle to a 3-host anycast quorum floor, filled to 5 by
+  promotion, plus a rotating explorer walk over the 54 unicast hosts
+  (`trusted_time-ky3`). That partition is decided but not yet
+  implemented — see the ADR 0007 row below.
 - **ADR 0002** decides on real headless background anchor refresh.
   Implementation is still in-progress (`trusted_time-e0v`) — the
   current native code performs only an HTTPS HEAD connectivity check.
+- **ADR 0007**'s 2026-08-02 postscript (NTS tier partitioned per
+  cycle) is decided but not implemented. `_selectCycleHosts` still
+  partitions the NTP inventory alone, so every NTS host blocks every
+  cycle and `warmAllSources()` fans out across the whole inventory.
+  Tracked as `trusted_time-ky3`; the ADR's three earlier
+  implementation pieces have all landed (see the note below).
 
 Notes on previously-listed divergences:
 
@@ -113,7 +124,8 @@ Notes on previously-listed divergences:
   should be read against that postscript: the truth box is still
   recomputed per-establish; there is simply no validate cycle between
   establishes any more.
-- **ADR 0007** is no longer listed as a code divergence. Its three
+- **ADR 0007**'s original decision is no longer listed as a code
+  divergence (its 2026-08-02 postscript is, above). Its three
   implementation pieces have landed: tier-aware Marzullo admission
   and the `degradedTier` `IntegrityEvent` reason via `trusted_time-q1n`
   (PR #48), and the ASN-based NTP `groupId` derivation via
