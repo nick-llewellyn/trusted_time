@@ -293,11 +293,29 @@ final class SyncEngine {
 
   /// The source ids this cycle may query.
   ///
-  /// Only the curated plain-NTP inventory is partitioned. NTS sources
-  /// are always eligible: there are few of them, they are the
-  /// authenticated half of the consensus, and rotating them would make
-  /// the authentication level of an anchor depend on which cycle it
-  /// landed in.
+  /// Only the curated plain-NTP inventory is partitioned. Every NTS
+  /// source is eligible every cycle, which is a known divergence from
+  /// ADR 0007 rather than the position of record: the "there are few
+  /// of them" premise this pass-through rested on held for the
+  /// two-host default and does not hold for the 57-host curated
+  /// inventory. ADR 0007's 2026-08-02 postscript decides to narrow the
+  /// NTS tier the same way — the 3 anycast hosts pinned as fixed
+  /// members, a configurable query target above them filled by
+  /// promotion from the unicast ranking (or, while that ranking is
+  /// empty, from the head of the walk order), and a rotating explorer
+  /// walk over the rest — and answers the two clauses that did survive
+  /// the migration (NTS is the authenticated half; rotation must not make
+  /// an anchor's authentication level cycle-dependent). Until that
+  /// lands, every entry [TrustedTimeConfig.ntsInventory] yields is
+  /// classified `blocking` — the curated 57 on the default posture,
+  /// none under [TrustedTimeConfig.disableNts], and whatever
+  /// [TrustedTimeConfig.ntsInventoryForTesting] supplies otherwise.
+  /// Classification is the ceiling, not the count: [sync] drops the
+  /// ids still inside their `_blacklistUntil` cooldown, then re-admits
+  /// any of them the starvation rescue finds overdue, so how many
+  /// blocking hosts actually gate a cycle is decided downstream. The
+  /// ceiling holds either way — the rescue only reaches ids already in
+  /// this set, never widening it.
   ///
   /// Eligibility is decided by source id, not by where the source came
   /// from. A source passes through unpartitioned when its id is absent

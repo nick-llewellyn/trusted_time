@@ -84,10 +84,29 @@ PR, three Accepted ADRs are known to diverge from current code:
   `ntsInventory` (see `trusted_time-cln`, `trusted_time-2tx`,
   `trusted_time-7pb`). `disableNts` turns the feature off wholesale.
   The `Decision` text is the original position; the implementation has
-  deliberately moved on.
+  deliberately moved on. The 57-host inventory is not a 57-host tier:
+  ADR 0007's 2026-08-02 postscript decides that the engine narrows it
+  per cycle to a query target of 5 (configurable) — the 3 anycast
+  hosts pinned as fixed members plus promotion from the unicast
+  ranking, or from the walk order while that ranking is empty —
+  against a validity floor of 3 responders, with the
+  remaining unicast hosts on a rotating explorer walk. Decided in
+  `trusted_time-ky3`; the divergence clears with the implementation,
+  `trusted_time-1ww` — see the ADR 0007 row below.
 - **ADR 0002** decides on real headless background anchor refresh.
   Implementation is still in-progress (`trusted_time-e0v`) — the
   current native code performs only an HTTPS HEAD connectivity check.
+- **ADR 0007**'s 2026-08-02 postscript (NTS tier partitioned per
+  cycle) is decided but not implemented. `_selectCycleHosts` still
+  partitions the NTP inventory alone, so with NTS enabled every host
+  in `ntsInventory` is classified `blocking` every cycle — how many of
+  those gate is then settled by `sync()`'s cooldown filter and its
+  starvation rescue — and `warmAllSources()` fans out across all of
+  them regardless, and `MarzulloEngine._resolveCore` still floors
+  the truth-box pass at 2 responders rather than the 3 the postscript
+  requires. Tracked as `trusted_time-1ww` (decision:
+  `trusted_time-ky3`); the ADR's three earlier implementation pieces
+  have all landed (see the note below).
 
 Notes on previously-listed divergences:
 
@@ -113,7 +132,8 @@ Notes on previously-listed divergences:
   should be read against that postscript: the truth box is still
   recomputed per-establish; there is simply no validate cycle between
   establishes any more.
-- **ADR 0007** is no longer listed as a code divergence. Its three
+- **ADR 0007**'s original decision is no longer listed as a code
+  divergence (its 2026-08-02 postscript is, above). Its three
   implementation pieces have landed: tier-aware Marzullo admission
   and the `degradedTier` `IntegrityEvent` reason via `trusted_time-q1n`
   (PR #48), and the ASN-based NTP `groupId` derivation via
