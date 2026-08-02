@@ -42,10 +42,10 @@ typedef NtsInitFn = Future<void> Function();
 ///   the engine with zero sources for the rest of the process lifetime.
 /// - Other exceptions (missing native asset, arch mismatch, etc.) are treated
 ///   as real failures and disable NTS for this configuration by returning a
-///   copy with empty [ntsServers].
+///   copy with [TrustedTimeConfig.disableNts] set.
 ///
 /// Returns [config] unchanged on success (or when NTS is not configured), or
-/// `config.copyWith(ntsServers: const [])` when a genuine init failure means
+/// `config.copyWith(disableNts: true)` when a genuine init failure means
 /// NTS must be disabled for this run.
 Future<TrustedTimeConfig> ensureNtsRuntime(
   TrustedTimeConfig config, {
@@ -83,6 +83,6 @@ Future<TrustedTimeConfig> ensureNtsRuntime(
         '[TrustedTime] NTS disabled — NtsRustLib.init failed: $e',
       );
     }
-    return config.copyWith(ntsServers: const []);
+    return config.copyWith(disableNts: true);
   }
 }

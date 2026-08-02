@@ -24,7 +24,7 @@ SyncEngine _engineFor(
       // does not depend on which sample wins the early-exit race.
       earlyExit: false,
       disableNtpForTesting: true,
-      ntsServers: [],
+      disableNts: true,
     ).copyWith(additionalSources: sources),
     clock: clock ?? FakeMonotonicClock(),
     observer: observer,

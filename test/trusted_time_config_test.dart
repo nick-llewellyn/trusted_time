@@ -6,7 +6,17 @@
 //   time_sample_test.dart TimeSample
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/data/nts_inventory.dart'
+    show curatedNtsHostnames;
 import 'package:trusted_time/trusted_time.dart';
+
+/// A substitute NTS inventory entry for the seam tests.
+const _ntsEntry = NtsServerInfo(
+  host: 'fake.nts.test',
+  tier: TimeServerTier.anycast,
+  observedStratum: 1,
+  leapPolicy: LeapPolicy.documentedStepping,
+);
 
 void main() {
   group('TrustedTimeConfig trust policy', () {
@@ -264,6 +274,11 @@ void main() {
       // partition still has something to narrow. If the flag won, every
       // test pairing the two would silently take the "nothing to
       // narrow" branch and assert vacuously.
+      //
+      // The NTS pair resolves the opposite way — see 'disableNts
+      // overrides ntsInventoryForTesting'. Both are test seams here, so
+      // precedence is only a convenience; there the flag is a production
+      // posture, so it has to be the final word.
       const entry = NtpServerInfo(
         host: 'fake.test',
         tier: TimeServerTier.anycast,
@@ -345,13 +360,117 @@ void main() {
       expect(a.toString(), contains('stratum 2'));
     });
 
-    test('ntsServers default to two anycast anchors from distinct '
-        'operators', () {
-      // minGroupCount defaults to 2, so the default NTS pool must
-      // span two registrable-domain groups to mint a verified truth
-      // box on its own.
+    test('ntsServers is the curated inventory', () {
       const config = TrustedTimeConfig();
-      expect(config.ntsServers, ['time.cloudflare.com', 'nts.netnod.se']);
+      expect(config.ntsInventory, same(curatedNtsInventory));
+      expect(config.ntsServers, hasLength(curatedNtsInventory.length));
+    });
+
+    test('ntsServers is the hostname view of ntsInventory', () {
+      const config = TrustedTimeConfig();
+      expect(
+        config.ntsServers,
+        config.ntsInventory.map((e) => e.host).toList(),
+      );
+    });
+
+    test('ntsServers reuses the precomputed curated hostnames', () {
+      // The getter is read on every engine cycle and on each isEmpty
+      // gate (nts_bootstrap, supportsSecureTime), so the curated path
+      // must not rebuild the list. Identity also pins that the getter
+      // recognises the curated inventory rather than copying it.
+      const config = TrustedTimeConfig();
+      expect(config.ntsServers, same(curatedNtsHostnames));
+    });
+
+    test('ntsServers is unmodifiable on every path', () {
+      // Matches ntpServers, which returns the unmodifiable curated
+      // list or a const empty one.
+      const curated = TrustedTimeConfig();
+      const disabled = TrustedTimeConfig(disableNts: true);
+      const overridden = TrustedTimeConfig(ntsInventoryForTesting: [_ntsEntry]);
+      for (final servers in [
+        curated.ntsServers,
+        disabled.ntsServers,
+        overridden.ntsServers,
+      ]) {
+        expect(() => servers.add('x'), throwsUnsupportedError);
+      }
+    });
+
+    test('disableNts empties the NTS pool', () {
+      const config = TrustedTimeConfig(disableNts: true);
+      expect(config.ntsServers, isEmpty);
+      expect(config.ntsInventory, isEmpty);
+    });
+
+    test('toString disambiguates an empty pool from a disable flag', () {
+      // Both pools summarise to a count, and a zero has two causes: the
+      // disable flag, or a seam supplying an empty inventory. The dump
+      // has to carry the flags for the count to be readable.
+      const disabled = TrustedTimeConfig(
+        disableNts: true,
+        disableNtpForTesting: true,
+      );
+      expect(disabled.toString(), contains('disableNts: true'));
+      expect(disabled.toString(), contains('disableNtpForTesting: true'));
+
+      const emptied = TrustedTimeConfig(
+        ntsInventoryForTesting: [],
+        ntpInventoryForTesting: [],
+      );
+      expect(emptied.ntsServers, isEmpty);
+      expect(emptied.ntpServers, isEmpty);
+      expect(emptied.toString(), contains('disableNts: false'));
+      expect(emptied.toString(), contains('disableNtpForTesting: false'));
+    });
+
+    test('ntsInventoryForTesting replaces the inventory', () {
+      const config = TrustedTimeConfig(ntsInventoryForTesting: [_ntsEntry]);
+      expect(config.ntsInventory, equals(const [_ntsEntry]));
+    });
+
+    test('ntsInventoryForTesting still builds sources', () {
+      // The NTS seam diverges from the NTP one: the y81 bootstrap-gate
+      // regressions assert on whether ensureNtsRuntime ran, which is
+      // gated on ntsServers being non-empty. An uninitialised NtsSource
+      // throws per-source, so nothing reaches the network.
+      const config = TrustedTimeConfig(ntsInventoryForTesting: [_ntsEntry]);
+      expect(config.ntsServers, ['fake.nts.test']);
+    });
+
+    test('disableNts overrides ntsInventoryForTesting', () {
+      // Diverges from the NTP pair, where the override wins over the
+      // flag ('ntpInventoryForTesting survives disableNtpForTesting'
+      // pins that direction). disableNts is what ensureNtsRuntime writes
+      // when the FFI bootstrap fails, and no substitute inventory can
+      // make a missing runtime work — so the flag has to be the final
+      // word. That pair is two test seams; this one crosses into
+      // production, which is what flips the precedence.
+      const config = TrustedTimeConfig(
+        disableNts: true,
+        ntsInventoryForTesting: [_ntsEntry],
+      );
+      expect(config.ntsInventory, isEmpty);
+      expect(config.ntsServers, isEmpty);
+    });
+
+    test('ntsInventoryForTesting participates in equality and hashCode', () {
+      const a = TrustedTimeConfig(ntsInventoryForTesting: [_ntsEntry]);
+      const b = TrustedTimeConfig(ntsInventoryForTesting: [_ntsEntry]);
+      const none = TrustedTimeConfig();
+
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
+      expect(a, isNot(equals(none)));
+      expect(a.copyWith(ntsInventoryForTesting: const []), isNot(equals(a)));
+    });
+
+    test('disableNts participates in equality', () {
+      const on = TrustedTimeConfig(disableNts: true);
+      const off = TrustedTimeConfig();
+      expect(on, isNot(equals(off)));
+      expect(on, equals(off.copyWith(disableNts: true)));
     });
   });
 

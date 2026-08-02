@@ -84,7 +84,7 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 1,
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
         ).copyWith(additionalSources: [s1, s2]),
         clock: FakeMonotonicClock(),
       );
@@ -123,7 +123,7 @@ void main() {
             minimumQuorum: 2,
             minGroupCount: 1,
             disableNtpForTesting: true,
-            ntsServers: [],
+            disableNts: true,
           ).copyWith(additionalSources: [s1, s2]),
           clock: FakeMonotonicClock(),
         );
@@ -171,7 +171,7 @@ void main() {
           minimumQuorum: 3,
           minGroupCount: 1,
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
         ).copyWith(additionalSources: [s1, s2, s3]),
         clock: FakeMonotonicClock(),
       );
@@ -217,7 +217,7 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 1,
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
         ).copyWith(additionalSources: [s1, s2]),
         clock: FakeMonotonicClock(),
       );
@@ -254,7 +254,7 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 1,
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
         ).copyWith(additionalSources: [s1, s2]),
         clock: FakeMonotonicClock(),
       );
@@ -298,7 +298,7 @@ void main() {
           minimumQuorum: 2,
           minGroupCount: 1,
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
         ).copyWith(additionalSources: [s1, s2]),
         clock: FakeMonotonicClock.justBooted(),
       );

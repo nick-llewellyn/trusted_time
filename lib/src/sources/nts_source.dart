@@ -69,8 +69,8 @@ export 'nts_burst_reducer.dart' show NtsBurstReducer, lowestRttReducer;
 ///
 /// **Platform support:** Android, iOS, macOS, Windows, Linux.
 ///
-/// **Zero overhead when unused:** When [TrustedTimeConfig.ntsServers] is
-/// empty, no NTS connections are made.
+/// **Zero overhead when unused:** When [TrustedTimeConfig.disableNts] is
+/// set, no NTS source is built and no NTS connections are made.
 final class NtsSource implements TimeSource, Warmable {
   /// Creates an NTS source for the given NTS-KE server.
   ///

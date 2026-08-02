@@ -28,7 +28,7 @@ void main() {
         await TrustedTime.initialize(
           config: const TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: [],
+            disableNts: true,
             persistState: false,
           ),
         );
@@ -44,7 +44,7 @@ void main() {
         TrustedTime.initialize(
           config: const TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: [],
+            disableNts: true,
             persistState: false,
             requireSleepAwareProjection: true,
           ),
@@ -58,7 +58,7 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
           persistState: false,
         ),
       );
@@ -79,7 +79,7 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
           persistState: false,
         ),
       );
@@ -93,7 +93,7 @@ void main() {
         TrustedTime.initialize(
           config: const TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: [],
+            disableNts: true,
             persistState: false,
             requireSleepAwareProjection: true,
           ),
@@ -128,7 +128,7 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
           persistState: false,
         ),
       );
@@ -141,7 +141,7 @@ void main() {
         TrustedTime.initialize(
           config: const TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: [],
+            disableNts: true,
             persistState: false,
             requireSleepAwareProjection: true,
           ),
@@ -167,7 +167,7 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: const [],
+          disableNts: true,
           persistState: false,
           earlyExit: false,
           additionalSources: [
@@ -305,7 +305,7 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
           persistState: false,
         ),
       );
@@ -326,7 +326,7 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
           persistState: false,
         ),
       );
@@ -353,7 +353,7 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: const [],
+          disableNts: true,
           persistState: false,
           earlyExit: false,
           refreshInterval: Duration.zero,
@@ -380,7 +380,7 @@ void main() {
       await TrustedTime.initialize(
         config: const TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: [],
+          disableNts: true,
           persistState: false,
           refreshInterval: Duration.zero,
         ),
@@ -420,7 +420,7 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: const [],
+          disableNts: true,
           persistState: false,
           earlyExit: false,
           additionalSources: [

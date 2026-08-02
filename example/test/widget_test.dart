@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:trusted_time_example/main.dart';
+import 'package:trusted_time_example/nts_sources.dart';
 import 'package:trusted_time_example/sync_telemetry.dart';
 import 'package:trusted_time/trusted_time.dart';
 
@@ -165,15 +166,15 @@ void main() {
       // real timers and stream subscriptions execute on the host
       // event loop instead of fighting flutter_test's FakeAsync zone.
       // NtsRustLib.init may fail in the test environment, in which case
-      // TrustedTime.initialize rewrites ntsServers to []. The
-      // assertion is robust to either outcome — it pins
+      // TrustedTime.initialize sets disableNts, emptying ntsServers.
+      // The assertion is robust to either outcome — it pins
       // "chips == TrustedTime.config.ntsServers" rather than
-      // "chips == requested ntsServers" — so the test passes whether
+      // "chips == requested hosts" — so the test passes whether
       // or not the bundled Rust dylib is available.
       //
       // Hermetic-CI design notes:
       //  - With NtsRustLib unavailable (the standard `flutter test` host
-      //    environment), initialize() rewrites ntsServers to []. The
+      //    environment), initialize() empties ntsServers. The
       //    two _FakeTimeSource instances in additionalSources keep
       //    the engine's source pool non-empty so the bootstrap sync
       //    reaches consensus, succeeds, and does not arm the
@@ -205,10 +206,11 @@ void main() {
         await TrustedTime.initialize(
           config: TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: requested,
+            // ignore: invalid_use_of_visible_for_testing_member
+            ntsInventoryForTesting: inventoryFor(requested),
             // Two distinct group ids so MarzulloEngine treats them as
             // independent samples and consensus is reachable on the
-            // bootstrap cycle even when ntsServers is stripped to []
+            // bootstrap cycle even when ntsServers is emptied
             // by the NtsRustLib-unavailable path.
             additionalSources: [
               _FakeTimeSource(id: 'fake:a', groupId: 'fake-a'),
@@ -281,4 +283,35 @@ void main() {
       }
     },
   );
+
+  group('inventoryFor', () {
+    test('resolves the benchmark pools in the order requested', () {
+      final entries = inventoryFor(curatedNtsPool);
+      expect([for (final entry in entries) entry.host], equals(curatedNtsPool));
+    });
+
+    test('every benchmark chip host resolves', () {
+      // The chip grid can offer any host in the union pool, and the
+      // controller feeds the operator's selection straight to
+      // inventoryFor. A pool edit that adds a host the library has not
+      // admitted would otherwise only surface at runtime.
+      expect(() => inventoryFor(benchmarkChipPool), returnsNormally);
+    });
+
+    test('throws on a host absent from the curated inventory', () {
+      // Fail fast rather than drop: a silently shortened list looks
+      // identical to a host that produced no samples, which is the one
+      // ambiguity a benchmarking harness cannot tolerate.
+      expect(
+        () => inventoryFor(const ['time.cloudflare.com', 'nope.invalid']),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.invalidValue,
+            'invalidValue',
+            equals(['nope.invalid']),
+          ),
+        ),
+      );
+    });
+  });
 }

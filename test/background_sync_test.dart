@@ -317,7 +317,7 @@ void main() {
     // shared NTS bootstrap itself before the engine builds any NtsSource.
     // The production defect (background NTS sync reaching 0 eligible samples
     // and RETRYing forever) went undetected because every existing test
-    // injects fake sources with empty ntsServers, so the bootstrap gate was
+    // injects fake sources with NTS disabled, so the bootstrap gate was
     // never exercised. These tests drive that gate via the injectable
     // [ntsInit] seam so the real FFI is never touched.
     group('NTS runtime bootstrap (y81)', () {
@@ -339,7 +339,7 @@ void main() {
           final result = await runBackgroundSync(
             config: offlineConfig(
               persistState: false,
-              ntsServers: const ['nts.example.test'],
+              ntsInventory: fakeNtsInventory,
               sources: quorumFakes(),
             ),
             clock: FakeMonotonicClock(value: 5000),
@@ -360,7 +360,7 @@ void main() {
           clock: FakeMonotonicClock(value: 5000),
           ntsInit: () async => initCalls++,
         );
-        // Zero-overhead-when-unused: no ntsServers means no bootstrap.
+        // Zero-overhead-when-unused: disableNts means no bootstrap.
         expect(initCalls, 0);
         expect(result.isSuccess, isTrue);
       });
@@ -370,14 +370,14 @@ void main() {
         final store = InMemoryAnchorStorage();
         final result = await runBackgroundSync(
           config: offlineConfig(
-            ntsServers: const ['nts.example.test'],
+            ntsInventory: fakeNtsInventory,
             sources: quorumFakes(),
           ),
           store: store,
           clock: FakeMonotonicClock(value: 5000),
           // A non-StateError (or a StateError whose message does not name
           // flutter_rust_bridge) is a real init failure: the bootstrap must
-          // strip ntsServers rather than abort the whole cycle.
+          // disable NTS rather than abort the whole cycle.
           ntsInit: () async => throw Exception('native asset missing'),
         );
         expect(result.isSuccess, isTrue);
@@ -388,7 +388,7 @@ void main() {
         final store = InMemoryAnchorStorage();
         final result = await runBackgroundSync(
           config: offlineConfig(
-            ntsServers: const ['nts.example.test'],
+            ntsInventory: fakeNtsInventory,
             sources: quorumFakes(),
           ),
           store: store,
@@ -456,7 +456,7 @@ void main() {
       TrustedTimeConfig anycastConfig(int rttMs, {bool persistState = true}) =>
           TrustedTimeConfig(
             disableNtpForTesting: true,
-            ntsServers: const [],
+            disableNts: true,
             persistState: persistState,
             minimumQuorum: 2,
             minGroupCount: 1,

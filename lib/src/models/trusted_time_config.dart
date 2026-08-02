@@ -2,8 +2,10 @@ import 'package:flutter/foundation.dart';
 import 'package:nts/nts.dart' as nts;
 
 import '../data/ntp_inventory.dart';
+import '../data/nts_inventory.dart';
 import '../domain/time_source.dart';
 import 'ntp_server_info.dart';
+import 'nts_server_info.dart';
 
 @immutable
 /// Configuration parameters for the [TrustedTime] engine.
@@ -14,8 +16,8 @@ import 'ntp_server_info.dart';
 /// ## Mutability contract
 ///
 /// [TrustedTimeConfig] is annotated `@immutable` and its scalar
-/// fields are `final`. The list-typed fields ([ntsServers],
-/// [additionalSources]) are stored by
+/// fields are `final`. The list-typed fields ([additionalSources],
+/// [customRootCerts]) are stored by
 /// reference for `const`-constructibility — the canonical
 /// production usage is to pass `const`-list literals, which are
 /// already deeply immutable.
@@ -29,7 +31,7 @@ import 'ntp_server_info.dart';
 final class TrustedTimeConfig {
   /// Creates a new configuration instance with sensible production defaults.
   const TrustedTimeConfig({
-    this.ntsServers = const ['time.cloudflare.com', 'nts.netnod.se'],
+    this.disableNts = false,
     this.ntsPort = 4460,
     this.maxConcurrentDnsLookups,
     // ignore: deprecated_member_use_from_same_package
@@ -52,6 +54,7 @@ final class TrustedTimeConfig {
     this.requireSleepAwareProjection = false,
     @visibleForTesting this.disableNtpForTesting = false,
     @visibleForTesting this.ntpInventoryForTesting,
+    @visibleForTesting this.ntsInventoryForTesting,
   }) : assert(
          ntsBurstCount >= 1 && ntsBurstCount <= 8,
          'ntsBurstCount must be in 1..8: 8 matches the fixed burst size '
@@ -93,6 +96,9 @@ final class TrustedTimeConfig {
   /// Suppresses every plain-NTP source, leaving [ntsServers] and
   /// [additionalSources] as the only inputs.
   ///
+  /// The NTS counterpart is [disableNts], which differs in being a
+  /// supported production posture rather than a test seam.
+  ///
   /// Exists so the test suite (and the example app's NTS-only
   /// benchmarking harness) can keep [ntpServers] from doing live DNS
   /// and UDP. It is not a supported production knob: an install that
@@ -128,7 +134,17 @@ final class TrustedTimeConfig {
   /// The curated inventory behind [ntpServers], with per-host metadata.
   ///
   /// Empty when [disableNtpForTesting] is set and no
-  /// [ntpInventoryForTesting] override is supplied.
+  /// [ntpInventoryForTesting] override is supplied: the override wins
+  /// over the flag, so a test can disable the live hosts and still give
+  /// the partition a shape to narrow. Both are test seams, so neither
+  /// carries a guarantee the other can violate.
+  ///
+  /// [ntsInventory] resolves the opposite way — there the flag wins,
+  /// because [disableNts] is a production posture that `ensureNtsRuntime`
+  /// writes on a genuine FFI failure, and no substitute inventory makes a
+  /// missing runtime work. The two getters differ because the precedence
+  /// question is not the same question on both sides, not because one has
+  /// drifted.
   List<NtpServerInfo> get ntpInventory =>
       ntpInventoryForTesting ??
       (disableNtpForTesting ? const [] : curatedNtpInventory);
@@ -153,21 +169,107 @@ final class TrustedTimeConfig {
   /// fakes through [additionalSources] under `ntp:`-prefixed ids
   /// matching these hosts; the partition narrows those with no network.
   ///
+  /// [ntsInventoryForTesting] deliberately does not suppress in the same
+  /// way. Keeping the network out of a unit test is solved differently on
+  /// each side: an uninitialised [NtsSource] throws on its own, so the NTS
+  /// seam can leave sources built and still stay offline, which the
+  /// bootstrap-gate regressions require. An [NtpSource] has no equivalent
+  /// self-limiting failure — it would resolve and send — so suppression
+  /// has to happen here.
+  ///
   /// Not a production knob: the inventory's provenance and leap-second
   /// vetting are what make the curated list safe to query, and an
   /// arbitrary substitute carries neither.
   @visibleForTesting
   final List<NtpServerInfo>? ntpInventoryForTesting;
 
-  /// The list of Network Time Security (NTS) servers used for cryptographically
-  /// authenticated synchronization.
+  /// Suppresses every NTS source, leaving [ntpServers] and
+  /// [additionalSources] as the only inputs.
   ///
-  /// The default pairs two anycast anchors from distinct operators
-  /// (Cloudflare, Netnod), so the out-of-the-box config can satisfy
-  /// [minGroupCount]'s two-distinct-groups requirement and mint a
-  /// verified truth box on its own. Both operators step (not smear)
-  /// leap seconds.
-  final List<String> ntsServers;
+  /// Unlike [disableNtpForTesting], this is a supported production
+  /// posture. NTS-KE runs over TCP/4460, which some corporate and
+  /// captive networks block outright; on such a network every handshake
+  /// in the inventory costs a connect timeout before failing, so an
+  /// install that knows NTS cannot succeed is better off not attempting
+  /// it. The cost is real: without NTS the engine has no
+  /// cryptographically authenticated source, so the anchor cannot be
+  /// [ConfidenceLevel.secure] and projection falls back to a
+  /// suspend-frozen `Stopwatch` timeline.
+  ///
+  /// Also set by the library itself. [TrustedTime.initialize] and
+  /// `runBackgroundSync` route through `ensureNtsRuntime`, which
+  /// degrades to a disabled copy when the `package:nts` FFI bootstrap
+  /// genuinely fails — a missing native asset or an architecture
+  /// mismatch — so the rest of the run does not open handshakes that
+  /// cannot complete.
+  final bool disableNts;
+
+  /// The Network Time Security (NTS) hostnames used for
+  /// cryptographically authenticated synchronization.
+  ///
+  /// Fixed to the library's curated inventory — see
+  /// `lib/src/data/nts_inventory.dart` for provenance, the
+  /// leap-second policy, and the coverage caveat. Every host completed
+  /// a full live NTS-KE and AEAD-NTPv4 exchange before admission, and
+  /// none is a documented smearing operator.
+  ///
+  /// Empty when [disableNts] is set.
+  ///
+  /// This is the hostname view of [ntsInventory], which carries each
+  /// host's tier, observed stratum, and leap-second evidence — including
+  /// when [ntsInventoryForTesting] substitutes the entries.
+  ///
+  /// Unmodifiable, like [ntpServers].
+  List<String> get ntsServers {
+    final inventory = ntsInventory;
+    // The curated case is the only one production reaches, and its
+    // hostname view is precomputed. Identity holds because [ntsInventory]
+    // hands back the const inventory itself when nothing displaces it.
+    // Reading the precedence off that getter rather than re-deriving it
+    // here keeps the disable-flag-wins rule stated in exactly one place.
+    if (identical(inventory, curatedNtsInventory)) return curatedNtsHostnames;
+    if (inventory.isEmpty) return const [];
+    return List.unmodifiable([for (final entry in inventory) entry.host]);
+  }
+
+  /// The curated inventory behind [ntsServers], with per-host metadata.
+  ///
+  /// Empty when [disableNts] is set, which overrides
+  /// [ntsInventoryForTesting]: the flag is what `ensureNtsRuntime`
+  /// writes when the FFI bootstrap fails, and a substitute inventory
+  /// cannot make a missing runtime work.
+  ///
+  /// [ntpInventory] resolves the other way round, letting its override
+  /// win over [disableNtpForTesting]. That pair is two test seams, where
+  /// precedence is a convenience; this pair crosses the production
+  /// boundary, where it is a guarantee — so the production flag has to be
+  /// the final word.
+  List<NtsServerInfo> get ntsInventory =>
+      disableNts ? const [] : (ntsInventoryForTesting ?? curatedNtsInventory);
+
+  /// Replaces the inventory the NTS sources and the per-cycle partition
+  /// read, without reaching the curated hosts.
+  ///
+  /// The NTS counterpart of [ntpInventoryForTesting], and it exists for
+  /// the same reason: the curated inventory is fixed, so a test that
+  /// needs the partition to have a particular shape supplies its own
+  /// entries here. Ignored when [disableNts] is set.
+  ///
+  /// Unlike the NTP seam this does *not* suppress source construction:
+  /// an [NtsSource] is built per entry, which is what the bootstrap-gate
+  /// regressions (trusted_time-y81) need — they assert on whether
+  /// `ensureNtsRuntime` ran, which is gated on [ntsServers] being
+  /// non-empty. Those sources throw "not initialised" per-source without
+  /// aborting the cycle, so no network is touched from a unit test.
+  /// Suppressing here would leave that gate untested; not suppressing on
+  /// the NTP side would put live DNS and UDP in a unit test. Neither side
+  /// is free to adopt the other's behaviour.
+  ///
+  /// Not a production knob: the inventory's provenance and leap-second
+  /// vetting are what make the curated list safe to query, and an
+  /// arbitrary substitute carries neither.
+  @visibleForTesting
+  final List<NtsServerInfo>? ntsInventoryForTesting;
 
   /// The TCP port used for the NTS Key Exchange (NTS-KE) handshake.
   /// Defaults to 4460 as per RFC 8915.
@@ -497,7 +599,7 @@ final class TrustedTimeConfig {
   /// [backgroundSyncInterval] cannot be cleared back to `null` through
   /// this method; construct a new instance directly if that is needed.
   TrustedTimeConfig copyWith({
-    List<String>? ntsServers,
+    bool? disableNts,
     int? ntsPort,
     int? maxConcurrentDnsLookups,
     int? ntsDnsConcurrencyCap,
@@ -519,9 +621,10 @@ final class TrustedTimeConfig {
     bool? requireSleepAwareProjection,
     @visibleForTesting bool? disableNtpForTesting,
     @visibleForTesting List<NtpServerInfo>? ntpInventoryForTesting,
+    @visibleForTesting List<NtsServerInfo>? ntsInventoryForTesting,
   }) {
     return TrustedTimeConfig(
-      ntsServers: ntsServers ?? this.ntsServers,
+      disableNts: disableNts ?? this.disableNts,
       ntsPort: ntsPort ?? this.ntsPort,
       maxConcurrentDnsLookups:
           maxConcurrentDnsLookups ?? this.maxConcurrentDnsLookups,
@@ -550,6 +653,8 @@ final class TrustedTimeConfig {
       disableNtpForTesting: disableNtpForTesting ?? this.disableNtpForTesting,
       ntpInventoryForTesting:
           ntpInventoryForTesting ?? this.ntpInventoryForTesting,
+      ntsInventoryForTesting:
+          ntsInventoryForTesting ?? this.ntsInventoryForTesting,
     );
   }
 
@@ -559,7 +664,8 @@ final class TrustedTimeConfig {
     return other is TrustedTimeConfig &&
         other.disableNtpForTesting == disableNtpForTesting &&
         listEquals(other.ntpInventoryForTesting, ntpInventoryForTesting) &&
-        listEquals(other.ntsServers, ntsServers) &&
+        other.disableNts == disableNts &&
+        listEquals(other.ntsInventoryForTesting, ntsInventoryForTesting) &&
         other.ntsPort == ntsPort &&
         other.maxConcurrentDnsLookups == maxConcurrentDnsLookups &&
         // ignore: deprecated_member_use_from_same_package
@@ -594,7 +700,11 @@ final class TrustedTimeConfig {
     ntpInventoryForTesting == null
         ? 0
         : Object.hashAll(ntpInventoryForTesting!),
-    Object.hashAll(ntsServers),
+    disableNts,
+    ntsInventoryForTesting != null,
+    ntsInventoryForTesting == null
+        ? 0
+        : Object.hashAll(ntsInventoryForTesting!),
     ntsPort,
     maxConcurrentDnsLookups,
     // ignore: deprecated_member_use_from_same_package
@@ -626,12 +736,17 @@ final class TrustedTimeConfig {
     // settings. Keep field order in sync with the constructor so a
     // diff between an expected and actual config reads top-to-bottom.
     return 'TrustedTimeConfig(\n'
-        // Summarise rather than interpolate: the curated inventory is
-        // fixed and 51 entries long, so dumping it verbatim would bury
-        // every other field. The count (and the zero that
-        // disableNtpForTesting produces) is what an operator needs.
+        // Summarise rather than interpolate: the curated inventories are
+        // fixed and dozens of entries long, so dumping them verbatim
+        // would bury every other field. The count is what an operator
+        // needs — paired with the two disable flags, since a zero on
+        // either pool has more than one cause (the flag, or a seam
+        // supplying an empty inventory) and the count alone cannot
+        // tell them apart.
         '  ntpServers: ${ntpServers.length} hosts,\n'
-        '  ntsServers: $ntsServers,\n'
+        '  disableNtpForTesting: $disableNtpForTesting,\n'
+        '  ntsServers: ${ntsServers.length} hosts,\n'
+        '  disableNts: $disableNts,\n'
         '  ntsPort: $ntsPort,\n'
         '  maxConcurrentDnsLookups: $maxConcurrentDnsLookups,\n'
         // ignore: deprecated_member_use_from_same_package

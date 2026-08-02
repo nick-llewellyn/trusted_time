@@ -111,9 +111,9 @@ void main() {
     setUp(() {
       clock = FakeMonotonicClock();
       // Override every default source list so the engine only queries
-      // the test's `additionalSources`. Without `ntsServers: const []`,
-      // the default `['time.cloudflare.com']` would instantiate an
-      // NtsSource that either fails fast (NtsRustLib.init not called in
+      // the test's `additionalSources`. Without `disableNts: true`,
+      // the curated NTS inventory would instantiate an
+      // NtsSource per host that either fails fast (NtsRustLib.init not called in
       // the test harness) or attempts real network I/O on machines
       // where the native is initialised — both are unrelated noise
       // for the cooldown-semantics assertion.
@@ -121,7 +121,7 @@ void main() {
         minimumQuorum: 2,
         minGroupCount: 1,
         disableNtpForTesting: true,
-        ntsServers: [],
+        disableNts: true,
       );
     });
 
@@ -401,13 +401,13 @@ void main() {
 
     setUp(() {
       clock = FakeMonotonicClock();
-      // ntsServers: [] keeps the default Cloudflare NtsSource out of the
+      // disableNts: true keeps the curated NTS inventory out of the
       // pool (see the TransientSourceError group for the full rationale).
       config = const TrustedTimeConfig(
         minimumQuorum: 2,
         minGroupCount: 1,
         disableNtpForTesting: true,
-        ntsServers: [],
+        disableNts: true,
       );
     });
 

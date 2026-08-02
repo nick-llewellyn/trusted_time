@@ -80,7 +80,7 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: const [],
+          disableNts: true,
           persistState: false,
           minimumQuorum: 2,
           minGroupCount: 1,
@@ -188,7 +188,7 @@ void main() {
       await TrustedTime.initialize(
         config: TrustedTimeConfig(
           disableNtpForTesting: true,
-          ntsServers: const [],
+          disableNts: true,
           persistState: persistState,
           minimumQuorum: 2,
           minGroupCount: 1,

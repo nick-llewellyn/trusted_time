@@ -114,7 +114,6 @@ You can pass a `TrustedTimeConfig` to customise sources, sync intervals, and sec
 ```dart
 await TrustedTime.initialize(
   config: const TrustedTimeConfig(
-    ntsServers: ['time.cloudflare.com', 'nts.netnod.se'],
     refreshInterval: Duration(hours: 6),
     backgroundSyncInterval: Duration(hours: 12),
     minGroupCount: 2,
@@ -122,7 +121,7 @@ await TrustedTime.initialize(
 );
 ```
 
-The plain-NTP host list is not configurable: the library ships a fixed, curated inventory of 51 verified hosts (see `ntpServers` in the configuration reference below). `config.ntpInventory` exposes each host's tier, observed stratum and autonomous system, and leap-second evidence via `NtpServerInfo`.
+Neither host list is configurable: the library ships fixed, curated inventories of 51 verified NTP hosts and 57 verified NTS hosts (see `ntpServers` / `ntsServers` in the configuration reference below). `config.ntpInventory` and `config.ntsInventory` expose each host's tier, observed stratum, and leap-second evidence via `NtpServerInfo` / `NtsServerInfo`.
 
 ### Get the current time
 
@@ -251,13 +250,13 @@ Background refresh bounds the staleness of the fallback anchor: if a sync fails 
 
 ### NTS (Network Time Security)
 
-RFC 8915 authenticated time is on by default: `ntsServers` ships with two anycast anchors from distinct operators (`time.cloudflare.com`, `nts.netnod.se`), enough to mint a verified truth box under the default `minGroupCount` of 2. Pass your own list to customise, or an empty list to disable NTS entirely — apps that pass `ntsServers: []` have zero overhead from the feature.
+RFC 8915 authenticated time is on by default, backed by a curated 57-host inventory spanning three anycast operators and unicast hosts across Europe and North America — comfortably past the default `minGroupCount` of 2. The host list is not consumer-settable; the engine narrows it per cycle into a quorum core plus a rotating explorer set.
+
+Set `disableNts: true` to turn the feature off entirely — zero overhead when disabled. That is the right posture on a network that blocks TCP/4460, where every handshake would otherwise burn a connect timeout, but it costs the only cryptographically authenticated source: the anchor can no longer reach `ConfidenceLevel.secure`, and projection falls back to a suspend-frozen `Stopwatch` timeline. The library sets the same flag itself when the `package:nts` FFI bootstrap fails.
 
 ```dart
 await TrustedTime.initialize(
-  config: const TrustedTimeConfig(
-    ntsServers: ['time.cloudflare.com', 'nts.netnod.se'],
-  ),
+  config: const TrustedTimeConfig(disableNts: true),
 );
 
 // Check whether the current anchor is NTS-authenticated
@@ -329,7 +328,9 @@ void main() {
 | `ntpServers` | `List<String>` | curated 51-host inventory | **Read-only.** Hostnames from the library's fixed NTP inventory, verified by live probe. No host is a documented leap-second smearer — Google, AWS, and Meta are excluded on published-smear evidence, since a smeared source diverges from stepping sources by up to a full second around a leap event |
 | `ntpInventory` | `List<NtpServerInfo>` | curated 51-host inventory | **Read-only.** The same inventory with per-host metadata: `tier` (anycast / unicast stratum 1 / unicast stratum 2), `observedStratum`, `observedGroupId`, and `leapPolicy` |
 | `ntpBurstCount` | `int` | `8` | Sequential SNTP exchanges per NTP source per sync; the lowest-delay sample is kept |
-| `ntsServers` | `List<String>` | `time.cloudflare.com`, `nts.netnod.se` | NTS server hostnames |
+| `ntsServers` | `List<String>` | curated 57-host inventory | **Read-only.** Hostnames from the library's fixed NTS inventory. Every host completed a full live NTS-KE and AEAD-NTPv4 exchange before admission, and none is a documented leap-second smearer. Empty when `disableNts` is set |
+| `ntsInventory` | `List<NtsServerInfo>` | curated 57-host inventory | **Read-only.** The same inventory with per-host metadata: `tier`, `observedStratum`, and `leapPolicy`. NTS has no separate group id — NTS-KE binds the hostname to a TLS certificate, so the registrable domain is a cryptographically backed group key |
+| `disableNts` | `bool` | `false` | Suppresses every NTS source. Supported on networks that block TCP/4460, at the cost of the only authenticated source; also set by the library when the FFI bootstrap fails |
 | `ntsPort` | `int` | `4460` | NTS-KE port |
 | `refreshInterval` | `Duration` | `48h` | Foreground re-sync period and the on-resume anchor staleness bound |
 | `backgroundSyncInterval` | `Duration?` | `null` | If set, enables background sync at this interval |

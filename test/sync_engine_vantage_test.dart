@@ -84,7 +84,7 @@ const _explorerRttMs = 900;
   ];
   return (
     config: TrustedTimeConfig(
-      ntsServers: const [],
+      disableNts: true,
       disableNtpForTesting: true,
       ntpInventoryForTesting: entries,
       additionalSources: [...anycast, ...unicast],
@@ -159,7 +159,7 @@ void main() {
       ];
       final engine = _engine(
         TrustedTimeConfig(
-          ntsServers: const [],
+          disableNts: true,
           disableNtpForTesting: true,
           ntpInventoryForTesting: entries,
           additionalSources: [
