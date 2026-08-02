@@ -221,11 +221,13 @@ final class TrustedTimeImpl {
   /// Exposed so callers can verify the live engine settings (server
   /// pool, quorum thresholds, refresh interval, etc.) without
   /// shadowing the configuration on the call site. The returned
-  /// instance is the same object passed to [init]; reading
-  /// list-typed fields like [TrustedTimeConfig.customRootCerts] is safe
-  /// without defensive copying as long as the caller honours
-  /// [TrustedTimeConfig]'s "do not mutate after construction"
-  /// contract.
+  /// instance is the same object passed to [init]; reading list-typed
+  /// fields like [TrustedTimeConfig.customRootCerts] and
+  /// [TrustedTimeConfig.additionalSources] is safe without defensive
+  /// copying as long as the caller honours [TrustedTimeConfig]'s "do not
+  /// mutate after construction" contract. The derived
+  /// [TrustedTimeConfig.ntpServers] and [TrustedTimeConfig.ntsServers]
+  /// views carry no such caveat — they are unmodifiable.
   TrustedTimeConfig get config => _config;
 
   /// Whether the current trust anchor is cryptographically secure.

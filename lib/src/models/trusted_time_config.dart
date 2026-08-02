@@ -218,7 +218,19 @@ final class TrustedTimeConfig {
   /// This is the hostname view of [ntsInventory], which carries each
   /// host's tier, observed stratum, and leap-second evidence — including
   /// when [ntsInventoryForTesting] substitutes the entries.
-  List<String> get ntsServers => [for (final entry in ntsInventory) entry.host];
+  ///
+  /// Unmodifiable, like [ntpServers].
+  List<String> get ntsServers {
+    final inventory = ntsInventory;
+    // The curated case is the only one production reaches, and its
+    // hostname view is precomputed. Identity holds because [ntsInventory]
+    // hands back the const inventory itself when nothing displaces it.
+    // Reading the precedence off that getter rather than re-deriving it
+    // here keeps the disable-flag-wins rule stated in exactly one place.
+    if (identical(inventory, curatedNtsInventory)) return curatedNtsHostnames;
+    if (inventory.isEmpty) return const [];
+    return List.unmodifiable([for (final entry in inventory) entry.host]);
+  }
 
   /// The curated inventory behind [ntsServers], with per-host metadata.
   ///

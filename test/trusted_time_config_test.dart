@@ -6,6 +6,8 @@
 //   time_sample_test.dart TimeSample
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:trusted_time/src/data/nts_inventory.dart'
+    show curatedNtsHostnames;
 import 'package:trusted_time/trusted_time.dart';
 
 /// A substitute NTS inventory entry for the seam tests.
@@ -370,6 +372,30 @@ void main() {
         config.ntsServers,
         config.ntsInventory.map((e) => e.host).toList(),
       );
+    });
+
+    test('ntsServers reuses the precomputed curated hostnames', () {
+      // The getter is read on every engine cycle and on each isEmpty
+      // gate (nts_bootstrap, supportsSecureTime), so the curated path
+      // must not rebuild the list. Identity also pins that the getter
+      // recognises the curated inventory rather than copying it.
+      const config = TrustedTimeConfig();
+      expect(config.ntsServers, same(curatedNtsHostnames));
+    });
+
+    test('ntsServers is unmodifiable on every path', () {
+      // Matches ntpServers, which returns the unmodifiable curated
+      // list or a const empty one.
+      const curated = TrustedTimeConfig();
+      const disabled = TrustedTimeConfig(disableNts: true);
+      const overridden = TrustedTimeConfig(ntsInventoryForTesting: [_ntsEntry]);
+      for (final servers in [
+        curated.ntsServers,
+        disabled.ntsServers,
+        overridden.ntsServers,
+      ]) {
+        expect(() => servers.add('x'), throwsUnsupportedError);
+      }
     });
 
     test('disableNts empties the NTS pool', () {
