@@ -534,6 +534,86 @@ void main() {
     });
   });
 
+  // The query target is the number of NTS hosts a cycle *asks*; the
+  // validity floor is the number that must *respond* for a truth box to
+  // form. Keeping them apart is the point of the knob -- a target equal
+  // to the floor means one timeout degrades the cycle. See ADR 0007's
+  // 2026-08-02 postscript.
+  group('TrustedTimeConfig ntsQueryTarget', () {
+    test('defaults to 5, above the validity floor', () {
+      const config = TrustedTimeConfig();
+      expect(config.ntsQueryTarget, 5);
+      expect(
+        config.ntsQueryTarget,
+        greaterThan(TrustedTimeConfig.minNtsQueryTarget),
+        reason: 'the default must carry failure headroom, not sit on the floor',
+      );
+    });
+
+    test('the floor is 3, one above the generic quorum minimum', () {
+      // Three is the first size that sheds an outlier: at a ratio of 0.6
+      // a 3-sample population needs an overlap of 2. At 2 the required
+      // overlap is also 2, so both must agree. If these two constants
+      // ever converge the floor stops meaning anything.
+      expect(TrustedTimeConfig.minNtsQueryTarget, 3);
+      expect(
+        TrustedTimeConfig.minNtsQueryTarget,
+        greaterThan(const TrustedTimeConfig().minimumQuorum),
+      );
+    });
+
+    test('a target below the floor is rejected, not clamped', () {
+      // Clamping would let a config that can never form a truth box run
+      // as though it could.
+      expect(
+        () => TrustedTimeConfig(ntsQueryTarget: 2),
+        throwsA(isA<AssertionError>()),
+      );
+      expect(
+        () => TrustedTimeConfig(ntsQueryTarget: 0),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+
+    test('a target equal to the floor is legal', () {
+      // Documented as the narrowest legal cycle: it forms a box only
+      // while every host answers. A metered or battery-critical install
+      // may want it, so it must not be rejected alongside the values
+      // below it.
+      const config = TrustedTimeConfig(
+        ntsQueryTarget: TrustedTimeConfig.minNtsQueryTarget,
+      );
+      expect(config.ntsQueryTarget, 3);
+    });
+
+    test('round-trips through copyWith', () {
+      const original = TrustedTimeConfig();
+      final updated = original.copyWith(ntsQueryTarget: 7);
+      expect(updated.ntsQueryTarget, 7);
+      // Purely additive: an omitted value preserves the existing one.
+      final untouched = updated.copyWith(
+        maxLatency: const Duration(seconds: 7),
+      );
+      expect(untouched.ntsQueryTarget, 7);
+    });
+
+    test('participates in equality and hashCode', () {
+      const base = TrustedTimeConfig();
+      const wide = TrustedTimeConfig(ntsQueryTarget: 7);
+      expect(base == wide, isFalse);
+
+      const a = TrustedTimeConfig(ntsQueryTarget: 7);
+      const b = TrustedTimeConfig(ntsQueryTarget: 7);
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
+    });
+
+    test('appears in toString output', () {
+      const config = TrustedTimeConfig(ntsQueryTarget: 7);
+      expect(config.toString(), contains('ntsQueryTarget: 7'));
+    });
+  });
+
   group('TrustedTimeConfig maxConcurrentDnsLookups (ADR 0008)', () {
     test('defaults to null with an effective budget of 6', () {
       const config = TrustedTimeConfig();
