@@ -517,6 +517,7 @@ void main() {
       // The cost claim on the dartdoc: query target plus explorer
       // budget, against one handshake per inventory host before.
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
       final selected = _engine(config: _liveBothTiers, budget: 5)
           .selectCycleHostsForTesting()
           .where((id) => id.startsWith(TimeSource.prefixNts));
@@ -527,7 +528,6 @@ void main() {
         ),
       );
       expect(selected.length, lessThan(10));
-      debugDefaultTargetPlatformOverride = null;
     });
 
     test('the two tiers are partitioned on separate budgets', () {
@@ -535,6 +535,7 @@ void main() {
       // handshake an NTP probe does not, so neither budget is derivable
       // from the other.
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
       final roles = _engine(
         config: _liveBothTiers,
         budget: 5,
@@ -547,7 +548,6 @@ void main() {
       );
       expect(ntpExplorers, hasLength(5));
       expect(ntsExplorers, hasLength(SyncEngine.standardNtsExplorerBudget));
-      debugDefaultTargetPlatformOverride = null;
     });
 
     test('anycast hosts are never displaced by promotion', () {
@@ -761,13 +761,13 @@ void main() {
       // failure headroom and runs at zero headroom until the tracker
       // has rank.
       debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
       final engine = _engine(config: _liveBothTiers)
         ..armExplorerBoost(SyncEngine.explorerBoostCycles);
       expect(
         engine.effectiveNtsExplorerBudget,
         SyncEngine.standardNtsExplorerBudget,
       );
-      debugDefaultTargetPlatformOverride = null;
     });
 
     test('the NTS boost only ever widens', () {

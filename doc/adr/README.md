@@ -96,17 +96,6 @@ PR, two Accepted ADRs are known to diverge from current code:
 - **ADR 0002** decides on real headless background anchor refresh.
   Implementation is still in-progress (`trusted_time-e0v`) — the
   current native code performs only an HTTPS HEAD connectivity check.
-- **ADR 0007**'s 2026-08-02 postscript (NTS tier partitioned per
-  cycle) is decided but not implemented. `_selectCycleHosts` still
-  partitions the NTP inventory alone, so with NTS enabled every host
-  in `ntsInventory` is classified `blocking` every cycle — how many of
-  those gate is then settled by `sync()`'s cooldown filter and its
-  starvation rescue — and `warmAllSources()` fans out across all of
-  them regardless, and `MarzulloEngine._resolveCore` still floors
-  the truth-box pass at 2 responders rather than the 3 the postscript
-  requires. Tracked as `trusted_time-1ww` (decision:
-  `trusted_time-ky3`); the ADR's three earlier implementation pieces
-  have all landed (see the note below).
 
 Notes on previously-listed divergences:
 
