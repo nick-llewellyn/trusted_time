@@ -70,11 +70,12 @@ final class TrustedTimeConfig {
        ),
        assert(
          ntsQueryTarget >= minNtsQueryTarget,
-         'ntsQueryTarget must be at least minNtsQueryTarget (3): a cycle '
-         'that asks fewer NTS hosts than the truth box needs responding '
-         'can never form one. Rejected rather than clamped so the '
-         'misconfiguration surfaces. Setting it to exactly 3 is legal '
-         'and leaves zero failure headroom.',
+         'ntsQueryTarget must be at least minNtsQueryTarget '
+         '($minNtsQueryTarget): a cycle that asks fewer NTS hosts than '
+         'the truth box needs responding can never form one. Rejected '
+         'rather than clamped so the misconfiguration surfaces. Setting '
+         'it to exactly the floor is legal and leaves zero failure '
+         'headroom.',
        );
 
   /// Creates a mobile-tuned configuration implementing the 48h
