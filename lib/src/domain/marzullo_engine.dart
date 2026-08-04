@@ -182,6 +182,7 @@ final class MarzulloEngine {
     this.minQuorumRatio = 0.6,
     this.maxAllowedUncertaintyMs = 10000,
     this.minGroupCount = 2,
+    this.minVerifiedQuorum = 3,
   });
 
   /// The minimum percentage of responding sources that must participate in
@@ -195,6 +196,28 @@ final class MarzulloEngine {
   /// Minimum number of distinct administrative groups required to achieve
   /// high-confidence status.
   final int minGroupCount;
+
+  /// How many usable verified samples the truth-box pass requires.
+  ///
+  /// Below this the verified subset does not get a Marzullo reduction at
+  /// all and [resolve] degrades, whatever the subset's internal
+  /// agreement. Three is the first population size at which the box
+  /// survives one bad host: at a [minQuorumRatio] of 0.6 a 3-sample
+  /// population needs an overlap of 2, so an outlier can be shed. At 2
+  /// the required overlap is also 2, so both must agree — that detects
+  /// a liar rather than outvoting one, which is not what the truth box
+  /// is for.
+  ///
+  /// Strictly a *validity* floor over responders. The number of hosts a
+  /// cycle asks is [TrustedTimeConfig.ntsQueryTarget], which sits above
+  /// this so failures have headroom.
+  ///
+  /// Deliberately narrower than [_resolveCore]'s own floor of 2, which
+  /// is left alone because the degraded fallback reduces over every
+  /// sample through the same method and must keep the generic minimum.
+  /// [TrustedTimeConfig.minimumQuorum] is likewise untouched. See ADR
+  /// 0007's 2026-08-02 postscript.
+  final int minVerifiedQuorum;
 
   /// Orchestrates tier-aware consensus resolution across a set of samples.
   ///
@@ -213,9 +236,10 @@ final class MarzulloEngine {
   ///    relocate the anchor (design doc section 4.3). The result reports
   ///    `authLevel == NtsAuthLevel.verified`.
   ///
-  /// If the verified samples cannot form a truth box — too few are present,
-  /// or those present are too divergent to reach a Marzullo quorum (i.e.
-  /// `_resolveCore` over the verified subset returns `null`) — the cycle is
+  /// If the verified samples cannot form a truth box — fewer than
+  /// [minVerifiedQuorum] are usable, or those present are too divergent
+  /// to reach a Marzullo quorum (i.e. `_resolveCore` over the verified
+  /// subset returns `null`) — the cycle is
   /// *degraded*. The engine falls back to a legacy single-tier Marzullo over
   /// all [samples], forces
   /// `authLevel == NtsAuthLevel.none`, and sets
@@ -227,7 +251,15 @@ final class MarzulloEngine {
         .where((s) => _tierOf(s) == _Tier.verified)
         .toList();
 
-    final truthBox = _resolveCore(verified);
+    // The floor counts samples the reduction could actually use, so a
+    // verified host that answered with an unusable uncertainty does not
+    // fill a slot. Applying _resolveCore's own filter keeps "three
+    // responders" meaning the same thing on both sides of this check.
+    final usableVerified = verified.where(_isUsable).length;
+
+    final truthBox = usableVerified < minVerifiedQuorum
+        ? null
+        : _resolveCore(verified);
     if (truthBox == null || truthBox.interval == null) {
       // No Tier 1 truth box this cycle. Fall back to a legacy single-tier
       // reduction over every sample, flagged as degraded with the auth
@@ -270,6 +302,16 @@ final class MarzulloEngine {
     );
   }
 
+  /// Whether [sample] can enter a reduction at all.
+  ///
+  /// A negative uncertainty indicates a clock error, and one above
+  /// [maxAllowedUncertaintyMs] is a noisy source that would bloat the
+  /// consensus. Shared with [resolve]'s [minVerifiedQuorum] check so the
+  /// floor counts the same samples the reduction would.
+  bool _isUsable(TimeSample sample) =>
+      sample.uncertaintyMs >= 0 &&
+      sample.uncertaintyMs <= maxAllowedUncertaintyMs;
+
   /// Single-tier Marzullo reduction over [samples].
   ///
   /// Returns a [ConsensusResult] if a quorum is achieved that satisfies the
@@ -280,13 +322,7 @@ final class MarzulloEngine {
   ConsensusResult? _resolveCore(List<TimeSample> samples) {
     // Filter out invalid samples (negative uncertainty indicates clock errors)
     // and noisy sources with excessive uncertainty.
-    final validSamples = samples
-        .where(
-          (s) =>
-              s.uncertaintyMs >= 0 &&
-              s.uncertaintyMs <= maxAllowedUncertaintyMs,
-        )
-        .toList();
+    final validSamples = samples.where(_isUsable).toList();
 
     final totalSources = validSamples.length;
     final requiredQuorum = (totalSources * minQuorumRatio).ceil();

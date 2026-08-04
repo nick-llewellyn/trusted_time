@@ -36,7 +36,10 @@ void main() {
     test('Tier 1 quorum forms the truth box and admits only intersecting '
         'lower-tier samples', () async {
       final observer = RecordingObserver();
-      // Two verified samples overlap at [1005, 1020] — the truth box.
+      // Three verified samples overlap at [1005, 1020] — the truth box.
+      // Three because minVerifiedQuorum floors the truth-box pass there;
+      // below it the cycle degrades regardless of how well the verified
+      // samples agree.
       final engine = _engineFor([
         TierSource(
           id: 'nts:v1',
@@ -51,6 +54,14 @@ void main() {
           groupId: 'g2',
           startMs: 1005,
           endMs: 1025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        TierSource(
+          id: 'nts:v3',
+          groupId: 'g5',
+          startMs: 1002,
+          endMs: 1022,
           authLevel: NtsAuthLevel.verified,
           trustBackend: nts.TrustBackend.webpkiRoots,
         ),
@@ -127,8 +138,9 @@ void main() {
     test('coordinated lower-tier cluster outside the truth box cannot move '
         'the consensus', () async {
       final observer = RecordingObserver();
-      // Two verified samples agree near T (~10012). Three coordinated
-      // lower-tier samples cluster at T+10s, well outside the truth box.
+      // Three verified samples agree near T (~10012), meeting the
+      // truth-box floor. Three coordinated lower-tier samples cluster at
+      // T+10s, well outside the box.
       final engine = _engineFor([
         TierSource(
           id: 'nts:v1',
@@ -143,6 +155,14 @@ void main() {
           groupId: 'g2',
           startMs: 10005,
           endMs: 10025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        TierSource(
+          id: 'nts:v3',
+          groupId: 'g6',
+          startMs: 10002,
+          endMs: 10022,
           authLevel: NtsAuthLevel.verified,
           trustBackend: nts.TrustBackend.webpkiRoots,
         ),
@@ -205,6 +225,14 @@ void main() {
           groupId: 'g2',
           startMs: 1005,
           endMs: 1025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        TierSource(
+          id: 'nts:v3',
+          groupId: 'g5',
+          startMs: 1002,
+          endMs: 1022,
           authLevel: NtsAuthLevel.verified,
           trustBackend: nts.TrustBackend.webpkiRoots,
         ),
@@ -288,6 +316,16 @@ void main() {
           groupId: 'g2',
           startMs: 1005,
           endMs: 1025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        // Third verified host: the truth-box floor, so this cycle is
+        // healthy rather than degraded-for-being-thin.
+        TierSource(
+          id: 'nts:v3',
+          groupId: 'g3',
+          startMs: 1002,
+          endMs: 1022,
           authLevel: NtsAuthLevel.verified,
           trustBackend: nts.TrustBackend.webpkiRoots,
         ),

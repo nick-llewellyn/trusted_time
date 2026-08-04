@@ -76,6 +76,7 @@ final class SyncEngine {
          minQuorumRatio: config.minQuorumRatio,
          maxAllowedUncertaintyMs: config.maxAllowedUncertaintyMs,
          minGroupCount: config.minGroupCount,
+         minVerifiedQuorum: TrustedTimeConfig.minNtsQueryTarget,
        );
 
   /// Unicast hosts probed per cycle on iOS.
