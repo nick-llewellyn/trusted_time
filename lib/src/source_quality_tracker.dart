@@ -65,6 +65,7 @@ final class SourceQualityStats {
     this.ewmaJitterMs,
     this.stratum,
     this.vantageStale = false,
+    this.succeededOnce = false,
   });
 
   /// EWMA of the measured network delay (`TimeSample.delayMs`, a whole
@@ -103,6 +104,22 @@ final class SourceQualityStats {
   /// and what an older payload without the key means.
   final bool vantageStale;
 
+  /// Whether this source has ever answered a probe successfully.
+  ///
+  /// Distinct from a positive [successRate], which starts at 1.0 and
+  /// only decays — a source known solely from a failed probe still
+  /// reports a rate above zero, so the rate cannot answer "has this
+  /// host ever worked". The NTS promotion step needs that question
+  /// answered exactly: a host that has never responded must not fill a
+  /// query-target slot, or the target's failure headroom is nominal.
+  ///
+  /// Persisted so the answer survives a restart, since promotion runs
+  /// on the first cycle after one. Omitted from [toJson] when false,
+  /// which is also what an older payload without the key means — a
+  /// pre-upgrade install re-earns the flag on its next successful
+  /// probe.
+  final bool succeededOnce;
+
   /// Serializes to a JSON-compatible map. Null fields are omitted.
   Map<String, Object?> toJson() => {
     if (ewmaRttMs != null) 'ewmaRttMs': ewmaRttMs,
@@ -111,6 +128,7 @@ final class SourceQualityStats {
     'lastProbedUtcMs': lastProbedUtcMs,
     if (stratum != null) 'stratum': stratum,
     if (vantageStale) 'vantageStale': true,
+    if (succeededOnce) 'succeededOnce': true,
   };
 
   /// Deserializes one stats entry, returning null when [json] is not a
@@ -131,6 +149,7 @@ final class SourceQualityStats {
       lastProbedUtcMs: lastProbedUtcMs,
       stratum: stratum is int && stratum >= 1 && stratum <= 15 ? stratum : null,
       vantageStale: json['vantageStale'] == true,
+      succeededOnce: json['succeededOnce'] == true,
     );
   }
 }
@@ -147,6 +166,12 @@ class _SourceStats {
   /// cleared by the next probe of this source, success or failure —
   /// either outcome is a measurement from the current vantage.
   bool vantageStale = false;
+
+  /// Whether a probe of this source has ever succeeded. Latches on the
+  /// first success and is never cleared: a host that answered once is
+  /// permanently distinguishable from one that never has, which is a
+  /// different question from how well it is answering now.
+  bool succeededOnce = false;
 }
 
 /// Per-source observation recorded after each successful `TimeSample`.
@@ -270,6 +295,7 @@ final class SourceQualityTracker {
     stats.successRate = _ewma(stats.successRate, 1.0);
     stats.lastProbedUtcMs = _wallClock();
     stats.vantageStale = false;
+    stats.succeededOnce = true;
   }
 
   /// Records a failure for a source: the query cycle is noted so
@@ -351,6 +377,7 @@ final class SourceQualityTracker {
           lastProbedUtcMs: _stats[id]!.lastProbedUtcMs,
           stratum: _stratumHints[id],
           vantageStale: _stats[id]!.vantageStale,
+          succeededOnce: _stats[id]!.succeededOnce,
         ),
     };
   }
@@ -384,7 +411,8 @@ final class SourceQualityTracker {
         ..ewmaJitterMs = s.ewmaJitterMs
         ..successRate = s.successRate.clamp(0.0, 1.0)
         ..lastProbedUtcMs = s.lastProbedUtcMs > now ? now : s.lastProbedUtcMs
-        ..vantageStale = s.vantageStale;
+        ..vantageStale = s.vantageStale
+        ..succeededOnce = s.succeededOnce;
       final stratum = s.stratum;
       if (stratum != null) setStratum(id, stratum);
     });
@@ -433,6 +461,24 @@ final class SourceQualityTracker {
     if (stats == null || stats.vantageStale) return null;
     return stats.lastProbedUtcMs;
   }
+
+  /// Whether [sourceId] has ever answered a probe successfully.
+  ///
+  /// The NTS promotion step's admission test: a host may only be
+  /// promoted into the query target on recorded evidence that it works.
+  /// Mere presence in the tracker is not enough, since a failed probe
+  /// creates an entry too, and [ranked] scores an unmeasured source
+  /// neutrally rather than badly — so without this a host known only
+  /// from a timeout could outrank one never tried and fill a slot the
+  /// target's failure headroom depends on.
+  ///
+  /// Unlike [lastProbedUtcMs], a vantage change does not reset this. The
+  /// flag records that the host answered *somewhere*, which is evidence
+  /// the host exists and speaks the protocol; whether it is reachable
+  /// from here is what the re-sweep establishes, and the attenuated
+  /// score already discounts the stale measurement.
+  bool hasSucceeded(String sourceId) =>
+      _stats[sourceId]?.succeededOnce ?? false;
 
   /// Returns `true` if [sourceId] should be force-included this cycle to
   /// prevent starvation, regardless of its quality rank.

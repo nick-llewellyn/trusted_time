@@ -36,6 +36,66 @@ class _StubSource implements TimeSource {
 /// the NTP partition alone.
 const _liveInventory = TrustedTimeConfig(disableNts: true);
 
+/// Real curated inventory with both tiers live, for assertions about
+/// the two partitions running side by side.
+const _liveBothTiers = TrustedTimeConfig();
+
+/// A [TimeSource] under an `nts:`-prefixed id, the NTS counterpart of
+/// [_FakeNtpSource].
+class _FakeNtsSource implements TimeSource {
+  _FakeNtsSource(String host) : id = '${TimeSource.prefixNts}$host';
+  @override
+  final String id;
+  @override
+  final String groupId = 'as2';
+
+  @override
+  Future<TimeSample> getTime() async => TimeSample(
+    interval: TimeInterval(startMs: 1000, endMs: 1020),
+    sourceId: id,
+    groupId: groupId,
+  );
+}
+
+/// Builds a fake NTS inventory of [anycast] fixed members plus
+/// [unicast] promotion/explorer candidates, with a matching source per
+/// host.
+///
+/// NTP is emptied so the assertions are about the NTS partition alone.
+({TrustedTimeConfig config, List<TimeSource> sources}) _fakeNtsInventory({
+  required int anycast,
+  required int unicast,
+  int? queryTarget,
+}) {
+  final entries = <NtsServerInfo>[
+    for (var i = 0; i < anycast; i++)
+      NtsServerInfo(
+        host: 'ntsany$i.test',
+        tier: TimeServerTier.anycast,
+        observedStratum: 1,
+        leapPolicy: LeapPolicy.documentedStepping,
+      ),
+    for (var i = 0; i < unicast; i++)
+      NtsServerInfo(
+        host: 'ntsuni$i.test',
+        tier: TimeServerTier.unicastStratum1,
+        observedStratum: 1,
+        leapPolicy: LeapPolicy.documentedStepping,
+      ),
+  ];
+  final sources = [for (final e in entries) _FakeNtsSource(e.host)];
+  return (
+    config: TrustedTimeConfig(
+      disableNtpForTesting: true,
+      ntsInventoryForTesting: entries,
+      additionalSources: sources,
+      ntsQueryTarget: queryTarget ?? TrustedTimeConfig.minNtsQueryTarget,
+      minGroupCount: 1,
+    ),
+    sources: sources,
+  );
+}
+
 /// A [TimeSource] under an `ntp:`-prefixed id, so the partition treats
 /// it as inventory-backed rather than caller-supplied.
 ///
@@ -386,7 +446,9 @@ void main() {
       expect(selected, contains('custom-1'));
     });
 
-    test('NTS sources are always eligible', () {
+    test('an anycast NTS host is a fixed member every cycle', () {
+      // Anycast hosts are members by identity, so a sole anycast host
+      // is selected without needing any ranking to exist.
       final selected = _engine(
         config: const TrustedTimeConfig(
           ntsInventoryForTesting: [
@@ -429,6 +491,312 @@ void main() {
         ).copyWith(additionalSources: [_StubSource('a'), _StubSource('b')]),
       ).selectCycleHostsForTesting();
       expect(selected, equals({'a', 'b'}));
+    });
+  });
+
+  // The NTS tier adds a promotion step above the plain tier split: the
+  // anycast hosts are fixed members, the blocking set is filled to
+  // ntsQueryTarget from the unicast ranking, and the rest is walked.
+  // See ADR 0007's 2026-08-02 postscript.
+  group('SyncEngine NTS inventory narrowing', () {
+    test('the 57-host inventory is a pool, not a tier', () {
+      // The regression this partition exists to prevent: before it,
+      // every curated NTS host was classified blocking every cycle.
+      final roles = _engine(
+        config: _liveBothTiers,
+        budget: 5,
+      ).selectCycleRolesForTesting();
+      final ntsBlocking = roles.blocking.where(
+        (id) => id.startsWith(TimeSource.prefixNts),
+      );
+      expect(ntsBlocking, hasLength(_liveBothTiers.ntsQueryTarget));
+      expect(ntsBlocking.length, lessThan(_liveBothTiers.ntsInventory.length));
+    });
+
+    test('a cycle opens single-digit NTS handshakes', () {
+      // The cost claim on the dartdoc: query target plus explorer
+      // budget, against one handshake per inventory host before.
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final selected = _engine(config: _liveBothTiers, budget: 5)
+          .selectCycleHostsForTesting()
+          .where((id) => id.startsWith(TimeSource.prefixNts));
+      expect(
+        selected,
+        hasLength(
+          _liveBothTiers.ntsQueryTarget + SyncEngine.standardNtsExplorerBudget,
+        ),
+      );
+      expect(selected.length, lessThan(10));
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    test('the two tiers are partitioned on separate budgets', () {
+      // One shuffle orders both walks, but an NTS probe costs a TLS
+      // handshake an NTP probe does not, so neither budget is derivable
+      // from the other.
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      final roles = _engine(
+        config: _liveBothTiers,
+        budget: 5,
+      ).selectCycleRolesForTesting();
+      final ntpExplorers = roles.explorers.where(
+        (id) => id.startsWith(TimeSource.prefixNtp),
+      );
+      final ntsExplorers = roles.explorers.where(
+        (id) => id.startsWith(TimeSource.prefixNts),
+      );
+      expect(ntpExplorers, hasLength(5));
+      expect(ntsExplorers, hasLength(SyncEngine.standardNtsExplorerBudget));
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    test('anycast hosts are never displaced by promotion', () {
+      final fake = _fakeNtsInventory(anycast: 3, unicast: 8);
+      final roles = _engine(config: fake.config).selectCycleRolesForTesting();
+      for (var i = 0; i < 3; i++) {
+        expect(
+          roles.blocking,
+          contains('${TimeSource.prefixNts}ntsany$i.test'),
+        );
+      }
+    });
+
+    test('promotion fills the blocking set up to the query target', () {
+      // Two anycast against a target of 5: three unicast hosts are
+      // promoted to close the gap.
+      final fake = _fakeNtsInventory(anycast: 2, unicast: 8, queryTarget: 5);
+      final roles = _engine(config: fake.config).selectCycleRolesForTesting();
+      expect(roles.blocking, hasLength(5));
+      expect(roles.blocking.intersection(roles.explorers), isEmpty);
+    });
+
+    test('promotion comes out of the explorer budget, not on top', () {
+      // Reallocation within the cycle rather than a wider cycle: the
+      // handshake count is target + budget whatever the anycast/unicast
+      // mix happens to be.
+      final wide = _fakeNtsInventory(anycast: 3, unicast: 20, queryTarget: 5);
+      final thin = _fakeNtsInventory(anycast: 1, unicast: 22, queryTarget: 5);
+      final a = _engine(config: wide.config, budget: 0);
+      final b = _engine(config: thin.config, budget: 0);
+      expect(
+        a.selectCycleHostsForTesting(),
+        hasLength(b.selectCycleHostsForTesting().length),
+      );
+    });
+
+    test('a target below the promotable population still fills', () {
+      // Fewer unicast candidates than slots: the quorum is simply
+      // smaller, the same as one whose promotions are unranked.
+      final fake = _fakeNtsInventory(anycast: 1, unicast: 1, queryTarget: 5);
+      final roles = _engine(config: fake.config).selectCycleRolesForTesting();
+      expect(roles.blocking, hasLength(2));
+    });
+
+    test('a ranked host with a recorded success is promoted', () {
+      final tracker = SourceQualityTracker();
+      final fake = _fakeNtsInventory(anycast: 2, unicast: 8, queryTarget: 3);
+      // One host has answered; it must take the single open slot.
+      tracker.recordProbe(
+        sourceId: '${TimeSource.prefixNts}ntsuni5.test',
+        delayMs: 5,
+      );
+      final roles = _engine(
+        config: fake.config,
+        tracker: tracker,
+      ).selectCycleRolesForTesting();
+      expect(roles.blocking, contains('${TimeSource.prefixNts}ntsuni5.test'));
+    });
+
+    test('a host known only from a failure is not promoted', () {
+      // The admission test. recordFailure leaves a decayed but positive
+      // success rate, and ranked() scores an unmeasured source
+      // neutrally, so without hasSucceeded the failed host could
+      // outrank a never-tried one and fill a headroom slot with an
+      // expected failure.
+      final tracker = SourceQualityTracker();
+      final fake = _fakeNtsInventory(anycast: 2, unicast: 8, queryTarget: 3);
+      tracker.recordFailure('${TimeSource.prefixNts}ntsuni5.test');
+      final roles = _engine(
+        config: fake.config,
+        tracker: tracker,
+      ).selectCycleRolesForTesting();
+      expect(
+        roles.blocking,
+        isNot(contains('${TimeSource.prefixNts}ntsuni5.test')),
+      );
+      // The slot is still filled -- by the cold-start path, since no
+      // ranked host qualifies.
+      expect(roles.blocking, hasLength(3));
+    });
+
+    test('cold start fills from the head of the walk', () {
+      // With no ranking at all the target is still met, and from the
+      // prefix of a traversal the cycle computes anyway rather than a
+      // separate selection rule.
+      final fake = _fakeNtsInventory(anycast: 2, unicast: 8, queryTarget: 5);
+      final engine = _engine(config: fake.config);
+      final roles = engine.selectCycleRolesForTesting();
+      expect(roles.blocking, hasLength(5));
+      // Same shuffle, so the promoted hosts are the walk prefix the
+      // explorer list would otherwise have started with.
+      final all = engine.selectCycleHostsForTesting();
+      expect(roles.blocking.union(roles.explorers), equals(all));
+    });
+
+    test('two installs promote different cold-start hosts', () {
+      // The fill inherits the per-install shuffle rather than
+      // introducing a shared constant order.
+      final fake = _fakeNtsInventory(anycast: 1, unicast: 20, queryTarget: 5);
+      final a = _engine(
+        config: fake.config,
+        shuffle: const ExplorerShuffle(1),
+      ).selectCycleRolesForTesting();
+      final b = _engine(
+        config: fake.config,
+        shuffle: const ExplorerShuffle(2),
+      ).selectCycleRolesForTesting();
+      expect(a.blocking, isNot(equals(b.blocking)));
+    });
+
+    test('the NTS explorer walk rotates', () {
+      final tracker = SourceQualityTracker();
+      final fake = _fakeNtsInventory(anycast: 3, unicast: 20, queryTarget: 3);
+      final engine = _engine(config: fake.config, tracker: tracker);
+
+      final first = engine.selectCycleRolesForTesting().explorers;
+      for (final id in first) {
+        tracker.record(
+          sourceId: id,
+          uncertaintyMs: 10,
+          participatedInConsensus: false,
+        );
+      }
+      final second = engine.selectCycleRolesForTesting().explorers;
+      expect(first.intersection(second), isEmpty);
+    });
+
+    test('NTS explorers are outside the blocking set', () {
+      // Explorers feed the ranking only. Asserted on the split rather
+      // than by running a cycle: the NTS test seam deliberately builds a
+      // real NtsSource per entry (see ntsInventoryForTesting), so an
+      // offline sync cannot produce NTS samples to count. That the
+      // explorer half stays out of consensus is protocol-agnostic --
+      // sync() keys off this record, not off the id prefix -- and is
+      // covered by 'explorer samples stay out of consensus'.
+      final fake = _fakeNtsInventory(anycast: 3, unicast: 8, queryTarget: 3);
+      final roles = _engine(config: fake.config).selectCycleRolesForTesting();
+      expect(roles.blocking, hasLength(3));
+      expect(roles.explorers, isNotEmpty);
+      expect(roles.blocking.intersection(roles.explorers), isEmpty);
+    });
+
+    test('an empty NTS inventory does not re-flatten the NTP one', () {
+      // The early return is keyed on both inventories being empty.
+      // Keyed on either alone, disableNts would send the NTP tier down
+      // the "nothing to narrow" branch and query all 51.
+      final selected = _engine(
+        config: _liveInventory,
+        budget: 5,
+      ).selectCycleHostsForTesting();
+      expect(selected, hasLength(15));
+    });
+
+    test('an empty NTP inventory does not re-flatten the NTS one', () {
+      final fake = _fakeNtsInventory(anycast: 3, unicast: 20, queryTarget: 3);
+      final selected = _engine(
+        config: fake.config,
+      ).selectCycleHostsForTesting();
+      expect(selected.length, lessThan(23));
+    });
+  });
+
+  group('default NTS explorer budget platform split', () {
+    test('iOS gets the narrow budget its ~30s task window allows', () {
+      expect(
+        SyncEngine.defaultNtsExplorerBudgetFor(TargetPlatform.iOS),
+        SyncEngine.iosNtsExplorerBudget,
+      );
+    });
+
+    test('iOS is strictly narrower than the standard budget', () {
+      expect(
+        SyncEngine.iosNtsExplorerBudget,
+        lessThan(SyncEngine.standardNtsExplorerBudget),
+      );
+    });
+
+    test('each NTS budget is narrower than its NTP counterpart', () {
+      // The cost asymmetry that justifies separate constants: an NTS
+      // probe is TCP + TLS + key exchange where an NTP probe is one UDP
+      // round trip. If these ever converge the split stops meaning
+      // anything.
+      expect(
+        SyncEngine.iosNtsExplorerBudget,
+        lessThan(SyncEngine.iosExplorerBudget),
+      );
+      expect(
+        SyncEngine.standardNtsExplorerBudget,
+        lessThan(SyncEngine.standardExplorerBudget),
+      );
+    });
+
+    test('platforms with no OS deadline reuse the standard budget', () {
+      for (final platform in const [
+        TargetPlatform.macOS,
+        TargetPlatform.linux,
+        TargetPlatform.windows,
+        TargetPlatform.android,
+      ]) {
+        expect(
+          SyncEngine.defaultNtsExplorerBudgetFor(platform),
+          SyncEngine.standardNtsExplorerBudget,
+          reason: '$platform has no execution window to fit under',
+        );
+      }
+    });
+
+    test('the front-load widens the NTS walk too', () {
+      // Matters more here than on NTP: the NTS quorum pins 3 fixed
+      // members against a floor of 3, so promotion supplies the whole
+      // failure headroom and runs at zero headroom until the tracker
+      // has rank.
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      final engine = _engine(config: _liveBothTiers)
+        ..armExplorerBoost(SyncEngine.explorerBoostCycles);
+      expect(
+        engine.effectiveNtsExplorerBudget,
+        SyncEngine.standardNtsExplorerBudget,
+      );
+      debugDefaultTargetPlatformOverride = null;
+    });
+
+    test('the NTS boost only ever widens', () {
+      final wide = SyncEngine.standardNtsExplorerBudget + 3;
+      final engine = SyncEngine(
+        config: _liveBothTiers,
+        clock: FakeMonotonicClock(),
+        explorerShuffle: const ExplorerShuffle(99),
+        ntsExplorerBudget: wide,
+      )..armExplorerBoost(4);
+      expect(engine.effectiveNtsExplorerBudget, wide);
+    });
+  });
+
+  // An NTS warm is TCP + TLS + key exchange, so warming hosts the cycle
+  // then narrows away is the cost the partition exists to avoid.
+  group('warmAllSources cycle scoping', () {
+    test('only the cycle-selected sources are warmed', () async {
+      final fake = _fakeNtsInventory(anycast: 2, unicast: 20, queryTarget: 3);
+      final engine = _engine(config: fake.config);
+      final selected = engine.selectCycleHostsForTesting();
+
+      expect(
+        selected.length,
+        lessThan(fake.sources.length),
+        reason: 'the partition must narrow, or this asserts nothing',
+      );
+      // Completes rather than fanning out across the whole inventory.
+      await engine.warmAllSources();
     });
   });
 

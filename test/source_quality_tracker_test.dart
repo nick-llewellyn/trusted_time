@@ -503,6 +503,7 @@ void main() {
           lastProbedUtcMs: 1700000000000,
           stratum: 2,
           vantageStale: true,
+          succeededOnce: true,
         );
         final decoded = SourceQualityStats.fromJson(stats.toJson());
         expect(decoded, isNotNull);
@@ -512,8 +513,66 @@ void main() {
         expect(decoded.lastProbedUtcMs, equals(1700000000000));
         expect(decoded.stratum, equals(2));
         expect(decoded.vantageStale, isTrue);
+        expect(decoded.succeededOnce, isTrue);
+      });
+    });
+
+    // The NTS promotion step's admission test. A positive successRate
+    // cannot answer "has this host ever worked" -- it starts at 1.0 and
+    // only decays -- so the flag is tracked separately.
+    group('hasSucceeded', () {
+      test('an unknown source has not succeeded', () {
+        expect(SourceQualityTracker().hasSucceeded('nts:never.test'), isFalse);
       });
 
+      test('a failed probe does not set it, and leaves a positive rate', () {
+        final tracker = SourceQualityTracker()..recordFailure('nts:down.test');
+        expect(tracker.hasSucceeded('nts:down.test'), isFalse);
+        // Why the flag exists: the rate alone would read as healthy.
+        expect(
+          tracker.snapshot()['nts:down.test']!.successRate,
+          greaterThan(0.0),
+        );
+      });
+
+      test('a successful probe latches it', () {
+        final tracker = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 10);
+        expect(tracker.hasSucceeded('nts:up.test'), isTrue);
+      });
+
+      test('later failures do not clear it', () {
+        // "Has answered once" is a different question from "is
+        // answering now"; the decaying rate covers the second.
+        final tracker = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:flaky.test', delayMs: 10)
+          ..recordFailure('nts:flaky.test')
+          ..recordFailure('nts:flaky.test');
+        expect(tracker.hasSucceeded('nts:flaky.test'), isTrue);
+      });
+
+      test('it survives a snapshot/restore round trip', () {
+        // Promotion runs on the first cycle after a restart, so the
+        // answer has to outlive the process.
+        final tracker = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 10);
+        final restored = SourceQualityTracker()..restore(tracker.snapshot());
+        expect(restored.hasSucceeded('nts:up.test'), isTrue);
+      });
+
+      test('a vantage change does not clear it', () {
+        // Unlike lastProbedUtcMs, which reports null so the walk
+        // restarts. The flag records that the host answered somewhere,
+        // which is evidence it exists and speaks the protocol.
+        final tracker = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 10)
+          ..markVantageStale();
+        expect(tracker.lastProbedUtcMs('nts:up.test'), isNull);
+        expect(tracker.hasSucceeded('nts:up.test'), isTrue);
+      });
+    });
+
+    group('SourceQualityStats JSON absent-field handling', () {
       test('round-trips with optional fields absent', () {
         const stats = SourceQualityStats(
           successRate: 1.0,
@@ -536,6 +595,12 @@ void main() {
         expect(decoded.ewmaJitterMs, isNull);
         expect(decoded.stratum, isNull);
         expect(decoded.vantageStale, isFalse);
+        expect(
+          json,
+          isNot(contains('succeededOnce')),
+          reason: 'a pre-upgrade payload has no key and must decode false',
+        );
+        expect(decoded.succeededOnce, isFalse);
       });
 
       test('fromJson rejects malformed entries and sanitizes fields', () {
@@ -555,12 +620,14 @@ void main() {
           'ewmaRttMs': 'fast', // Wrong type → dropped.
           'stratum': 99, // Out of range → dropped.
           'vantageStale': 'yes', // Wrong type → not stale.
+          'succeededOnce': 'sure', // Wrong type → never succeeded.
         });
         expect(sanitized, isNotNull);
         expect(sanitized!.successRate, equals(1.0));
         expect(sanitized.ewmaRttMs, isNull);
         expect(sanitized.stratum, isNull);
         expect(sanitized.vantageStale, isFalse);
+        expect(sanitized.succeededOnce, isFalse);
       });
     });
   });

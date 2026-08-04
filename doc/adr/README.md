@@ -74,7 +74,7 @@ of the implementation on the current `integration/bleeding-edge` tree.
 The contribution-mode pivot (which reset `main` to mirror
 `upstream/main`) reverted any fork-side reductions of the upstream
 surface that had not yet been re-introduced as feat/* PRs. As of this
-PR, three Accepted ADRs are known to diverge from current code:
+PR, two Accepted ADRs are known to diverge from current code:
 
 - **ADR 0001** describes `TrustedTimeConfig.ntsServers` as "opt-in,
   empty by default". Current code enables NTS by default and the host
@@ -91,8 +91,8 @@ PR, three Accepted ADRs are known to diverge from current code:
   ranking, or from the walk order while that ranking is empty —
   against a validity floor of 3 responders, with the
   remaining unicast hosts on a rotating explorer walk. Decided in
-  `trusted_time-ky3`; the divergence clears with the implementation,
-  `trusted_time-1ww` — see the ADR 0007 row below.
+  `trusted_time-ky3` and implemented in `trusted_time-1ww`, so the
+  57-host inventory is a 57-host *pool*, not a 57-host tier.
 - **ADR 0002** decides on real headless background anchor refresh.
   Implementation is still in-progress (`trusted_time-e0v`) — the
   current native code performs only an HTTPS HEAD connectivity check.
@@ -132,8 +132,18 @@ Notes on previously-listed divergences:
   should be read against that postscript: the truth box is still
   recomputed per-establish; there is simply no validate cycle between
   establishes any more.
+- **ADR 0007**'s 2026-08-02 postscript (NTS tier partitioned per
+  cycle) is no longer a divergence. `_selectCycleHosts` partitions both
+  curated inventories, pinning the 3 anycast NTS hosts as fixed members
+  and promoting up to `TrustedTimeConfig.ntsQueryTarget` from the
+  unicast ranking (or the walk order while that ranking is empty), with
+  the rest on a rotating explorer walk; `warmAllSources()` is scoped to
+  the cycle's hosts; and `MarzulloEngine.minVerifiedQuorum` floors the
+  truth-box pass at the 3 responders the postscript requires, leaving
+  `_resolveCore`'s generic floor of 2 for the degraded fallback.
+  Implemented in `trusted_time-1ww` (decision: `trusted_time-ky3`).
 - **ADR 0007**'s original decision is no longer listed as a code
-  divergence (its 2026-08-02 postscript is, above). Its three
+  divergence either. Its three
   implementation pieces have landed: tier-aware Marzullo admission
   and the `degradedTier` `IntegrityEvent` reason via `trusted_time-q1n`
   (PR #48), and the ASN-based NTP `groupId` derivation via

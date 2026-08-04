@@ -55,7 +55,11 @@ final class SyncEngine {
   /// tests — working, at the cost of restarting the walk each time.
   ///
   /// [explorerBudget] defaults to [defaultExplorerBudgetFor] applied to
-  /// [defaultTargetPlatform].
+  /// [defaultTargetPlatform]; [ntsExplorerBudget] to
+  /// [defaultNtsExplorerBudgetFor] on the same platform. The two are
+  /// separate because an NTS probe costs a TLS handshake an NTP probe
+  /// does not — one shuffle orders both walks, but neither budget is
+  /// derivable from the other.
   SyncEngine({
     required TrustedTimeConfig config,
     required MonotonicClock clock,
@@ -64,6 +68,7 @@ final class SyncEngine {
     SourceQualityTracker? qualityTracker,
     ExplorerShuffle? explorerShuffle,
     int? explorerBudget,
+    int? ntsExplorerBudget,
   }) : _config = config,
        _clock = clock,
        _observer = observer,
@@ -72,6 +77,9 @@ final class SyncEngine {
        _explorerShuffle = explorerShuffle ?? ExplorerShuffle.generate(),
        _explorerBudget =
            explorerBudget ?? defaultExplorerBudgetFor(defaultTargetPlatform),
+       _ntsExplorerBudget =
+           ntsExplorerBudget ??
+           defaultNtsExplorerBudgetFor(defaultTargetPlatform),
        _engine = MarzulloEngine(
          minQuorumRatio: config.minQuorumRatio,
          maxAllowedUncertaintyMs: config.maxAllowedUncertaintyMs,
@@ -153,6 +161,56 @@ final class SyncEngine {
       ? iosExplorerBudget
       : standardExplorerBudget;
 
+  /// NTS hosts probed per cycle on iOS, beyond the query target.
+  ///
+  /// Half [iosExplorerBudget], because an NTS probe is a TCP connect
+  /// plus a TLS handshake plus a key exchange where an NTP probe is one
+  /// UDP round trip. At roughly three times the cost, an equal budget
+  /// would triple the cycle; halving puts the NTS explorer load in the
+  /// same band as the query target itself. ADR 0007's postscript rules
+  /// out sharing the NTP budget for exactly this reason.
+  static const iosNtsExplorerBudget = 2;
+
+  /// NTS hosts probed per cycle everywhere else, beyond the query target.
+  ///
+  /// Half [standardExplorerBudget], on the same cost argument as
+  /// [iosNtsExplorerBudget].
+  static const standardNtsExplorerBudget = 4;
+
+  /// The default NTS explorer budget for [platform].
+  ///
+  /// Two-way on the same reasoning as [defaultExplorerBudgetFor]: iOS is
+  /// the only platform whose OS kills the run at a deadline (ADR 0002),
+  /// and the budget exists to fit under it.
+  ///
+  /// ## Sweep latency
+  ///
+  /// The curated inventory's 54 unicast NTS hosts are covered in 27
+  /// cycles at the iOS budget and 14 at the standard one. At the 24 h
+  /// establish cadence (ADR 0006) that is roughly 27 and 14 days — both
+  /// slower than the NTP walk's ~14 and ~5, since the NTS pool is larger
+  /// *and* its budget narrower. The cost is how long promotion runs on a
+  /// partly-measured ranking, not correctness: the fixed anycast members
+  /// are queried every cycle regardless of where the walk is.
+  ///
+  /// [armExplorerBoost] widens this walk alongside the NTP one, and it
+  /// matters more here. NTP's quorum is whole on cycle 1 (10 fixed
+  /// members against a floor of 2), so its ranking is a refinement,
+  /// whereas the NTS tier pins 3 fixed members against a floor of 3 and
+  /// promotion supplies the entire failure headroom — until the tracker
+  /// has rank, every cycle runs the cold-start fill at zero headroom.
+  /// Boosting iOS from 2 to 4 halves the time to rank-backed promotion.
+  /// At [explorerBoostCycles] that covers ~32 of the 54 hosts, ~0.6 of a
+  /// sweep against the NTP walk's ~1.6; the boost is deliberately not
+  /// widened to close that gap, since the smoothing argument behind
+  /// eight cycles is about promoted hosts having *a* measurement rather
+  /// than about covering the pool.
+  @visibleForTesting
+  static int defaultNtsExplorerBudgetFor(TargetPlatform platform) =>
+      platform == TargetPlatform.iOS
+      ? iosNtsExplorerBudget
+      : standardNtsExplorerBudget;
+
   final TrustedTimeConfig _config;
   final MonotonicClock _clock;
   final SyncObserver? _observer;
@@ -160,6 +218,7 @@ final class SyncEngine {
   final ConsensusCache? _cache;
   final MarzulloEngine _engine;
   final int _explorerBudget;
+  final int _ntsExplorerBudget;
 
   ExplorerShuffle _explorerShuffle;
 
@@ -333,23 +392,44 @@ final class SyncEngine {
 
   /// The source ids this cycle may query.
   ///
-  /// Only the curated plain-NTP inventory is partitioned. Every NTS
-  /// source is eligible every cycle, which is a known divergence from
-  /// ADR 0007 rather than the position of record: the "there are few
-  /// of them" premise this pass-through rested on held for the
-  /// two-host default and does not hold for the 57-host curated
-  /// inventory. ADR 0007's 2026-08-02 postscript decides to narrow the
-  /// NTS tier the same way — the 3 anycast hosts pinned as fixed
-  /// members, a configurable query target above them filled by
-  /// promotion from the unicast ranking (or, while that ranking is
-  /// empty, from the head of the walk order), and a rotating explorer
-  /// walk over the rest — and answers the two clauses that did survive
-  /// the migration (NTS is the authenticated half; rotation must not make
-  /// an anchor's authentication level cycle-dependent). Until that
-  /// lands, every entry [TrustedTimeConfig.ntsInventory] yields is
-  /// classified `blocking` — the curated 57 on the default posture,
-  /// none under [TrustedTimeConfig.disableNts], and whatever
-  /// [TrustedTimeConfig.ntsInventoryForTesting] supplies otherwise.
+  /// Both curated inventories are partitioned, each on its own budget.
+  /// The plain-NTP tier queries its 10 anycast hosts every cycle and
+  /// walks the 41 unicast ones [effectiveExplorerBudget] at a time. The
+  /// NTS tier does the same shape with an extra step above it, per ADR
+  /// 0007's 2026-08-02 postscript:
+  ///
+  /// - The [TimeServerTier.anycast] hosts are **fixed members**, queried
+  ///   every cycle. They are members by identity and are never displaced
+  ///   by a better-ranked unicast host — an anycast host resolves near
+  ///   the caller from any vantage, which is what makes pinning them
+  ///   viable before any ranking exists.
+  /// - **Promotion** fills the blocking set up to
+  ///   [TrustedTimeConfig.ntsQueryTarget] from the unicast ranking.
+  ///   Only a host with a recorded success is promotable
+  ///   ([SourceQualityTracker.hasSucceeded]): one known solely from a
+  ///   failed probe would fill a slot the target's failure headroom
+  ///   depends on. When no ranked host qualifies the target is filled
+  ///   from the head of the walk order instead, which is the cold-start
+  ///   case — those hosts are probed this cycle either way, and
+  ///   discarding their samples in the one cycle where the truth-box
+  ///   floor is otherwise unmet is not defensible.
+  /// - The remaining unicast hosts are walked
+  ///   [effectiveNtsExplorerBudget] at a time. Promoted hosts come out
+  ///   of that budget rather than widening the cycle.
+  ///
+  /// A cycle therefore opens `ntsQueryTarget + effectiveNtsExplorerBudget`
+  /// NTS-KE handshakes — single digits — where the pre-partition engine
+  /// opened one per inventory host.
+  ///
+  /// Rotating the tier does not make an anchor's authentication level
+  /// cycle-dependent, which was the objection the pass-through rested
+  /// on alongside the since-invalidated "there are few of them". The
+  /// fixed members are queried every cycle, so a cycle's *access* to a
+  /// verified truth box never turns on where the walk is. What varies is
+  /// the box's membership above them, and with it its width — a
+  /// precision property, not a trust one, since every member is
+  /// [NtsAuthLevel.verified] whichever cycle it landed in.
+  ///
   /// Classification is the ceiling, not the count: [sync] drops the
   /// ids still inside their `_blacklistUntil` cooldown, then re-admits
   /// any of them the starvation rescue finds overdue, so how many
@@ -359,16 +439,18 @@ final class SyncEngine {
   ///
   /// Eligibility is decided by source id, not by where the source came
   /// from. A source passes through unpartitioned when its id is absent
-  /// from [TrustedTimeConfig.ntpInventory] — which is every caller
-  /// source in practice, since the partition narrows a list the library
-  /// curates, not whatever the caller supplied. The exception is a
+  /// from both inventories — which is every caller source in practice,
+  /// since the partition narrows lists the library curates, not whatever
+  /// the caller supplied. The exception is a
   /// [TrustedTimeConfig.additionalSources] entry whose id is
-  /// `ntp:<host>` for a host that *is* in the inventory: the engine
-  /// cannot tell it apart from the inventory-backed source it shadows,
-  /// so it is partitioned like one. Offline partition tests rely on
-  /// this (see [TrustedTimeConfig.ntpInventoryForTesting]); callers
-  /// wanting an unconditionally queried NTP host should give it an id
-  /// outside the curated set.
+  /// `ntp:<host>` or `nts:<host>` for a host that *is* in the matching
+  /// inventory: the engine cannot tell it apart from the
+  /// inventory-backed source it shadows, so it is partitioned like one.
+  /// Offline partition tests rely on this (see
+  /// [TrustedTimeConfig.ntpInventoryForTesting] and
+  /// [TrustedTimeConfig.ntsInventoryForTesting]); callers wanting an
+  /// unconditionally queried host should give it an id outside the
+  /// curated sets.
   ///
   /// Visible for tests so the narrowing and the pass-through rule can
   /// be asserted without running a cycle against the live inventory.
@@ -399,27 +481,44 @@ final class SyncEngine {
   /// and it includes a [TrustedTimeConfig.additionalSources] entry
   /// whose id shadows such a host — the engine cannot tell it apart
   /// from the inventory source, so it is probed like one. A caller
-  /// source with an id outside the inventory always blocks.
+  /// source with an id outside either inventory always blocks.
   ({Set<String> blocking, Set<String> explorers}) _selectCycleHosts() {
-    final inventory = _config.ntpInventory;
-    if (inventory.isEmpty) {
+    final ntpInventory = _config.ntpInventory;
+    final ntsInventory = _config.ntsInventory;
+    // Both empty means there is nothing curated to narrow, so every
+    // source is a caller source and blocks. Keyed on both because
+    // either seam can empty one side alone, and treating one empty
+    // inventory as "nothing to narrow" would re-flatten the other.
+    if (ntpInventory.isEmpty && ntsInventory.isEmpty) {
       return (blocking: {for (final s in _sources) s.id}, explorers: const {});
     }
-    final partition = partitionInventory(
-      inventory: inventory,
+
+    final ntpPartition = partitionInventory(
+      inventory: ntpInventory,
       shuffle: _explorerShuffle,
       explorerBudget: effectiveExplorerBudget,
       lastProbedUtcMs: (host) =>
           _qualityTracker.lastProbedUtcMs('${TimeSource.prefixNtp}$host'),
     );
-    final quorum = {
-      for (final host in partition.quorum) '${TimeSource.prefixNtp}$host',
+    final ntsPartition = _partitionNtsInventory(ntsInventory);
+
+    final quorum = <String>{
+      for (final host in ntpPartition.quorum) '${TimeSource.prefixNtp}$host',
+      for (final host in ntsPartition.quorum) '${TimeSource.prefixNts}$host',
     };
-    final explorers = {
-      for (final host in partition.explorers) '${TimeSource.prefixNtp}$host',
+    final explorers = <String>{
+      for (final host in ntpPartition.explorers) '${TimeSource.prefixNtp}$host',
+      for (final host in ntsPartition.explorers) '${TimeSource.prefixNts}$host',
     };
-    final inventoryIds = {
-      for (final entry in inventory) '${TimeSource.prefixNtp}${entry.host}',
+    // Every id the partition had a say over. A source whose id is in
+    // here but in neither half was narrowed out of this cycle; one
+    // absent from it entirely is a caller source and passes through.
+    // Both prefixes are required: keyed on the NTP ids alone, an NTS
+    // host the walk left out would fall through to blocking, which is
+    // the pass-through this partition replaced.
+    final inventoryIds = <String>{
+      for (final entry in ntpInventory) '${TimeSource.prefixNtp}${entry.host}',
+      for (final entry in ntsInventory) '${TimeSource.prefixNts}${entry.host}',
     };
     final blocking = <String>{};
     final probing = <String>{};
@@ -431,6 +530,91 @@ final class SyncEngine {
       }
     }
     return (blocking: blocking, explorers: probing);
+  }
+
+  /// Splits [inventory] into this cycle's NTS quorum and explorers.
+  ///
+  /// [partitionInventory] gives the tier split and the staleness-ordered
+  /// walk; promotion to [TrustedTimeConfig.ntsQueryTarget] happens here
+  /// rather than inside it, so the NTP path keeps its pure tier split.
+  ///
+  /// The promoted hosts are taken out of the explorer budget rather than
+  /// added on top, so filling the target reallocates within the cycle
+  /// instead of widening it — the handshake count is the target plus the
+  /// budget either way.
+  InventoryPartition _partitionNtsInventory(List<TimeServerEntry> inventory) {
+    if (inventory.isEmpty) {
+      return const InventoryPartition(quorum: [], explorers: []);
+    }
+    final target = _config.ntsQueryTarget;
+
+    // Tier split at zero budget: this yields the fixed members and how
+    // many slots promotion has to fill, without committing to a walk
+    // the promotions would then have to be subtracted from.
+    final fixed = partitionInventory(
+      inventory: inventory,
+      shuffle: _explorerShuffle,
+      explorerBudget: 0,
+      lastProbedUtcMs: (host) =>
+          _qualityTracker.lastProbedUtcMs('${TimeSource.prefixNts}$host'),
+    ).quorum;
+
+    final slots = max(0, target - fixed.length);
+    final unicast = [
+      for (final entry in inventory)
+        if (entry.tier != TimeServerTier.anycast) entry.host,
+    ];
+
+    // Rank-backed promotion draws on the whole unicast population, not
+    // on this cycle's explorer slice. A host the walk measured and
+    // found fast is exactly what promotion is for, and having just been
+    // probed it sorts to the *end* of the staleness walk — scoping
+    // candidates to the current slice would make a host unpromotable
+    // for having been measured, leaving the walk with no consumer.
+    //
+    // Restricted to hosts with a recorded success, since ranked()
+    // scores an unmeasured source neutrally: without the filter a host
+    // known only from a timeout could outrank one never tried and fill
+    // a slot the target's failure headroom depends on.
+    final promoted = _qualityTracker
+        .ranked([for (final host in unicast) '${TimeSource.prefixNts}$host'])
+        .where(_qualityTracker.hasSucceeded)
+        .take(slots)
+        .map((id) => id.substring(TimeSource.prefixNts.length))
+        .toList();
+
+    // Walk the rest, promoted hosts excluded so none is ever both. The
+    // budget is widened by the slots promotion could not fill, so a
+    // cold-start cycle still spends its full target + budget instead of
+    // shrinking to the anycast count — that surplus is the fill below.
+    final shortfall = slots - promoted.length;
+    final promotedSet = promoted.toSet();
+    final walk = partitionInventory(
+      inventory: [
+        for (final entry in inventory)
+          if (!promotedSet.contains(entry.host)) entry,
+      ],
+      shuffle: _explorerShuffle,
+      explorerBudget: effectiveNtsExplorerBudget + shortfall,
+      lastProbedUtcMs: (host) =>
+          _qualityTracker.lastProbedUtcMs('${TimeSource.prefixNts}$host'),
+    ).explorers;
+
+    // Cold-start fill: with fewer qualifying ranked hosts than slots,
+    // take the head of the walk. partitionInventory already sorts
+    // never-probed hosts first with the per-install shuffle breaking
+    // ties, so this promotes the prefix of a traversal the cycle
+    // computes anyway — no new selection rule and no new randomness.
+    // Those hosts are probed this cycle regardless; the fill decides
+    // only whether the cycle may *use* the result, and discarding it in
+    // the one cycle where the truth-box floor is otherwise unmet is not
+    // defensible. The cost is latency: a filled host gates the cycle
+    // while nothing is known about it. Accepted, since a cold cycle has
+    // no cached anchor either and maxLatency bounds it.
+    return InventoryPartition(
+      quorum: [...fixed, ...promoted, ...walk.take(shortfall)],
+      explorers: walk.skip(shortfall).toList(),
+    );
   }
 
   /// Tracks consecutive failures for each source to implement exponential cooldown.
@@ -553,6 +737,20 @@ final class SyncEngine {
       ? max(_explorerBudget, boostedExplorerBudget)
       : _explorerBudget;
 
+  /// The NTS explorer budget the *next* cycle will use.
+  ///
+  /// Same boost rule as [effectiveExplorerBudget], widening to
+  /// [standardNtsExplorerBudget] while a front-load is live and never
+  /// narrowing an explicitly wider budget. The boost is the standard
+  /// width, so it is a no-op off iOS — which is where the convergence
+  /// gap it exists to close actually is. See
+  /// [defaultNtsExplorerBudgetFor] for why the front-load matters more
+  /// on this tier than on the NTP one.
+  @visibleForTesting
+  int get effectiveNtsExplorerBudget => _explorerBoostRemaining > 0
+      ? max(_ntsExplorerBudget, standardNtsExplorerBudget)
+      : _ntsExplorerBudget;
+
   int _syncAttempts = 0;
 
   /// Plausibility floor for the pre-sync rescue's coarse estimate.
@@ -621,12 +819,28 @@ final class SyncEngine {
   /// milliseconds of skew, preventing Marzullo intervals from
   /// overlapping.
   ///
+  /// Scoped to the hosts the *next* cycle will query — the union of both
+  /// halves of [_selectCycleHosts], not the whole source list. An NTS
+  /// warm is a TCP connect plus a TLS handshake plus a key exchange, so
+  /// warming the full curated inventory would open ~57 of them per
+  /// bootstrap to prime cookie jars for hosts the cycle then narrows
+  /// away. Explorers are included rather than just the quorum: they are
+  /// queried this cycle too, and [_launchExplorerProbes] bounds each
+  /// probe at `explorerTimeout` — a cold NTS-KE inside that window would
+  /// time out and be recorded as the *host* being slow, teaching the
+  /// ranking the opposite of the truth.
+  ///
   /// Each [Warmable.warm] is itself idempotent and memoized, so calling
   /// this method multiple times is safe and cheap. Failures from
   /// individual sources are swallowed: warming is best-effort, and
   /// [sync] retains its existing JIT-warm fallback path.
   Future<void> warmAllSources() async {
-    final warmables = _sources.whereType<Warmable>().toList(growable: false);
+    final roles = _selectCycleHosts();
+    final wanted = {...roles.blocking, ...roles.explorers};
+    final warmables = _sources
+        .where((s) => wanted.contains(s.id))
+        .whereType<Warmable>()
+        .toList(growable: false);
     if (warmables.isEmpty) return;
     await Future.wait(
       warmables.map((s) async {
@@ -1604,11 +1818,11 @@ final class SyncEngine {
 
       // Denominator for the coverage ratios below: the sources this
       // cycle was allowed to query, not the whole materialised pool.
-      // Since the inventory is partitioned per cycle, dividing by the
-      // full 51-host pool would report a healthy quorum as a fraction
-      // of hosts the cycle never intended to contact, and the ratio
-      // would drift with inventory size rather than with consensus
-      // quality.
+      // Both inventories are partitioned per cycle, so dividing by the
+      // full 108-host pool (51 NTP + 57 NTS) would report a healthy
+      // quorum as a fraction of hosts the cycle never intended to
+      // contact, and the ratio would drift with inventory size rather
+      // than with consensus quality.
       //
       // Read off [guard] rather than an engine field so the count
       // belongs to *this* cycle: two `sync()` invocations that slip
