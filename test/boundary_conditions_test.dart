@@ -293,6 +293,20 @@ void main() {
       expect(result!.degradedTier, isFalse);
       expect(result.authLevel, NtsAuthLevel.verified);
     });
+
+    test('a floor below the reduction\'s own minimum is rejected', () {
+      // Two is as low as the field may go. Below it the pass would
+      // admit a subset _resolveCore then refuses, so the cycle would
+      // degrade for a reason the floor claims to have cleared.
+      expect(
+        () => MarzulloEngine(minVerifiedQuorum: 1),
+        throwsA(isA<AssertionError>()),
+      );
+      expect(
+        () => MarzulloEngine(minVerifiedQuorum: 0),
+        throwsA(isA<AssertionError>()),
+      );
+    });
   });
 
   group('TimeInterval equality and hash semantics', () {

@@ -183,7 +183,14 @@ final class MarzulloEngine {
     this.maxAllowedUncertaintyMs = 10000,
     this.minGroupCount = 2,
     this.minVerifiedQuorum = 3,
-  });
+  }) : assert(
+         minVerifiedQuorum >= 2,
+         'minVerifiedQuorum must be at least 2: _resolveCore refuses any '
+         'population below that, so a lower floor would let the '
+         'truth-box pass admit a subset the reduction then rejects, '
+         'degrading the cycle for a reason the floor claims to have '
+         'cleared.',
+       );
 
   /// The minimum percentage of responding sources that must participate in
   /// the consensus for it to be considered valid.
@@ -215,8 +222,11 @@ final class MarzulloEngine {
   /// Deliberately narrower than [_resolveCore]'s own floor of 2, which
   /// is left alone because the degraded fallback reduces over every
   /// sample through the same method and must keep the generic minimum.
-  /// [TrustedTimeConfig.minimumQuorum] is likewise untouched. See ADR
-  /// 0007's 2026-08-02 postscript.
+  /// [TrustedTimeConfig.minimumQuorum] is likewise untouched. Lowering
+  /// this below that generic minimum is rejected by the constructor:
+  /// the pass would admit a subset the reduction then refuses, so the
+  /// cycle degrades for a reason this floor claims to have cleared.
+  /// See ADR 0007's 2026-08-02 postscript.
   final int minVerifiedQuorum;
 
   /// Orchestrates tier-aware consensus resolution across a set of samples.
