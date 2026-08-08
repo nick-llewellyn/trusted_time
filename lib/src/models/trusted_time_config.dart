@@ -42,6 +42,7 @@ final class TrustedTimeConfig {
     this.minQuorumRatio = 0.6,
     this.minimumQuorum = 2,
     this.minGroupCount = 2,
+    this.ntsQueryTarget = 5,
     this.maxLatency = const Duration(seconds: 4),
     this.refreshInterval = const Duration(hours: 48),
     this.maxAllowedUncertaintyMs = 5000,
@@ -66,6 +67,15 @@ final class TrustedTimeConfig {
          ntpBurstCount >= 1 && ntpBurstCount <= 8,
          'ntpBurstCount must be in 1..8, matching the NTS burst cap so '
          'both source kinds share one worst-case wall-time model.',
+       ),
+       assert(
+         ntsQueryTarget >= minNtsQueryTarget,
+         'ntsQueryTarget must be at least minNtsQueryTarget '
+         '($minNtsQueryTarget): a cycle that asks fewer NTS hosts than '
+         'the truth box needs responding can never form one. Rejected '
+         'rather than clamped so the misconfiguration surfaces. Setting '
+         'it to exactly the floor is legal and leaves zero failure '
+         'headroom.',
        );
 
   /// Creates a mobile-tuned configuration implementing the 48h
@@ -419,6 +429,63 @@ final class TrustedTimeConfig {
   /// or protocols) required to reach higher confidence levels.
   final int minGroupCount;
 
+  /// The smallest legal [ntsQueryTarget]: the truth box's validity floor.
+  ///
+  /// Three is the first population size at which the box survives one
+  /// bad host — at a [minQuorumRatio] of 0.6 a 3-sample population needs
+  /// an overlap of 2, so an outlier can be shed and a box still forms.
+  /// At 2 the required overlap is also 2, meaning both must agree, which
+  /// detects a liar rather than outvoting one. A target below this can
+  /// never produce a truth box even with every host responding, which is
+  /// why it is rejected rather than clamped.
+  ///
+  /// Distinct from [minimumQuorum], which floors the merged single-tier
+  /// reduction and is left to the caller (default 2); this floor is
+  /// specific to the pass over the verified subset and is not
+  /// configurable. See ADR 0007's 2026-08-02 postscript.
+  static const minNtsQueryTarget = 3;
+
+  /// How many NTS hosts a cycle asks for time, gating the truth box.
+  ///
+  /// The tier's size is a per-cycle property, not an inventory property:
+  /// the engine narrows the curated inventory to this many blocking
+  /// hosts each cycle rather than querying all of them. The three
+  /// [TimeServerTier.anycast] hosts are members by identity every cycle
+  /// and the remainder is promoted from the unicast ranking; the rest of
+  /// the inventory is walked as non-blocking explorers.
+  ///
+  /// This is the number of hosts *asked*, which is deliberately above
+  /// the [minNtsQueryTarget] number that must *respond*. The difference
+  /// is the cycle's failure headroom — at the default of 5 two hosts can
+  /// fail and the box still forms. Setting this to [minNtsQueryTarget]
+  /// is legal and means a single timeout degrades the cycle to
+  /// [NtsAuthLevel.none]; installs on a metered or battery-critical
+  /// profile may still prefer it, since each host costs an NTS-KE
+  /// handshake (TCP + TLS + key exchange).
+  ///
+  /// Values below [minNtsQueryTarget] are rejected by the constructor's
+  /// assert rather than clamped: a target under the floor is a
+  /// configuration that can never produce a truth box, so silently
+  /// raising it would hide the mistake. The rejection is total for a
+  /// `const` invocation — constant evaluation runs the assert, making
+  /// it a compile-time error in any build mode — and covers a
+  /// runtime-computed value only where asserts are live, since release
+  /// builds strip them.
+  ///
+  /// That residual gap is left open on purpose. The truth box's floor
+  /// is enforced at the point of use from [minNtsQueryTarget] itself
+  /// rather than from this knob, so a below-floor target reaching a
+  /// release build yields a narrower cycle that degrades to
+  /// [NtsAuthLevel.none] — never a box resting on too few responders.
+  /// Throwing there instead would convert a benign misconfiguration
+  /// into a crash, in a library whose purpose is to keep working when
+  /// time is unavailable.
+  ///
+  /// No upper bound beyond the inventory itself — a target exceeding
+  /// the promotable population simply yields a smaller quorum, the same
+  /// as one whose promotions have not been ranked yet.
+  final int ntsQueryTarget;
+
   /// The maximum amount of time the engine will wait for a response from any
   /// single source before it is discarded.
   final Duration maxLatency;
@@ -609,6 +676,7 @@ final class TrustedTimeConfig {
     double? minQuorumRatio,
     int? minimumQuorum,
     int? minGroupCount,
+    int? ntsQueryTarget,
     Duration? maxLatency,
     Duration? refreshInterval,
     int? maxAllowedUncertaintyMs,
@@ -636,6 +704,7 @@ final class TrustedTimeConfig {
       minQuorumRatio: minQuorumRatio ?? this.minQuorumRatio,
       minimumQuorum: minimumQuorum ?? this.minimumQuorum,
       minGroupCount: minGroupCount ?? this.minGroupCount,
+      ntsQueryTarget: ntsQueryTarget ?? this.ntsQueryTarget,
       maxLatency: maxLatency ?? this.maxLatency,
       refreshInterval: refreshInterval ?? this.refreshInterval,
       maxAllowedUncertaintyMs:
@@ -676,6 +745,7 @@ final class TrustedTimeConfig {
         other.minQuorumRatio == minQuorumRatio &&
         other.minimumQuorum == minimumQuorum &&
         other.minGroupCount == minGroupCount &&
+        other.ntsQueryTarget == ntsQueryTarget &&
         other.maxLatency == maxLatency &&
         other.refreshInterval == refreshInterval &&
         other.maxAllowedUncertaintyMs == maxAllowedUncertaintyMs &&
@@ -715,6 +785,7 @@ final class TrustedTimeConfig {
     minQuorumRatio,
     minimumQuorum,
     minGroupCount,
+    ntsQueryTarget,
     maxLatency,
     refreshInterval,
     maxAllowedUncertaintyMs,
@@ -762,6 +833,7 @@ final class TrustedTimeConfig {
         '  minQuorumRatio: $minQuorumRatio,\n'
         '  minimumQuorum: $minimumQuorum,\n'
         '  minGroupCount: $minGroupCount,\n'
+        '  ntsQueryTarget: $ntsQueryTarget,\n'
         '  maxLatency: $maxLatency,\n'
         '  refreshInterval: $refreshInterval,\n'
         '  maxAllowedUncertaintyMs: $maxAllowedUncertaintyMs,\n'
