@@ -294,19 +294,19 @@ final class SyncEngine {
 
   /// Whether [source] could contribute a Tier 1 sample to a truth box.
   ///
-  /// Only [NtsSource] can, and only under a library-controlled anchor
-  /// set — see [NtsSource.canProduceVerified]. Plain NTP and
-  /// platform-mediated NTS resolve to [NtsAuthLevel.none], so no wait on
-  /// one could ever raise a cycle above degraded.
+  /// Only [NtsSource] can, and only under a trust mode that can reach a
+  /// library-controlled anchor set — see [NtsSource.canProduceVerified],
+  /// which owns the mode-by-mode reasoning. Plain NTP and a
+  /// `platformOnly` NTS source always resolve to [NtsAuthLevel.none], so
+  /// no wait on one could ever raise a cycle above degraded.
   ///
   /// Type and trust mode are the whole test; provenance is not
   /// consulted, and could not be — [_buildSources] concatenates
   /// [TrustedTimeConfig.additionalSources] into one list and discards
   /// where each entry came from. So an [NtsSource] supplied through
-  /// `additionalSources` under `bundledOnly` or `custom` counts here,
-  /// which is what the tier tests rely on. What the trust-mode check
-  /// does exclude is any *other* implementation stamping
-  /// [NtsAuthLevel.verified] on its own samples: that claim is
+  /// `additionalSources` counts here, which is what the tier tests rely
+  /// on. What the type check excludes is any *other* implementation
+  /// stamping [NtsAuthLevel.verified] on its own samples: that claim is
   /// unverifiable from here, and honouring it would let a custom source
   /// hold the early exit open on a promise it need not keep. The cost of
   /// the conservative reading is a lost wait, not a lost anchor.

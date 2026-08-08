@@ -492,6 +492,45 @@ void main() {
       expect(recorder.consensusReached.last.degradedTier, isFalse);
     });
 
+    test(
+      'a degraded result waits for a platform-with-fallback query',
+      () async {
+        // Same race as above, with the outstanding host under the trust
+        // mode NtsSource itself defaults to -- what a consumer-supplied
+        // source carries through additionalSources. platformWithFallback
+        // reaches webpkiRoots when the native verifier is unavailable, so
+        // it can still lift the cycle and the hold has to count it.
+        final recorder = RecordingObserver();
+        final seq = sequencerFor(recorder);
+        final engine = engineFor([
+          verifiedNtsSource(
+            host: 'fast1.a.example',
+            startMs: 1000,
+            endMs: 1020,
+          ),
+          verifiedNtsSource(
+            host: 'fast2.b.example',
+            startMs: 1005,
+            endMs: 1025,
+          ),
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+          verifiedNtsSource(
+            host: 'slow.c.example',
+            startMs: 1002,
+            endMs: 1022,
+            gate: seq.after(4),
+            trustMode: nts.TrustMode.platformWithFallback,
+          ),
+        ], observer: seq);
+
+        final anchor = await engine.sync();
+
+        expect(anchor.authLevel, NtsAuthLevel.verified);
+        expect(recorder.consensusReached.last.degradedTier, isFalse);
+      },
+    );
+
     test('the hold does not outlive the queries it waits on', () async {
       // Availability is not traded for the wait: when the third
       // verified host never answers, the cycle still publishes the

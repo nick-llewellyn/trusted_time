@@ -204,19 +204,35 @@ final class NtsSource implements TimeSource, Warmable {
   /// [NtsAuthLevel.verified].
   ///
   /// Decided by the trust mode alone, so it is knowable before the
-  /// handshake resolves a [nts.TrustBackend]. Only library-controlled
-  /// anchor sets qualify, mirroring [authLevelForTrustBackend]: a
-  /// `platformOnly` source always maps to [NtsAuthLevel.none] and can
-  /// never contribute to a truth box, however well its query goes.
+  /// handshake resolves a [nts.TrustBackend]. True of every mode whose
+  /// success-backend set intersects the ones
+  /// [authLevelForTrustBackend] maps to `verified` — `bundledOnly` and
+  /// `custom`, which reach only [nts.TrustBackend.webpkiRoots] and
+  /// [nts.TrustBackend.custom] respectively, and
+  /// `platformWithFallback`, which reaches
+  /// [nts.TrustBackend.webpkiRoots] whenever the native verifier is
+  /// unavailable. Only `platformOnly` is excluded: it refuses that
+  /// fallback by construction, so it maps to [NtsAuthLevel.none]
+  /// however well its query goes.
   ///
-  /// Capability, not outcome — the query may still fail or return an
-  /// unusable sample. [SyncEngine] uses it to tell a cycle that could
-  /// yet reach the verified floor from one that provably cannot, so
-  /// the early exit does not publish a degraded anchor while the
-  /// hosts that would have lifted it are still in flight.
-  bool get canProduceVerified =>
-      _trustMode == nts.TrustMode.bundledOnly ||
-      _trustMode == nts.TrustMode.custom;
+  /// `platformWithFallback` cannot arise from
+  /// [TrustedTimeConfig.effectiveTrustMode], which resolves to one of
+  /// the other three, but it is this constructor's default — so any
+  /// [NtsSource] a consumer builds directly and passes through
+  /// [TrustedTimeConfig.additionalSources] carries it.
+  ///
+  /// Capability, not outcome — the query may still fail, return an
+  /// unusable sample, or resolve through the platform store and land
+  /// at [NtsAuthLevel.none] after all. [SyncEngine] uses it to tell a
+  /// cycle that could yet reach the verified floor from one that
+  /// provably cannot, so the early exit does not publish a degraded
+  /// anchor while the hosts that would have lifted it are still in
+  /// flight. Erring towards capability costs at most a wait that does
+  /// not pay off, bounded by the same `maxLatency` the query is
+  /// already under; erring the other way costs the anchor its trust
+  /// level, which no later cycle recovers for the consumer already
+  /// holding it.
+  bool get canProduceVerified => _trustMode != nts.TrustMode.platformOnly;
 
   /// Per-source [nts.NtsClient]. Lazily constructed on first [warm]
   /// or first [getTime] call so the [NtsSource] constructor never

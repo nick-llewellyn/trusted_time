@@ -247,13 +247,21 @@ class FailingSource implements TimeSource {
 /// so passes or fails depending on what ran before it.
 ///
 /// The scripted result carries [nts.TrustBackend.webpkiRoots], so
-/// `authLevelForTrustBackend` classifies the sample verified, and
-/// `bundledOnly` matches the trust mode `SyncEngine` builds by default.
+/// `authLevelForTrustBackend` classifies the sample verified.
+///
+/// [trustMode] defaults to `bundledOnly`, matching what `SyncEngine`
+/// builds for its own [NtsSource]s. Override it to model a source a
+/// consumer constructed and passed through `additionalSources`, which
+/// carries `NtsSource`'s own default of `platformWithFallback` — a mode
+/// that reaches `webpkiRoots` whenever the native verifier is
+/// unavailable, hence the scripted backend above being consistent with
+/// either.
 NtsSource verifiedNtsSource({
   required String host,
   required int startMs,
   required int endMs,
   Future<void> Function()? gate,
+  nts.TrustMode trustMode = nts.TrustMode.bundledOnly,
 }) {
   // The engine reads the interval, so drive it through the midpoint and
   // half-width that sample shaping derives from utcUnixMicros ± RTT/2.
@@ -261,7 +269,7 @@ NtsSource verifiedNtsSource({
   final halfWidthMs = (endMs - startMs) ~/ 2;
   return NtsSource(
     host,
-    trustMode: nts.TrustMode.bundledOnly,
+    trustMode: trustMode,
     debugQueryOverride: () async {
       if (gate != null) await gate();
       return nts.NtsTimeSample(
