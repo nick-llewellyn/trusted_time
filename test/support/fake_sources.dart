@@ -286,17 +286,27 @@ NtsSource verifiedNtsSource({
 }
 
 /// A real [NtsSource], verified-capable like [verifiedNtsSource], whose
-/// query always fails.
+/// query always fails, optionally only after [gate] resolves.
 ///
 /// The counterpart the "hold does not outlive its queries" case needs:
 /// a source the engine counts as able to lift the cycle, which then
 /// does not. [FailingNtsSource] cannot serve — it is a plain
 /// [TimeSource] and would never be counted, so the wait it is meant to
 /// end would never have started.
-NtsSource failingVerifiedNtsSource({required String host}) => NtsSource(
+///
+/// [gate] orders the failure after the replies that put the cycle into
+/// the hold, which is the only arrangement that exercises releasing an
+/// already-active hold rather than never entering one.
+NtsSource failingVerifiedNtsSource({
+  required String host,
+  Future<void> Function()? gate,
+}) => NtsSource(
   host,
   trustMode: nts.TrustMode.bundledOnly,
-  debugQueryOverride: () async => throw StateError('handshake refused'),
+  debugQueryOverride: () async {
+    if (gate != null) await gate();
+    throw StateError('handshake refused');
+  },
 );
 
 /// A [TimeSource] whose [getTime] always throws a [StateError], to

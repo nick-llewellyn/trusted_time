@@ -266,20 +266,7 @@ final class MarzulloEngine {
         .where((s) => _tierOf(s) == _Tier.verified)
         .toList();
 
-    // The floor counts responders, not samples. Two conditions have to
-    // line up for that to be the same number the reduction sees:
-    // _isUsable, so a verified host that answered with an unusable
-    // uncertainty does not fill a slot; and a collapse by sourceId,
-    // because _resolveCore's sweep counts a repeated source once. Count
-    // samples instead and three from two hosts clears a floor written
-    // to mean three hosts — the second then carries a vote it was never
-    // meant to have, since at the default ratio two unique authorities
-    // are enough to close the box.
-    final usableVerified = verified
-        .where(_isUsable)
-        .map((s) => s.sourceId)
-        .toSet()
-        .length;
+    final usableVerified = usableVerifiedHostCount(samples);
 
     final truthBox = usableVerified < minVerifiedQuorum
         ? null
@@ -325,6 +312,31 @@ final class MarzulloEngine {
       droppedOutsideTruthBox: dropped,
     );
   }
+
+  /// How many distinct verified hosts in [samples] could fill a
+  /// truth-box slot — the number [minVerifiedQuorum] is checked against.
+  ///
+  /// The floor counts responders, not samples. Two conditions have to
+  /// line up for that to be the same number the reduction sees:
+  /// [_isUsable], so a verified host that answered with an unusable
+  /// uncertainty does not fill a slot; and a collapse by `sourceId`,
+  /// because [_resolveCore]'s sweep counts a repeated source once. Count
+  /// samples instead and three from two hosts clears a floor written to
+  /// mean three hosts — the second then carries a vote it was never
+  /// meant to have, since at the default ratio two unique authorities
+  /// are enough to close the box.
+  ///
+  /// Public because `SyncEngine` needs the same number to decide whether
+  /// a degraded cycle could still reach the floor before it holds the
+  /// early exit for an outstanding verified query. Two independent
+  /// counts would let the hold wait on a floor [resolve] has already
+  /// ruled out.
+  int usableVerifiedHostCount(List<TimeSample> samples) => samples
+      .where((s) => _tierOf(s) == _Tier.verified)
+      .where(_isUsable)
+      .map((s) => s.sourceId)
+      .toSet()
+      .length;
 
   /// Whether [sample] can enter a reduction at all.
   ///

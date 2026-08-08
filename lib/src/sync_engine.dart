@@ -1012,6 +1012,64 @@ final class SyncEngine {
       var stableCount = 0;
       var rejectedInvalid = 0;
 
+      // A stable result the hold below withheld, with the population it
+      // was reduced from.
+      //
+      // The hold has to be re-examined on outcomes that never reach a
+      // resolve: a failed or rejected verified query lowers
+      // [pendingVerifiedCapable] without producing a sample, so nothing
+      // downstream would notice that the wait had become pointless.
+      // Without the retained result such a cycle stays blocked until an
+      // unrelated query times out — the hold outliving the queries it
+      // waits on, which is the one thing it must not do.
+      ConsensusResult? heldResult;
+      List<TimeSample>? heldSamples;
+
+      /// Whether [result] should still be withheld.
+      ///
+      /// Degraded, something verified-capable outstanding, and — the
+      /// part [pendingVerifiedCapable] alone does not establish — enough
+      /// of the floor still reachable for the wait to be able to pay
+      /// off. A cycle that has banked two verified hosts and lost one of
+      /// three queries can never reach a floor of three, so holding it
+      /// would spend up to the full maxLatency on an outcome already
+      /// decided. Counted through the engine so the hold and the floor
+      /// agree on what a verified host is.
+      bool holdApplies(ConsensusResult result) =>
+          result.degradedTier &&
+          pendingVerifiedCapable > 0 &&
+          _engine.usableVerifiedHostCount(samples) + pendingVerifiedCapable >=
+              _engine.minVerifiedQuorum;
+
+      void fireEarlyExit(ConsensusResult result, List<TimeSample> population) {
+        // Early Exit: If configured, we return as soon as a stable quorum
+        // is reached to minimize power and network consumption.
+        if (_config.earlyExit || population.length == activeSources.length) {
+          swSync.stop();
+          unawaited(
+            _completeSync(
+              result,
+              population,
+              swSync.elapsedMilliseconds,
+              completer,
+              completionGuard,
+            ),
+          );
+        }
+      }
+
+      /// Publishes a withheld result once the hold no longer applies.
+      ///
+      /// Runs on every terminal outcome, after the balance has dropped,
+      /// so the cycle resumes the moment the last query it was waiting
+      /// on ends rather than when some unrelated query does.
+      void releaseHoldIfPossible() {
+        final held = heldResult;
+        if (held == null || holdApplies(held)) return;
+        heldResult = null;
+        fireEarlyExit(held, heldSamples!);
+      }
+
       // 1. Process samples sequentially via a stream to preserve determinism
       // and prevent race conditions during list mutation. This ensures that
       // outlier filtering and consensus resolution always happen on a consistent
@@ -1036,6 +1094,7 @@ final class SyncEngine {
               'Sample rejected: negative uncertainty (RTT)',
             );
             pendingQueries--;
+            releaseHoldIfPossible();
             if (pendingQueries == 0 && !completer.isCompleted) {
               _finalizeSync(
                 samples,
@@ -1112,37 +1171,31 @@ final class SyncEngine {
             // agreeing verified samples used to form a truth box, and
             // now they do not.
             //
-            // Scoped to results that are actually degraded and to
-            // cycles that could still clear the floor, so it costs
-            // nothing where the box has already formed, and nothing at
-            // all to an all-NTP configuration — every cycle there is
-            // legitimately degraded, with no verified-capable source to
-            // wait on. Not a correctness gate: if the outstanding
-            // queries fail or return late, pendingQueries reaches zero
-            // and _finalizeSync publishes the degraded anchor anyway.
-            final verifiedStillPossible =
-                result.degradedTier && pendingVerifiedCapable > 0;
-
-            if (stableCount >= requiredStability && !verifiedStillPossible) {
-              // Early Exit: If configured, we return as soon as a stable quorum
-              // is reached to minimize power and network consumption.
-              if (_config.earlyExit || samples.length == activeSources.length) {
-                swSync.stop();
-                unawaited(
-                  _completeSync(
-                    result,
-                    List<TimeSample>.of(samples),
-                    swSync.elapsedMilliseconds,
-                    completer,
-                    completionGuard,
-                  ),
-                );
+            // Scoped by [holdApplies] to results that are degraded and
+            // to cycles where the floor is still arithmetically within
+            // reach, so it costs nothing where the box has already
+            // formed, nothing at all to an all-NTP configuration, and
+            // nothing to a cycle that has already lost too many
+            // verified hosts to close a box. Not a correctness gate:
+            // the result is retained, and [releaseHoldIfPossible]
+            // publishes it as soon as the queries it waits on end —
+            // with _finalizeSync as the backstop when they were the
+            // last outstanding.
+            if (stableCount >= requiredStability) {
+              final population = List<TimeSample>.of(samples);
+              if (holdApplies(result)) {
+                heldResult = result;
+                heldSamples = population;
+              } else {
+                heldResult = null;
+                fireEarlyExit(result, population);
               }
             }
           }
         }
 
         pendingQueries--;
+        releaseHoldIfPossible();
         if (pendingQueries == 0 && !completer.isCompleted) {
           _finalizeSync(
             samples,

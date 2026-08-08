@@ -396,35 +396,53 @@ void main() {
     SyncEngine engineFor(
       List<TimeSource> sources, {
       required SyncObserver observer,
+      Duration? maxLatency,
     }) => SyncEngine(
-      config: const TrustedTimeConfig(
+      config: TrustedTimeConfig(
         minimumQuorum: 2,
         minGroupCount: 1,
         // The setting under test: the race only exists when the cycle
         // may complete before every source has answered.
         disableNtpForTesting: true,
         disableNts: true,
+        maxLatency: maxLatency ?? const Duration(seconds: 4),
       ).copyWith(additionalSources: sources),
       clock: FakeMonotonicClock(),
       observer: observer,
     );
 
-    // Holds one source's reply until the others have landed. A
-    // wall-clock delay would decide the race by how busy the event loop
-    // is, which passes or fails on what ran before it; releasing on a
-    // sample count makes the ordering the test's own.
-    ({Future<void> Function() gate, SyncObserver observer}) gateAfter(
-      int samples,
-      RecordingObserver recorder,
-    ) {
-      final released = Completer<void>();
-      final counter = _ReleasingObserver(
-        inner: recorder,
-        releaseAfter: samples,
-        release: released,
-      );
-      return (gate: () => released.future, observer: counter);
-    }
+    // Runs a cycle that must finish without one of its sources, and
+    // proves it did so by the clock rather than by the outcome.
+    //
+    // A never-released gate is not enough on its own: the per-source
+    // query budget is maxLatency, so a held cycle publishes the very
+    // same anchor once that expires, and an assertion on the anchor
+    // passes either way. Raising the budget well past the deadline
+    // below makes the two outcomes distinguishable -- a cycle that
+    // waits cannot finish inside it.
+    Future<TrustAnchor> syncWithoutWaiting(SyncEngine engine) =>
+        engine.sync().timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => throw StateError(
+            'cycle did not complete without the withheld source',
+          ),
+        );
+
+    // Orders sources' replies by how many samples have already reached
+    // the engine. A wall-clock delay would decide the race by how busy
+    // the event loop is, which passes or fails on what ran before it;
+    // releasing on a sample count makes the ordering the test's own.
+    //
+    // One sequencer per cycle rather than one gate: several of these
+    // cases need more than one source held, at different points, and
+    // two independent counters over the same stream would each see the
+    // other's releases.
+    _Sequencer sequencerFor(RecordingObserver recorder) => _Sequencer(recorder);
+
+    // A gate that is never opened. Pins that a cycle completed without
+    // the source behind it: a hold that engaged there would show up as
+    // the deadline in [syncWithoutWaiting], not as a later anchor.
+    Future<void> never() => Completer<void>().future;
 
     test('a degraded result waits for a verified query still in '
         'flight', () async {
@@ -436,7 +454,7 @@ void main() {
       // while the third verified host is still in flight. Without the
       // hold the cycle publishes NtsAuthLevel.none there, even though
       // every verified host answers in the end.
-      final gated = gateAfter(4, recorder);
+      final seq = sequencerFor(recorder);
       final engine = engineFor([
         verifiedNtsSource(host: 'fast1.a.example', startMs: 1000, endMs: 1020),
         verifiedNtsSource(host: 'fast2.b.example', startMs: 1005, endMs: 1025),
@@ -446,9 +464,9 @@ void main() {
           host: 'slow.c.example',
           startMs: 1002,
           endMs: 1022,
-          gate: gated.gate,
+          gate: seq.after(4),
         ),
-      ], observer: gated.observer);
+      ], observer: seq);
 
       final anchor = await engine.sync();
 
@@ -475,6 +493,89 @@ void main() {
       expect(recorder.consensusReached.last.degradedTier, isTrue);
     });
 
+    test('a cycle that can no longer reach the floor is not held', () async {
+      // An outstanding verified-capable query is not on its own
+      // evidence that the wait can pay off. One verified host is
+      // configured against a floor of three, so no arrival order can
+      // ever produce a truth box -- and holding for it would spend up
+      // to the full maxLatency arriving at the same degraded anchor.
+      final recorder = RecordingObserver();
+      final engine = engineFor(
+        [
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p3', groupId: 'g3', startMs: 1000, endMs: 1020),
+          verifiedNtsSource(
+            host: 'never.a.example',
+            startMs: 1000,
+            endMs: 1020,
+            gate: never,
+          ),
+        ],
+        observer: recorder,
+        maxLatency: const Duration(seconds: 30),
+      );
+
+      final anchor = await syncWithoutWaiting(engine);
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('nts:never.a.example')),
+      );
+    });
+
+    test('a verified failure releases a hold it was the last reason '
+        'for', () async {
+      // The hold has to end on the terminal outcome of the query it was
+      // waiting on, not on whatever else the cycle happens to be doing.
+      // A failed query yields no sample, so it reaches none of the
+      // resolution path, and the only other source outstanding here
+      // never answers -- so nothing but re-examining the hold on the
+      // failure itself can finish this cycle inside the deadline.
+      //
+      // Two verified hosts answer, one short of the floor, and the
+      // third fails only after the cycle is stable and therefore
+      // already held.
+      final recorder = RecordingObserver();
+      final seq = sequencerFor(recorder);
+      final engine = engineFor(
+        [
+          verifiedNtsSource(
+            host: 'fast1.a.example',
+            startMs: 1000,
+            endMs: 1020,
+          ),
+          verifiedNtsSource(
+            host: 'fast2.b.example',
+            startMs: 1000,
+            endMs: 1020,
+          ),
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          failingVerifiedNtsSource(host: 'down.c.example', gate: seq.after(3)),
+          _GatedTierSource(
+            id: 'ntp:never',
+            groupId: 'g2',
+            startMs: 1000,
+            endMs: 1020,
+            gate: never,
+          ),
+        ],
+        observer: seq,
+        maxLatency: const Duration(seconds: 30),
+      );
+
+      final anchor = await syncWithoutWaiting(engine);
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('ntp:never')),
+      );
+    });
+
     test('an all-NTP cycle still exits early', () async {
       // Every cycle here is legitimately degraded and no source could
       // ever lift it, so the hold must not engage -- otherwise it
@@ -482,21 +583,24 @@ void main() {
       // The gated source would never be released, so the cycle can only
       // finish by exiting early on the first three.
       final recorder = RecordingObserver();
-      final gated = gateAfter(3, recorder);
-      final engine = engineFor([
-        TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
-        TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1000, endMs: 1020),
-        TierSource(id: 'ntp:c', groupId: 'g3', startMs: 1000, endMs: 1020),
-        _GatedTierSource(
-          id: 'ntp:slow',
-          groupId: 'g4',
-          startMs: 1002,
-          endMs: 1022,
-          gate: gated.gate,
-        ),
-      ], observer: gated.observer);
+      final engine = engineFor(
+        [
+          TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:c', groupId: 'g3', startMs: 1000, endMs: 1020),
+          _GatedTierSource(
+            id: 'ntp:slow',
+            groupId: 'g4',
+            startMs: 1002,
+            endMs: 1022,
+            gate: never,
+          ),
+        ],
+        observer: recorder,
+        maxLatency: const Duration(seconds: 30),
+      );
 
-      final anchor = await engine.sync();
+      final anchor = await syncWithoutWaiting(engine);
 
       expect(anchor.authLevel, NtsAuthLevel.none);
       expect(recorder.consensusReached.last.degradedTier, isTrue);
@@ -564,28 +668,39 @@ void main() {
   });
 }
 
-/// Forwards to [inner] while completing [release] once [releaseAfter]
-/// samples have reached the engine's listener.
+/// Forwards to [inner] while releasing gates handed out by [after] once
+/// the engine's listener has consumed a given number of samples.
 ///
-/// Lets a test order one source's reply behind a known number of
-/// others without a wall-clock delay, which would settle the race on
-/// event-loop timing rather than on the behaviour under test.
-class _ReleasingObserver implements SyncObserver {
-  _ReleasingObserver({
-    required this.inner,
-    required this.releaseAfter,
-    required this.release,
-  });
+/// Lets a test order sources' replies behind a known number of others
+/// without a wall-clock delay, which would settle the race on
+/// event-loop timing rather than on the behaviour under test. One
+/// instance serves a whole cycle, so several gates share a single
+/// count of what the engine has actually seen.
+class _Sequencer implements SyncObserver {
+  _Sequencer(this.inner);
 
   final RecordingObserver inner;
-  final int releaseAfter;
-  final Completer<void> release;
+  final _pending = <int, Completer<void>>{};
   int _seen = 0;
+
+  /// A gate that opens once [samples] samples have reached the engine.
+  Future<void> Function() after(int samples) {
+    final gate = _pending.putIfAbsent(samples, Completer<void>.new);
+    return () {
+      if (_seen >= samples && !gate.isCompleted) gate.complete();
+      return gate.future;
+    };
+  }
 
   @override
   void onSampleReceived(TimeSample sample) {
     inner.onSampleReceived(sample);
-    if (++_seen >= releaseAfter && !release.isCompleted) release.complete();
+    _seen++;
+    for (final entry in _pending.entries) {
+      if (_seen >= entry.key && !entry.value.isCompleted) {
+        entry.value.complete();
+      }
+    }
   }
 
   @override
