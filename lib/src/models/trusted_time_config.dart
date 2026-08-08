@@ -440,8 +440,9 @@ final class TrustedTimeConfig {
   /// why it is rejected rather than clamped.
   ///
   /// Distinct from [minimumQuorum], which floors the merged single-tier
-  /// reduction and stays at 2; this floor is specific to the pass over
-  /// the verified subset. See ADR 0007's 2026-08-02 postscript.
+  /// reduction and is left to the caller (default 2); this floor is
+  /// specific to the pass over the verified subset and is not
+  /// configurable. See ADR 0007's 2026-08-02 postscript.
   static const minNtsQueryTarget = 3;
 
   /// How many NTS hosts a cycle asks for time, gating the truth box.
