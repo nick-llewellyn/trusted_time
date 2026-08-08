@@ -576,6 +576,46 @@ void main() {
       );
     });
 
+    test('the sample that lifts a held cycle is not overruled by the '
+        'snapshot', () async {
+      // A held snapshot describes the population it was reduced from,
+      // and the arrival that ends the hold is often the one that moves
+      // that population. Here the third verified host closes the box on
+      // a tighter interval than the degraded consensus, so the
+      // stability counter resets and the block that would replace the
+      // snapshot does not run -- while the same arrival drops the
+      // pending balance to zero and so ends the hold. Publishing the
+      // snapshot there would discard the verified result the wait was
+      // for, turning the hold into a way of losing the box it exists to
+      // protect.
+      final recorder = RecordingObserver();
+      final seq = sequencerFor(recorder);
+      final engine = engineFor([
+        verifiedNtsSource(host: 'fast1.a.example', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(host: 'fast2.b.example', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(
+          host: 'slow.c.example',
+          startMs: 1008,
+          endMs: 1014,
+          gate: seq.after(4),
+        ),
+      ], observer: seq);
+
+      final anchor = await engine.sync();
+
+      expect(anchor.authLevel, NtsAuthLevel.verified);
+      expect(recorder.consensusReached.last.degradedTier, isFalse);
+      // The snapshot's population was the four samples banked before
+      // the box formed, so publishing it would show up here as a
+      // missing contributor even though the source answered.
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        contains('nts:slow.c.example'),
+      );
+    });
+
     test('an all-NTP cycle still exits early', () async {
       // Every cycle here is legitimately degraded and no source could
       // ever lift it, so the hold must not engage -- otherwise it

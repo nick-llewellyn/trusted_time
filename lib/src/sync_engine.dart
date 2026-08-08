@@ -1012,18 +1012,27 @@ final class SyncEngine {
       var stableCount = 0;
       var rejectedInvalid = 0;
 
-      // A stable result the hold below withheld, with the population it
-      // was reduced from.
+      // Whether the hold below has withheld a stable result that no
+      // later resolve has published.
       //
       // The hold has to be re-examined on outcomes that never reach a
       // resolve: a failed or rejected verified query lowers
       // [pendingVerifiedCapable] without producing a sample, so nothing
       // downstream would notice that the wait had become pointless.
-      // Without the retained result such a cycle stays blocked until an
-      // unrelated query times out — the hold outliving the queries it
-      // waits on, which is the one thing it must not do.
-      ConsensusResult? heldResult;
-      List<TimeSample>? heldSamples;
+      // Without this such a cycle stays blocked until an unrelated query
+      // times out — the hold outliving the queries it waits on, which is
+      // the one thing it must not do.
+      //
+      // A flag rather than the withheld result itself, because by the
+      // time the hold ends the population it was reduced from may no
+      // longer be the cycle's. The arrival that ends the wait is often
+      // the one that moves it: a third verified reply can close the box
+      // on a different interval, which resets the stability counter, so
+      // the block that would replace a retained result does not run.
+      // Publishing that result there would discard the very box the wait
+      // was for, so the release path resolves the population as it
+      // stands instead.
+      var holdWithheld = false;
 
       /// Whether [result] should still be withheld.
       ///
@@ -1058,16 +1067,25 @@ final class SyncEngine {
         }
       }
 
-      /// Publishes a withheld result once the hold no longer applies.
+      /// Publishes the cycle once a hold no longer applies.
       ///
       /// Runs on every terminal outcome, after the balance has dropped,
       /// so the cycle resumes the moment the last query it was waiting
       /// on ends rather than when some unrelated query does.
+      ///
+      /// Resolves the population as it now stands rather than replaying
+      /// what was withheld, so a sample that arrived during the hold is
+      /// reflected in what gets published — including the case where it
+      /// formed the truth box the wait existed for. Where nothing has
+      /// changed this reproduces the withheld result, since the same
+      /// population reduces the same way.
       void releaseHoldIfPossible() {
-        final held = heldResult;
-        if (held == null || holdApplies(held)) return;
-        heldResult = null;
-        fireEarlyExit(held, heldSamples!);
+        if (!holdWithheld) return;
+        final (normalized, _) = _normalizedToLatestReceipt(samples);
+        final result = _engine.resolve(normalized);
+        if (result == null || holdApplies(result)) return;
+        holdWithheld = false;
+        fireEarlyExit(result, List<TimeSample>.of(samples));
       }
 
       // 1. Process samples sequentially via a stream to preserve determinism
@@ -1177,18 +1195,15 @@ final class SyncEngine {
             // formed, nothing at all to an all-NTP configuration, and
             // nothing to a cycle that has already lost too many
             // verified hosts to close a box. Not a correctness gate:
-            // the result is retained, and [releaseHoldIfPossible]
-            // publishes it as soon as the queries it waits on end —
-            // with _finalizeSync as the backstop when they were the
-            // last outstanding.
+            // [releaseHoldIfPossible] publishes as soon as the queries
+            // it waits on end — with _finalizeSync as the backstop when
+            // they were the last outstanding.
             if (stableCount >= requiredStability) {
-              final population = List<TimeSample>.of(samples);
               if (holdApplies(result)) {
-                heldResult = result;
-                heldSamples = population;
+                holdWithheld = true;
               } else {
-                heldResult = null;
-                fireEarlyExit(result, population);
+                holdWithheld = false;
+                fireEarlyExit(result, List<TimeSample>.of(samples));
               }
             }
           }
