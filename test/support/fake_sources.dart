@@ -293,6 +293,54 @@ NtsSource verifiedNtsSource({
   );
 }
 
+/// A real [NtsSource] under `platformWithFallback` whose query succeeds
+/// through the platform trust store, optionally held behind a [gate].
+///
+/// The counterpart [verifiedNtsSource] cannot express: a source
+/// `SyncEngine` counts as verified-capable, which then answers with
+/// [nts.TrustBackend.platform] and so classifies [NtsAuthLevel.none].
+/// That is the other arm of `platformWithFallback` — and the one the
+/// trust model turns on, since a platform store may hold an inspection
+/// CA that lets the handshake terminate off-device.
+///
+/// Capability and classification are separate decisions, so this source
+/// is waited for and then refused the truth box. A test that only ever
+/// scripts `webpkiRoots` cannot tell that apart from a capability check
+/// leaking into the trust label.
+NtsSource platformNtsSource({
+  required String host,
+  required int startMs,
+  required int endMs,
+  Future<void> Function()? gate,
+}) {
+  final midMs = (startMs + endMs) ~/ 2;
+  final halfWidthMs = (endMs - startMs) ~/ 2;
+  return NtsSource(
+    host,
+    trustMode: nts.TrustMode.platformWithFallback,
+    debugQueryOverride: () async {
+      if (gate != null) await gate();
+      return nts.NtsTimeSample(
+        utcUnixMicros: midMs * 1000,
+        roundTripMicros: halfWidthMs * 2000,
+        serverStratum: 2,
+        aeadId: 15,
+        freshCookies: 2,
+        phaseTimings: const nts.PhaseTimings(
+          dnsMicros: 0,
+          connectMicros: 0,
+          tlsHandshakeMicros: 0,
+          keRecordIoMicros: 0,
+        ),
+        trustBackend: nts.TrustBackend.platform,
+        peerDelayMicros: 0,
+        rootDelayMicros: 0,
+        rootDispersionMicros: 0,
+      );
+    },
+  );
+}
+
 /// A real [NtsSource], verified-capable like [verifiedNtsSource], whose
 /// query always fails, optionally only after [gate] resolves.
 ///

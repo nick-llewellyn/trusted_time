@@ -531,6 +531,51 @@ void main() {
       },
     );
 
+    test('a platform-store reply is waited for and then refused the '
+        'box', () async {
+      // The two halves of platformWithFallback held apart. Capability
+      // schedules the wait; the TrustBackend the handshake resolved
+      // decides the label. This source is counted, so the cycle holds
+      // for it -- and answers TrustBackend.platform, where an
+      // inspection CA in the platform store could have terminated the
+      // handshake off-device, so it classifies none and cannot help
+      // form the box.
+      //
+      // Two verified hosts and this one is three replies against a
+      // floor of three: the count alone would clear it. Only the
+      // classification keeps the anchor degraded, which is what makes
+      // this fail if capability ever leaks into the trust label.
+      final recorder = RecordingObserver();
+      final seq = sequencerFor(recorder);
+      final engine = engineFor([
+        verifiedNtsSource(host: 'fast1.a.example', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(host: 'fast2.b.example', startMs: 1005, endMs: 1025),
+        TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+        platformNtsSource(
+          host: 'inspected.c.example',
+          startMs: 1002,
+          endMs: 1022,
+          gate: seq.after(4),
+        ),
+      ], observer: seq);
+
+      final anchor = await engine.sync();
+
+      // Held: the gate opens only on the fourth sample, so this reply
+      // lands after the cycle is stable. A source not counted as
+      // capable is not waited for, and its sample arrives too late to
+      // be a contributor -- which is how the cases above pin a cycle
+      // that completed without one.
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        contains('nts:inspected.c.example'),
+      );
+      // Refused: three replies, floor of three, still degraded.
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+    });
+
     test('the hold does not outlive the queries it waits on', () async {
       // Availability is not traded for the wait: when the third
       // verified host never answers, the cycle still publishes the
