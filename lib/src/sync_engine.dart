@@ -300,6 +300,15 @@ final class SyncEngine {
   /// `platformOnly` NTS source always resolve to [NtsAuthLevel.none], so
   /// no wait on one could ever raise a cycle above degraded.
   ///
+  /// Read only to decide whether to keep waiting. A source counted here
+  /// still earns its [NtsAuthLevel] from the [nts.TrustBackend] its
+  /// handshake resolved, so one that answers through the platform trust
+  /// store — where an inspection CA could have terminated the handshake
+  /// off-device — is filtered from the box on arrival exactly as if it
+  /// had never been waited for. Do not reuse this predicate to admit,
+  /// weight, or label a sample; that would convert a scheduling hint
+  /// into a trust claim the mode cannot support.
+  ///
   /// Type and trust mode are the whole test; provenance is not
   /// consulted, and could not be — [_buildSources] concatenates
   /// [TrustedTimeConfig.additionalSources] into one list and discards
