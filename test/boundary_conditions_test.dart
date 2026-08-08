@@ -244,6 +244,39 @@ void main() {
       expect(result!.degradedTier, isTrue);
     });
 
+    test('the floor counts hosts, not samples from one host', () {
+      // Three usable verified samples from two hosts. The sweep counts
+      // the repeated host once, so the box would rest on two
+      // authorities -- enough at a ratio of 0.6 -- while the floor
+      // reported three. Collapsing by sourceId keeps the two numbers
+      // the same, and the cycle degrades on a genuinely two-host
+      // population.
+      final result = engine.resolve([
+        verified('nts:a', 1000, 1020),
+        verified('nts:chatty', 1005, 1025),
+        verified('nts:chatty', 1006, 1026),
+      ]);
+
+      expect(result, isNotNull);
+      expect(result!.degradedTier, isTrue);
+      expect(result.authLevel, NtsAuthLevel.none);
+    });
+
+    test('a repeated host does not displace a third distinct one', () {
+      // The same population plus a genuine third host clears the floor,
+      // so the collapse rejects duplication rather than volume.
+      final result = engine.resolve([
+        verified('nts:a', 1000, 1020),
+        verified('nts:chatty', 1005, 1025),
+        verified('nts:chatty', 1006, 1026),
+        verified('nts:c', 1004, 1024),
+      ]);
+
+      expect(result, isNotNull);
+      expect(result!.degradedTier, isFalse);
+      expect(result.authLevel, NtsAuthLevel.verified);
+    });
+
     test('the floor is scoped to the verified subset', () {
       // The degraded fallback reduces over every sample through the
       // same method and keeps the generic two-sample minimum, so a

@@ -204,7 +204,12 @@ final class MarzulloEngine {
   /// high-confidence status.
   final int minGroupCount;
 
-  /// How many usable verified samples the truth-box pass requires.
+  /// How many distinct verified hosts the truth-box pass requires.
+  ///
+  /// Counted over usable samples collapsed by `sourceId`, matching what
+  /// [_resolveCore]'s sweep counts: repeated samples from one host are
+  /// one authority on both sides of the check, so a chatty or
+  /// duplicated host cannot fill a slot it did not earn.
   ///
   /// Below this the verified subset does not get a Marzullo reduction at
   /// all and [resolve] degrades, whatever the subset's internal
@@ -261,11 +266,20 @@ final class MarzulloEngine {
         .where((s) => _tierOf(s) == _Tier.verified)
         .toList();
 
-    // The floor counts samples the reduction could actually use, so a
-    // verified host that answered with an unusable uncertainty does not
-    // fill a slot. Applying _resolveCore's own filter keeps "three
-    // responders" meaning the same thing on both sides of this check.
-    final usableVerified = verified.where(_isUsable).length;
+    // The floor counts responders, not samples. Two conditions have to
+    // line up for that to be the same number the reduction sees:
+    // _isUsable, so a verified host that answered with an unusable
+    // uncertainty does not fill a slot; and a collapse by sourceId,
+    // because _resolveCore's sweep counts a repeated source once. Count
+    // samples instead and three from two hosts clears a floor written
+    // to mean three hosts — the second then carries a vote it was never
+    // meant to have, since at the default ratio two unique authorities
+    // are enough to close the box.
+    final usableVerified = verified
+        .where(_isUsable)
+        .map((s) => s.sourceId)
+        .toSet()
+        .length;
 
     final truthBox = usableVerified < minVerifiedQuorum
         ? null
