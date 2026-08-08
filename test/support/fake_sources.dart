@@ -5,6 +5,7 @@ import 'package:trusted_time/src/domain/time_interval.dart';
 import 'package:trusted_time/src/domain/time_sample.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
 import 'package:trusted_time/src/sources/nts_auth_level.dart';
+import 'package:trusted_time/src/sources/nts_source.dart';
 
 /// A [TimeSource] whose sample interval, auth level, and trust backend are
 /// fully specified so tier classification can be exercised deterministically.
@@ -228,6 +229,145 @@ class FailingSource implements TimeSource {
   @override
   Future<TimeSample> getTime() async => throw Exception('unreachable host');
 }
+
+/// A real [NtsSource] scripted to return a verified sample centred on
+/// [host]'s caller-chosen interval, optionally held behind a [gate].
+///
+/// Returns the genuine class rather than a fake, and deliberately so.
+/// `SyncEngine` decides which pending queries could still lift a cycle
+/// above degraded by asking whether a source is an [NtsSource] whose
+/// trust mode can reach a verified backend. The test is on type, not
+/// provenance — a genuine [NtsSource] handed in through
+/// `additionalSources` is counted, which is the case several of these
+/// tests exercise. What is never counted is any *other* [TimeSource]
+/// implementation, however it stamps its samples, so a wrapper or a
+/// stub around this one would leave the path untested.
+/// [NtsSource.debugQueryOverride] makes the real class reachable
+/// without touching the FFI surface.
+///
+/// [gate] is awaited before the sample is produced, so a test can order
+/// this source's reply against the others without a wall-clock delay —
+/// which decides a race by how busy the event loop happens to be, and
+/// so passes or fails depending on what ran before it.
+///
+/// The scripted result carries [nts.TrustBackend.webpkiRoots], so
+/// `authLevelForTrustBackend` classifies the sample verified.
+///
+/// [trustMode] defaults to `bundledOnly`, matching what `SyncEngine`
+/// builds for its own [NtsSource]s. Override it to model a source a
+/// consumer constructed and passed through `additionalSources`, which
+/// carries `NtsSource`'s own default of `platformWithFallback` — a mode
+/// that reaches `webpkiRoots` whenever the native verifier is
+/// unavailable, hence the scripted backend above being consistent with
+/// either.
+NtsSource verifiedNtsSource({
+  required String host,
+  required int startMs,
+  required int endMs,
+  Future<void> Function()? gate,
+  nts.TrustMode trustMode = nts.TrustMode.bundledOnly,
+}) {
+  // The engine reads the interval, so drive it through the midpoint and
+  // half-width that sample shaping derives from utcUnixMicros ± RTT/2.
+  final midMs = (startMs + endMs) ~/ 2;
+  final halfWidthMs = (endMs - startMs) ~/ 2;
+  return NtsSource(
+    host,
+    trustMode: trustMode,
+    debugQueryOverride: () async {
+      if (gate != null) await gate();
+      return nts.NtsTimeSample(
+        utcUnixMicros: midMs * 1000,
+        roundTripMicros: halfWidthMs * 2000,
+        serverStratum: 2,
+        aeadId: 15,
+        freshCookies: 2,
+        phaseTimings: const nts.PhaseTimings(
+          dnsMicros: 0,
+          connectMicros: 0,
+          tlsHandshakeMicros: 0,
+          keRecordIoMicros: 0,
+        ),
+        trustBackend: nts.TrustBackend.webpkiRoots,
+        peerDelayMicros: 0,
+        rootDelayMicros: 0,
+        rootDispersionMicros: 0,
+      );
+    },
+  );
+}
+
+/// A real [NtsSource] under `platformWithFallback` whose query succeeds
+/// through the platform trust store, optionally held behind a [gate].
+///
+/// The counterpart [verifiedNtsSource] cannot express: a source
+/// `SyncEngine` counts as verified-capable, which then answers with
+/// [nts.TrustBackend.platform] and so classifies [NtsAuthLevel.none].
+/// That is the other arm of `platformWithFallback` — and the one the
+/// trust model turns on, since a platform store may hold an inspection
+/// CA that lets the handshake terminate off-device.
+///
+/// Capability and classification are separate decisions, so this source
+/// is waited for and then refused the truth box. A test that only ever
+/// scripts `webpkiRoots` cannot tell that apart from a capability check
+/// leaking into the trust label.
+NtsSource platformNtsSource({
+  required String host,
+  required int startMs,
+  required int endMs,
+  Future<void> Function()? gate,
+}) {
+  final midMs = (startMs + endMs) ~/ 2;
+  final halfWidthMs = (endMs - startMs) ~/ 2;
+  return NtsSource(
+    host,
+    trustMode: nts.TrustMode.platformWithFallback,
+    debugQueryOverride: () async {
+      if (gate != null) await gate();
+      return nts.NtsTimeSample(
+        utcUnixMicros: midMs * 1000,
+        roundTripMicros: halfWidthMs * 2000,
+        serverStratum: 2,
+        aeadId: 15,
+        freshCookies: 2,
+        phaseTimings: const nts.PhaseTimings(
+          dnsMicros: 0,
+          connectMicros: 0,
+          tlsHandshakeMicros: 0,
+          keRecordIoMicros: 0,
+        ),
+        trustBackend: nts.TrustBackend.platform,
+        peerDelayMicros: 0,
+        rootDelayMicros: 0,
+        rootDispersionMicros: 0,
+      );
+    },
+  );
+}
+
+/// A real [NtsSource], verified-capable like [verifiedNtsSource], whose
+/// query always fails, optionally only after [gate] resolves.
+///
+/// The counterpart the "hold does not outlive its queries" case needs:
+/// a source the engine counts as able to lift the cycle, which then
+/// does not. [FailingNtsSource] cannot serve — it is a plain
+/// [TimeSource] and would never be counted, so the wait it is meant to
+/// end would never have started.
+///
+/// [gate] orders the failure after the replies that put the cycle into
+/// the hold, which is the only arrangement that exercises releasing an
+/// already-active hold rather than never entering one.
+NtsSource failingVerifiedNtsSource({
+  required String host,
+  Future<void> Function()? gate,
+}) => NtsSource(
+  host,
+  trustMode: nts.TrustMode.bundledOnly,
+  debugQueryOverride: () async {
+    if (gate != null) await gate();
+    throw StateError('handshake refused');
+  },
+);
 
 /// A [TimeSource] whose [getTime] always throws a [StateError], to
 /// exercise the per-source failure logging path.

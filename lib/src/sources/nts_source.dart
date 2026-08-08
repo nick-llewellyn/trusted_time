@@ -200,6 +200,61 @@ final class NtsSource implements TimeSource, Warmable {
   final DateTime? Function()? _verificationTimeProvider;
   final Future<nts.NtsTimeSample> Function()? _debugQueryOverride;
 
+  /// Whether a successful query from this source could be classified
+  /// [NtsAuthLevel.verified].
+  ///
+  /// Decided by the trust mode alone, so it is knowable before the
+  /// handshake resolves a [nts.TrustBackend]. True of every mode whose
+  /// success-backend set intersects the ones
+  /// [authLevelForTrustBackend] maps to `verified` — `bundledOnly` and
+  /// `custom`, which reach only [nts.TrustBackend.webpkiRoots] and
+  /// [nts.TrustBackend.custom] respectively, and
+  /// `platformWithFallback`, which reaches
+  /// [nts.TrustBackend.webpkiRoots] whenever the native verifier is
+  /// unavailable. Only `platformOnly` is excluded: it refuses that
+  /// fallback by construction, so it maps to [NtsAuthLevel.none]
+  /// however well its query goes.
+  ///
+  /// `platformWithFallback` cannot arise from
+  /// [TrustedTimeConfig.effectiveTrustMode], which resolves to one of
+  /// the other three, but it is this constructor's default — so any
+  /// [NtsSource] a consumer builds directly and passes through
+  /// [TrustedTimeConfig.additionalSources] carries it.
+  ///
+  /// **Schedules a wait; never classifies a sample.** [SyncEngine]
+  /// reads it to tell a cycle that could yet reach the verified floor
+  /// from one that provably cannot, so the early exit does not publish
+  /// a degraded anchor while the hosts that would have lifted it are
+  /// still in flight. Nothing may treat a `true` here as evidence about
+  /// any sample. The trust label is decided downstream and only from
+  /// the [nts.TrustBackend] the handshake actually resolved, by
+  /// [authLevelForTrustBackend] — which is what keeps the chain of
+  /// trust verified to the device.
+  ///
+  /// That separation is load-bearing for `platformWithFallback` in
+  /// particular. A platform trust store may hold a corporate or
+  /// MDM-installed CA, so a TLS-inspection appliance can terminate the
+  /// NTS-KE handshake at the network edge and forge replies the client
+  /// would otherwise accept. Such a query resolves
+  /// [nts.TrustBackend.platform], maps to [NtsAuthLevel.none], and is
+  /// refused a place in the truth box exactly as before — being counted
+  /// here bought it a wait, not a promotion. The same holds for
+  /// [nts.TrustBackend.platformWithHybridFallback], which classifies
+  /// `none` even though the bundled roots anchored that chain, because
+  /// the path still ran through platform machinery.
+  ///
+  /// Capability, not outcome, then: the query may still fail, return an
+  /// unusable sample, or resolve through the platform store and land at
+  /// [NtsAuthLevel.none] after all. Erring towards capability costs at
+  /// most a wait that does not pay off, bounded by the same
+  /// `maxLatency` the query is already under; erring the other way
+  /// costs the anchor its trust level, which no later cycle recovers
+  /// for the consumer already holding it. That asymmetry only favours
+  /// inclusion while the two decisions stay apart — wire this predicate
+  /// into a classification and it becomes the hole it is written to
+  /// avoid.
+  bool get canProduceVerified => _trustMode != nts.TrustMode.platformOnly;
+
   /// Per-source [nts.NtsClient]. Lazily constructed on first [warm]
   /// or first [getTime] call so the [NtsSource] constructor never
   /// touches the FFI surface (matching the lifetime of [_warmTask]

@@ -1,6 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nts/nts.dart' as nts;
+import 'package:trusted_time/src/domain/marzullo_engine.dart';
+import 'package:trusted_time/src/domain/time_interval.dart';
+import 'package:trusted_time/src/domain/time_sample.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
+import 'package:trusted_time/src/infra/sync_observer.dart';
 import 'package:trusted_time/src/infra/trusted_time_log.dart';
 import 'package:trusted_time/src/models.dart';
 import 'package:trusted_time/src/monotonic_clock.dart';
@@ -36,7 +42,10 @@ void main() {
     test('Tier 1 quorum forms the truth box and admits only intersecting '
         'lower-tier samples', () async {
       final observer = RecordingObserver();
-      // Two verified samples overlap at [1005, 1020] — the truth box.
+      // Three verified samples overlap at [1005, 1020] — the truth box.
+      // Three because minVerifiedQuorum floors the truth-box pass there;
+      // below it the cycle degrades regardless of how well the verified
+      // samples agree.
       final engine = _engineFor([
         TierSource(
           id: 'nts:v1',
@@ -51,6 +60,14 @@ void main() {
           groupId: 'g2',
           startMs: 1005,
           endMs: 1025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        TierSource(
+          id: 'nts:v3',
+          groupId: 'g5',
+          startMs: 1002,
+          endMs: 1022,
           authLevel: NtsAuthLevel.verified,
           trustBackend: nts.TrustBackend.webpkiRoots,
         ),
@@ -127,8 +144,9 @@ void main() {
     test('coordinated lower-tier cluster outside the truth box cannot move '
         'the consensus', () async {
       final observer = RecordingObserver();
-      // Two verified samples agree near T (~10012). Three coordinated
-      // lower-tier samples cluster at T+10s, well outside the truth box.
+      // Three verified samples agree near T (~10012), meeting the
+      // truth-box floor. Three coordinated lower-tier samples cluster at
+      // T+10s, well outside the box.
       final engine = _engineFor([
         TierSource(
           id: 'nts:v1',
@@ -143,6 +161,14 @@ void main() {
           groupId: 'g2',
           startMs: 10005,
           endMs: 10025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        TierSource(
+          id: 'nts:v3',
+          groupId: 'g6',
+          startMs: 10002,
+          endMs: 10022,
           authLevel: NtsAuthLevel.verified,
           trustBackend: nts.TrustBackend.webpkiRoots,
         ),
@@ -205,6 +231,14 @@ void main() {
           groupId: 'g2',
           startMs: 1005,
           endMs: 1025,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
+        TierSource(
+          id: 'nts:v3',
+          groupId: 'g5',
+          startMs: 1002,
+          endMs: 1022,
           authLevel: NtsAuthLevel.verified,
           trustBackend: nts.TrustBackend.webpkiRoots,
         ),
@@ -291,6 +325,16 @@ void main() {
           authLevel: NtsAuthLevel.verified,
           trustBackend: nts.TrustBackend.webpkiRoots,
         ),
+        // Third verified host: the truth-box floor, so this cycle is
+        // healthy rather than degraded-for-being-thin.
+        TierSource(
+          id: 'nts:v3',
+          groupId: 'g3',
+          startMs: 1002,
+          endMs: 1022,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+        ),
       ], observer: observer);
 
       await engine.sync();
@@ -337,6 +381,444 @@ void main() {
       final anchor = await engine.sync();
 
       expect(anchor.bootId, isNull);
+    });
+  });
+
+  // The early exit publishes on a stable consensus, and a degraded
+  // consensus is a consensus. With the truth box floored at three
+  // verified hosts, the first two verified replies no longer form a
+  // box, so the stability counter can complete a cycle at
+  // NtsAuthLevel.none while the third verified query is still in
+  // flight -- a cycle whose verified hosts all answer degrading on
+  // response order alone. These pin the hold that prevents it, and its
+  // scope.
+  group('SyncEngine verified-floor early exit', () {
+    SyncEngine engineFor(
+      List<TimeSource> sources, {
+      required SyncObserver observer,
+      Duration? maxLatency,
+    }) => SyncEngine(
+      config: TrustedTimeConfig(
+        minimumQuorum: 2,
+        minGroupCount: 1,
+        // The setting under test: the race only exists when the cycle
+        // may complete before every source has answered.
+        disableNtpForTesting: true,
+        disableNts: true,
+        maxLatency: maxLatency ?? const Duration(seconds: 4),
+      ).copyWith(additionalSources: sources),
+      clock: FakeMonotonicClock(),
+      observer: observer,
+    );
+
+    // Runs a cycle that must finish without one of its sources, and
+    // proves it did so by the clock rather than by the outcome.
+    //
+    // A never-released gate is not enough on its own: the per-source
+    // query budget is maxLatency, so a held cycle publishes the very
+    // same anchor once that expires, and an assertion on the anchor
+    // passes either way. Raising the budget well past the deadline
+    // below makes the two outcomes distinguishable -- a cycle that
+    // waits cannot finish inside it.
+    Future<TrustAnchor> syncWithoutWaiting(SyncEngine engine) =>
+        engine.sync().timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => throw StateError(
+            'cycle did not complete without the withheld source',
+          ),
+        );
+
+    // Orders sources' replies by how many samples have already reached
+    // the engine. A wall-clock delay would decide the race by how busy
+    // the event loop is, which passes or fails on what ran before it;
+    // releasing on a sample count makes the ordering the test's own.
+    //
+    // One sequencer per cycle rather than one gate: several of these
+    // cases need more than one source held, at different points, and
+    // two independent counters over the same stream would each see the
+    // other's releases.
+    _Sequencer sequencerFor(RecordingObserver recorder) => _Sequencer(recorder);
+
+    // A gate that is never opened. Pins that a cycle completed without
+    // the source behind it: a hold that engaged there would show up as
+    // the deadline in [syncWithoutWaiting], not as a later anchor.
+    Future<void> never() => Completer<void>().future;
+
+    // Freezes the receipt timeline for every case in this group.
+    //
+    // Stability compares consecutive resolves relative to the latest
+    // receipt stamp, so a reference that advances between them shifts
+    // the interval by the delta and resets the counter. NTS samples
+    // carry real stamps, which puts "did this cycle reach stability"
+    // at the mercy of whether two replies landed in the same
+    // millisecond -- an ordering these cases do not own, and the reason
+    // one of them passed in-file and failed run alone. A constant
+    // reader makes every sample's stamp identical, so normalization is
+    // the identity and the counter moves only with the consensus.
+    setUp(
+      () => TimeSample.debugSetReceiptReader(
+        MonotonicReader(read: () => 0, isSleepAware: true),
+      ),
+    );
+    tearDown(() => TimeSample.debugSetReceiptReader(null));
+
+    test('a degraded result waits for a verified query still in '
+        'flight', () async {
+      final recorder = RecordingObserver();
+      // The race in full. Two verified hosts answer first, which under
+      // the floor is one short of a truth box, so resolve returns the
+      // degraded fallback. Two lower-tier replies agreeing on the same
+      // interval then carry the stability counter to its threshold
+      // while the third verified host is still in flight. Without the
+      // hold the cycle publishes NtsAuthLevel.none there, even though
+      // every verified host answers in the end.
+      final seq = sequencerFor(recorder);
+      final engine = engineFor([
+        verifiedNtsSource(host: 'fast1.a.example', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(host: 'fast2.b.example', startMs: 1005, endMs: 1025),
+        TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(
+          host: 'slow.c.example',
+          startMs: 1002,
+          endMs: 1022,
+          gate: seq.after(4),
+        ),
+      ], observer: seq);
+
+      final anchor = await engine.sync();
+
+      expect(anchor.authLevel, NtsAuthLevel.verified);
+      expect(recorder.consensusReached.last.degradedTier, isFalse);
+    });
+
+    test(
+      'a degraded result waits for a platform-with-fallback query',
+      () async {
+        // Same race as above, with the outstanding host under the trust
+        // mode NtsSource itself defaults to -- what a consumer-supplied
+        // source carries through additionalSources. platformWithFallback
+        // reaches webpkiRoots when the native verifier is unavailable, so
+        // it can still lift the cycle and the hold has to count it.
+        final recorder = RecordingObserver();
+        final seq = sequencerFor(recorder);
+        final engine = engineFor([
+          verifiedNtsSource(
+            host: 'fast1.a.example',
+            startMs: 1000,
+            endMs: 1020,
+          ),
+          verifiedNtsSource(
+            host: 'fast2.b.example',
+            startMs: 1005,
+            endMs: 1025,
+          ),
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+          verifiedNtsSource(
+            host: 'slow.c.example',
+            startMs: 1002,
+            endMs: 1022,
+            gate: seq.after(4),
+            trustMode: nts.TrustMode.platformWithFallback,
+          ),
+        ], observer: seq);
+
+        final anchor = await engine.sync();
+
+        expect(anchor.authLevel, NtsAuthLevel.verified);
+        expect(recorder.consensusReached.last.degradedTier, isFalse);
+      },
+    );
+
+    test('a platform-store reply is waited for and then refused the '
+        'box', () async {
+      // The two halves of platformWithFallback held apart. Capability
+      // schedules the wait; the TrustBackend the handshake resolved
+      // decides the label. This source is counted, so the cycle holds
+      // for it -- and answers TrustBackend.platform, where an
+      // inspection CA in the platform store could have terminated the
+      // handshake off-device, so it classifies none and cannot help
+      // form the box.
+      //
+      // Two verified hosts and this one is three replies against a
+      // floor of three: the count alone would clear it. Only the
+      // classification keeps the anchor degraded, which is what makes
+      // this fail if capability ever leaks into the trust label.
+      final recorder = RecordingObserver();
+      final seq = sequencerFor(recorder);
+      final engine = engineFor([
+        verifiedNtsSource(host: 'fast1.a.example', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(host: 'fast2.b.example', startMs: 1005, endMs: 1025),
+        TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+        platformNtsSource(
+          host: 'inspected.c.example',
+          startMs: 1002,
+          endMs: 1022,
+          gate: seq.after(4),
+        ),
+      ], observer: seq);
+
+      final anchor = await engine.sync();
+
+      // Held: the gate opens only on the fourth sample, so this reply
+      // lands after the cycle is stable. A source not counted as
+      // capable is not waited for, and its sample arrives too late to
+      // be a contributor -- which is how the cases above pin a cycle
+      // that completed without one.
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        contains('nts:inspected.c.example'),
+      );
+      // Refused: three replies, floor of three, still degraded.
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+    });
+
+    test('the hold does not outlive the queries it waits on', () async {
+      // Availability is not traded for the wait: when the third
+      // verified host never answers, the cycle still publishes the
+      // degraded anchor once nothing is left in flight.
+      final recorder = RecordingObserver();
+      final engine = engineFor([
+        verifiedNtsSource(host: 'fast1.a.example', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(host: 'fast2.b.example', startMs: 1005, endMs: 1025),
+        TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+        failingVerifiedNtsSource(host: 'down.c.example'),
+      ], observer: recorder);
+
+      final anchor = await engine.sync();
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+    });
+
+    test('a cycle that can no longer reach the floor is not held', () async {
+      // An outstanding verified-capable query is not on its own
+      // evidence that the wait can pay off. One verified host is
+      // configured against a floor of three, so no arrival order can
+      // ever produce a truth box -- and holding for it would spend up
+      // to the full maxLatency arriving at the same degraded anchor.
+      final recorder = RecordingObserver();
+      final engine = engineFor(
+        [
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p3', groupId: 'g3', startMs: 1000, endMs: 1020),
+          verifiedNtsSource(
+            host: 'never.a.example',
+            startMs: 1000,
+            endMs: 1020,
+            gate: never,
+          ),
+        ],
+        observer: recorder,
+        maxLatency: const Duration(seconds: 30),
+      );
+
+      final anchor = await syncWithoutWaiting(engine);
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('nts:never.a.example')),
+      );
+    });
+
+    test('two instances of one host are one host for reachability', () async {
+      // Reachability is over hosts, so the queries still in flight have
+      // to be collapsed by id the same way the floor collapses banked
+      // samples. A cycle can query one id twice: while both instances
+      // are healthy the engine collapses them, but the starvation
+      // rescue re-admits from the source list directly, so a
+      // cooled-down id backed by two instances is force-included once
+      // per instance.
+      //
+      // One verified host banked and one verified id outstanding cannot
+      // reach a floor of three. Counting query objects instead makes
+      // that look like 1 + 2 and holds the cycle for the full latency
+      // budget on a box that cannot form.
+      final recorder = RecordingObserver();
+      // The id's first query fails, which arms the cooldown ladder and
+      // makes the rescue the only way back in. Every call after that
+      // hangs, so both rescued instances are in flight when the cycle
+      // turns stable. Shared across the instances because the cooldown
+      // belongs to the id, not to either of them -- and while both are
+      // healthy the engine collapses them, so only one query is issued
+      // and only one failure is available to arm it.
+      var failed = false;
+      Future<void> dupGate() {
+        if (failed) return Completer<void>().future;
+        failed = true;
+        throw StateError('cold');
+      }
+
+      final engine = engineFor(
+        [
+          verifiedNtsSource(host: 'a.example', startMs: 1000, endMs: 1020),
+          // Three lower-tier hosts on one interval, not two: the cycle
+          // has to reach stability while the duplicated id is still in
+          // flight, and stability needs two resolves that agree.
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p3', groupId: 'g3', startMs: 1000, endMs: 1020),
+          for (var i = 0; i < 2; i++)
+            verifiedNtsSource(
+              host: 'dup.example',
+              startMs: 1000,
+              endMs: 1020,
+              gate: dupGate,
+            ),
+        ],
+        observer: recorder,
+        maxLatency: const Duration(seconds: 30),
+      );
+
+      // The first cycle fails the id; the five after it are what the
+      // starvation guard counts before re-admitting both instances.
+      for (var i = 0; i < 5; i++) {
+        await syncWithoutWaiting(engine);
+      }
+      final anchor = await syncWithoutWaiting(engine);
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('nts:dup.example')),
+      );
+    });
+
+    test('a verified failure releases a hold it was the last reason '
+        'for', () async {
+      // The hold has to end on the terminal outcome of the query it was
+      // waiting on, not on whatever else the cycle happens to be doing.
+      // A failed query yields no sample, so it reaches none of the
+      // resolution path, and the only other source outstanding here
+      // never answers -- so nothing but re-examining the hold on the
+      // failure itself can finish this cycle inside the deadline.
+      //
+      // Two verified hosts answer, one short of the floor, and the
+      // third fails only after the cycle is stable and therefore
+      // already held.
+      final recorder = RecordingObserver();
+      final seq = sequencerFor(recorder);
+      final engine = engineFor(
+        [
+          verifiedNtsSource(
+            host: 'fast1.a.example',
+            startMs: 1000,
+            endMs: 1020,
+          ),
+          verifiedNtsSource(
+            host: 'fast2.b.example',
+            startMs: 1000,
+            endMs: 1020,
+          ),
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          failingVerifiedNtsSource(host: 'down.c.example', gate: seq.after(3)),
+          _GatedTierSource(
+            id: 'ntp:never',
+            groupId: 'g2',
+            startMs: 1000,
+            endMs: 1020,
+            gate: never,
+          ),
+        ],
+        observer: seq,
+        maxLatency: const Duration(seconds: 30),
+      );
+
+      final anchor = await syncWithoutWaiting(engine);
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('ntp:never')),
+      );
+    });
+
+    test('the sample that lifts a held cycle is not overruled by the '
+        'snapshot', () async {
+      // A held snapshot describes the population it was reduced from,
+      // and the arrival that ends the hold is often the one that moves
+      // that population. Here the third verified host closes the box on
+      // a tighter interval than the degraded consensus, so the
+      // stability counter resets and the block that would replace the
+      // snapshot does not run -- while the same arrival drops the
+      // pending balance to zero and so ends the hold. Publishing the
+      // snapshot there would discard the verified result the wait was
+      // for, turning the hold into a way of losing the box it exists to
+      // protect.
+      final recorder = RecordingObserver();
+      final seq = sequencerFor(recorder);
+      final engine = engineFor([
+        verifiedNtsSource(host: 'fast1.a.example', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(host: 'fast2.b.example', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(
+          host: 'slow.c.example',
+          startMs: 1008,
+          endMs: 1014,
+          gate: seq.after(4),
+        ),
+      ], observer: seq);
+
+      final anchor = await engine.sync();
+
+      expect(anchor.authLevel, NtsAuthLevel.verified);
+      expect(recorder.consensusReached.last.degradedTier, isFalse);
+      // The snapshot's population was the four samples banked before
+      // the box formed, so publishing it would show up here as a
+      // missing contributor even though the source answered.
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        contains('nts:slow.c.example'),
+      );
+    });
+
+    test('an all-NTP cycle still exits early', () async {
+      // Every cycle here is legitimately degraded and no source could
+      // ever lift it, so the hold must not engage -- otherwise it
+      // becomes a blanket early-exit disable for NTP-only installs.
+      // The gated source would never be released, so the cycle can only
+      // finish by exiting early on the first three.
+      final recorder = RecordingObserver();
+      final engine = engineFor(
+        [
+          TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:c', groupId: 'g3', startMs: 1000, endMs: 1020),
+          _GatedTierSource(
+            id: 'ntp:slow',
+            groupId: 'g4',
+            startMs: 1002,
+            endMs: 1022,
+            gate: never,
+          ),
+        ],
+        observer: recorder,
+        maxLatency: const Duration(seconds: 30),
+      );
+
+      final anchor = await syncWithoutWaiting(engine);
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+      // The point of the case: the cycle finished on the first three
+      // rather than waiting out the fourth. A hold that engaged on any
+      // degraded result would still publish this anchor, just later, so
+      // the outcome alone cannot tell the two apart -- the absent
+      // contributor is what does.
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('ntp:slow')),
+      );
     });
   });
 
@@ -390,4 +872,89 @@ void main() {
       expect(anchor.contributors, hasLength(2));
     });
   });
+}
+
+/// Forwards to [inner] while releasing gates handed out by [after] once
+/// the engine's listener has consumed a given number of samples.
+///
+/// Lets a test order sources' replies behind a known number of others
+/// without a wall-clock delay, which would settle the race on
+/// event-loop timing rather than on the behaviour under test. One
+/// instance serves a whole cycle, so several gates share a single
+/// count of what the engine has actually seen.
+class _Sequencer implements SyncObserver {
+  _Sequencer(this.inner);
+
+  final RecordingObserver inner;
+  final _pending = <int, Completer<void>>{};
+  int _seen = 0;
+
+  /// A gate that opens once [samples] samples have reached the engine.
+  Future<void> Function() after(int samples) {
+    final gate = _pending.putIfAbsent(samples, Completer<void>.new);
+    return () {
+      if (_seen >= samples && !gate.isCompleted) gate.complete();
+      return gate.future;
+    };
+  }
+
+  @override
+  void onSampleReceived(TimeSample sample) {
+    inner.onSampleReceived(sample);
+    _seen++;
+    for (final entry in _pending.entries) {
+      if (_seen >= entry.key && !entry.value.isCompleted) {
+        entry.value.complete();
+      }
+    }
+  }
+
+  @override
+  void onSourceFailed(String sourceId, Object error) =>
+      inner.onSourceFailed(sourceId, error);
+
+  @override
+  void onSyncStarted() => inner.onSyncStarted();
+
+  @override
+  void onConsensusReached(ConsensusResult result) =>
+      inner.onConsensusReached(result);
+
+  @override
+  void onSyncFailed(Object error) => inner.onSyncFailed(error);
+
+  @override
+  void onMetricsReported(SyncMetrics metrics) =>
+      inner.onMetricsReported(metrics);
+}
+
+/// A [TierSource] whose reply waits on a gate, so a lower-tier source
+/// can be held back the same way [verifiedNtsSource] holds a verified
+/// one.
+class _GatedTierSource implements TimeSource {
+  _GatedTierSource({
+    required this.id,
+    required this.groupId,
+    required this.startMs,
+    required this.endMs,
+    required this.gate,
+  });
+
+  @override
+  final String id;
+  @override
+  final String groupId;
+  final int startMs;
+  final int endMs;
+  final Future<void> Function() gate;
+
+  @override
+  Future<TimeSample> getTime() async {
+    await gate();
+    return TimeSample(
+      interval: TimeInterval(startMs: startMs, endMs: endMs),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
 }
