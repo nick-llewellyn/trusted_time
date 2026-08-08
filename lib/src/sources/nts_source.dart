@@ -200,6 +200,24 @@ final class NtsSource implements TimeSource, Warmable {
   final DateTime? Function()? _verificationTimeProvider;
   final Future<nts.NtsTimeSample> Function()? _debugQueryOverride;
 
+  /// Whether a successful query from this source could be classified
+  /// [NtsAuthLevel.verified].
+  ///
+  /// Decided by the trust mode alone, so it is knowable before the
+  /// handshake resolves a [nts.TrustBackend]. Only library-controlled
+  /// anchor sets qualify, mirroring [authLevelForTrustBackend]: a
+  /// `platformOnly` source always maps to [NtsAuthLevel.none] and can
+  /// never contribute to a truth box, however well its query goes.
+  ///
+  /// Capability, not outcome — the query may still fail or return an
+  /// unusable sample. [SyncEngine] uses it to tell a cycle that could
+  /// yet reach the verified floor from one that provably cannot, so
+  /// the early exit does not publish a degraded anchor while the
+  /// hosts that would have lifted it are still in flight.
+  bool get canProduceVerified =>
+      _trustMode == nts.TrustMode.bundledOnly ||
+      _trustMode == nts.TrustMode.custom;
+
   /// Per-source [nts.NtsClient]. Lazily constructed on first [warm]
   /// or first [getTime] call so the [NtsSource] constructor never
   /// touches the FFI surface (matching the lifetime of [_warmTask]

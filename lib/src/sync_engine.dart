@@ -292,6 +292,23 @@ final class SyncEngine {
     ];
   }
 
+  /// Whether [source] could contribute a Tier 1 sample to a truth box.
+  ///
+  /// Only [NtsSource] can, and only under a library-controlled anchor
+  /// set — see [NtsSource.canProduceVerified]. Everything else (plain
+  /// NTP, platform-mediated NTS, consumer-supplied
+  /// [TrustedTimeConfig.additionalSources]) resolves to
+  /// [NtsAuthLevel.none], so no wait on it could ever raise a cycle
+  /// above degraded.
+  ///
+  /// An additional source is excluded even though nothing stops one
+  /// stamping [NtsAuthLevel.verified] on its samples: that claim is
+  /// unverifiable from here, and honouring it would let a custom source
+  /// hold the early exit open on a promise it need not keep. The cost
+  /// of the conservative reading is a lost wait, not a lost anchor.
+  static bool _canProduceVerified(TimeSource source) =>
+      source is NtsSource && source.canProduceVerified;
+
   /// The source ids this cycle may query.
   ///
   /// Only the curated plain-NTP inventory is partitioned. Every NTS
@@ -967,11 +984,29 @@ final class SyncEngine {
     final samples = <TimeSample>[];
     final completer = Completer<TrustAnchor>();
     var streamClosed = false;
-    StreamSubscription<TimeSample?>? streamSub;
-    final sampleController = StreamController<TimeSample?>();
+    // Each event carries the source that produced it alongside its
+    // outcome. A failed query arrives as a null sample, which on its own
+    // says nothing about which host fell silent — and the verified-floor
+    // bookkeeping below has to decrement for a verified-capable source
+    // whether it answered, was rejected, or failed.
+    StreamSubscription<(TimeSource, TimeSample?)>? streamSub;
+    final sampleController = StreamController<(TimeSource, TimeSample?)>();
 
     try {
       var pendingQueries = activeSources.length;
+
+      // Verified-capable queries still in flight.
+      //
+      // The truth box needs [MarzulloEngine.minVerifiedQuorum] distinct
+      // verified hosts, so a cycle can hold a degraded result that a
+      // later verified reply would have lifted. Counting what is still
+      // outstanding is what lets the early exit tell "degraded" from
+      // "degraded so far". Decremented on every terminal outcome for
+      // such a source — sample, rejection, or failure — so it reaches
+      // zero on any path [pendingQueries] does.
+      var pendingVerifiedCapable = activeSources
+          .where(_canProduceVerified)
+          .length;
 
       TimeInterval? lastStabilityInterval;
       var stableCount = 0;
@@ -981,8 +1016,15 @@ final class SyncEngine {
       // and prevent race conditions during list mutation. This ensures that
       // outlier filtering and consensus resolution always happen on a consistent
       // snapshot of the sample population.
-      streamSub = sampleController.stream.listen((sample) {
+      streamSub = sampleController.stream.listen((event) {
         if (completer.isCompleted) return;
+
+        final (source, sample) = event;
+        // Every branch below is terminal for this source, so the
+        // verified-capable balance drops here once rather than at each
+        // exit. Reads of it further down are therefore already
+        // exclusive of the query being processed.
+        if (_canProduceVerified(source)) pendingVerifiedCapable--;
 
         if (sample != null) {
           // Filter samples with negative uncertainty early, before both Marzullo
@@ -1058,7 +1100,30 @@ final class SyncEngine {
             }
             lastStabilityInterval = relativeInterval;
 
-            if (stableCount >= requiredStability) {
+            // Hold the early exit while a verified reply that could
+            // lift this result is still outstanding.
+            //
+            // A degraded result is non-null, so without this the
+            // stability counter can complete the cycle on the first two
+            // agreeing replies and publish NtsAuthLevel.none while the
+            // third verified query is in flight — a cycle whose
+            // verified hosts all answer degrading on response order
+            // alone. The floor is what makes that reachable: two
+            // agreeing verified samples used to form a truth box, and
+            // now they do not.
+            //
+            // Scoped to results that are actually degraded and to
+            // cycles that could still clear the floor, so it costs
+            // nothing where the box has already formed, and nothing at
+            // all to an all-NTP configuration — every cycle there is
+            // legitimately degraded, with no verified-capable source to
+            // wait on. Not a correctness gate: if the outstanding
+            // queries fail or return late, pendingQueries reaches zero
+            // and _finalizeSync publishes the degraded anchor anyway.
+            final verifiedStillPossible =
+                result.degradedTier && pendingVerifiedCapable > 0;
+
+            if (stableCount >= requiredStability && !verifiedStillPossible) {
               // Early Exit: If configured, we return as soon as a stable quorum
               // is reached to minimize power and network consumption.
               if (_config.earlyExit || samples.length == activeSources.length) {
@@ -1135,7 +1200,7 @@ final class SyncEngine {
 
           final sample = await _querySafe(source, rescueState);
           if (!streamClosed && !sampleController.isClosed) {
-            sampleController.add(sample);
+            sampleController.add((source, sample));
           }
         }());
       }

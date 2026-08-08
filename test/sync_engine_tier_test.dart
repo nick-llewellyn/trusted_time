@@ -1,6 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nts/nts.dart' as nts;
+import 'package:trusted_time/src/domain/marzullo_engine.dart';
+import 'package:trusted_time/src/domain/time_interval.dart';
+import 'package:trusted_time/src/domain/time_sample.dart';
 import 'package:trusted_time/src/domain/time_source.dart';
+import 'package:trusted_time/src/infra/sync_observer.dart';
 import 'package:trusted_time/src/infra/trusted_time_log.dart';
 import 'package:trusted_time/src/models.dart';
 import 'package:trusted_time/src/monotonic_clock.dart';
@@ -378,6 +384,134 @@ void main() {
     });
   });
 
+  // The early exit publishes on a stable consensus, and a degraded
+  // consensus is a consensus. With the truth box floored at three
+  // verified hosts, the first two verified replies no longer form a
+  // box, so the stability counter can complete a cycle at
+  // NtsAuthLevel.none while the third verified query is still in
+  // flight -- a cycle whose verified hosts all answer degrading on
+  // response order alone. These pin the hold that prevents it, and its
+  // scope.
+  group('SyncEngine verified-floor early exit', () {
+    SyncEngine engineFor(
+      List<TimeSource> sources, {
+      required SyncObserver observer,
+    }) => SyncEngine(
+      config: const TrustedTimeConfig(
+        minimumQuorum: 2,
+        minGroupCount: 1,
+        // The setting under test: the race only exists when the cycle
+        // may complete before every source has answered.
+        disableNtpForTesting: true,
+        disableNts: true,
+      ).copyWith(additionalSources: sources),
+      clock: FakeMonotonicClock(),
+      observer: observer,
+    );
+
+    // Holds one source's reply until the others have landed. A
+    // wall-clock delay would decide the race by how busy the event loop
+    // is, which passes or fails on what ran before it; releasing on a
+    // sample count makes the ordering the test's own.
+    ({Future<void> Function() gate, SyncObserver observer}) gateAfter(
+      int samples,
+      RecordingObserver recorder,
+    ) {
+      final released = Completer<void>();
+      final counter = _ReleasingObserver(
+        inner: recorder,
+        releaseAfter: samples,
+        release: released,
+      );
+      return (gate: () => released.future, observer: counter);
+    }
+
+    test('a degraded result waits for a verified query still in '
+        'flight', () async {
+      final recorder = RecordingObserver();
+      // The race in full. Two verified hosts answer first, which under
+      // the floor is one short of a truth box, so resolve returns the
+      // degraded fallback. Two lower-tier replies agreeing on the same
+      // interval then carry the stability counter to its threshold
+      // while the third verified host is still in flight. Without the
+      // hold the cycle publishes NtsAuthLevel.none there, even though
+      // every verified host answers in the end.
+      final gated = gateAfter(4, recorder);
+      final engine = engineFor([
+        verifiedNtsSource(host: 'fast1.a.example', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(host: 'fast2.b.example', startMs: 1005, endMs: 1025),
+        TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(
+          host: 'slow.c.example',
+          startMs: 1002,
+          endMs: 1022,
+          gate: gated.gate,
+        ),
+      ], observer: gated.observer);
+
+      final anchor = await engine.sync();
+
+      expect(anchor.authLevel, NtsAuthLevel.verified);
+      expect(recorder.consensusReached.last.degradedTier, isFalse);
+    });
+
+    test('the hold does not outlive the queries it waits on', () async {
+      // Availability is not traded for the wait: when the third
+      // verified host never answers, the cycle still publishes the
+      // degraded anchor once nothing is left in flight.
+      final recorder = RecordingObserver();
+      final engine = engineFor([
+        verifiedNtsSource(host: 'fast1.a.example', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(host: 'fast2.b.example', startMs: 1005, endMs: 1025),
+        TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+        failingVerifiedNtsSource(host: 'down.c.example'),
+      ], observer: recorder);
+
+      final anchor = await engine.sync();
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+    });
+
+    test('an all-NTP cycle still exits early', () async {
+      // Every cycle here is legitimately degraded and no source could
+      // ever lift it, so the hold must not engage -- otherwise it
+      // becomes a blanket early-exit disable for NTP-only installs.
+      // The gated source would never be released, so the cycle can only
+      // finish by exiting early on the first three.
+      final recorder = RecordingObserver();
+      final gated = gateAfter(3, recorder);
+      final engine = engineFor([
+        TierSource(id: 'ntp:a', groupId: 'g1', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:b', groupId: 'g2', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:c', groupId: 'g3', startMs: 1000, endMs: 1020),
+        _GatedTierSource(
+          id: 'ntp:slow',
+          groupId: 'g4',
+          startMs: 1002,
+          endMs: 1022,
+          gate: gated.gate,
+        ),
+      ], observer: gated.observer);
+
+      final anchor = await engine.sync();
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+      // The point of the case: the cycle finished on the first three
+      // rather than waiting out the fourth. A hold that engaged on any
+      // degraded result would still publish this anchor, just later, so
+      // the outcome alone cannot tell the two apart -- the absent
+      // contributor is what does.
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('ntp:slow')),
+      );
+    });
+  });
+
   group('SyncEngine anchor contributor telemetry', () {
     // Every collected sample must yield one contributor record —
     // winners and losers alike — because the excluded sources are
@@ -428,4 +562,78 @@ void main() {
       expect(anchor.contributors, hasLength(2));
     });
   });
+}
+
+/// Forwards to [inner] while completing [release] once [releaseAfter]
+/// samples have reached the engine's listener.
+///
+/// Lets a test order one source's reply behind a known number of
+/// others without a wall-clock delay, which would settle the race on
+/// event-loop timing rather than on the behaviour under test.
+class _ReleasingObserver implements SyncObserver {
+  _ReleasingObserver({
+    required this.inner,
+    required this.releaseAfter,
+    required this.release,
+  });
+
+  final RecordingObserver inner;
+  final int releaseAfter;
+  final Completer<void> release;
+  int _seen = 0;
+
+  @override
+  void onSampleReceived(TimeSample sample) {
+    inner.onSampleReceived(sample);
+    if (++_seen >= releaseAfter && !release.isCompleted) release.complete();
+  }
+
+  @override
+  void onSourceFailed(String sourceId, Object error) =>
+      inner.onSourceFailed(sourceId, error);
+
+  @override
+  void onSyncStarted() => inner.onSyncStarted();
+
+  @override
+  void onConsensusReached(ConsensusResult result) =>
+      inner.onConsensusReached(result);
+
+  @override
+  void onSyncFailed(Object error) => inner.onSyncFailed(error);
+
+  @override
+  void onMetricsReported(SyncMetrics metrics) =>
+      inner.onMetricsReported(metrics);
+}
+
+/// A [TierSource] whose reply waits on a gate, so a lower-tier source
+/// can be held back the same way [verifiedNtsSource] holds a verified
+/// one.
+class _GatedTierSource implements TimeSource {
+  _GatedTierSource({
+    required this.id,
+    required this.groupId,
+    required this.startMs,
+    required this.endMs,
+    required this.gate,
+  });
+
+  @override
+  final String id;
+  @override
+  final String groupId;
+  final int startMs;
+  final int endMs;
+  final Future<void> Function() gate;
+
+  @override
+  Future<TimeSample> getTime() async {
+    await gate();
+    return TimeSample(
+      interval: TimeInterval(startMs: startMs, endMs: endMs),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
 }
