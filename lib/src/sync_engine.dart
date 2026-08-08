@@ -295,17 +295,21 @@ final class SyncEngine {
   /// Whether [source] could contribute a Tier 1 sample to a truth box.
   ///
   /// Only [NtsSource] can, and only under a library-controlled anchor
-  /// set — see [NtsSource.canProduceVerified]. Everything else (plain
-  /// NTP, platform-mediated NTS, consumer-supplied
-  /// [TrustedTimeConfig.additionalSources]) resolves to
-  /// [NtsAuthLevel.none], so no wait on it could ever raise a cycle
-  /// above degraded.
+  /// set — see [NtsSource.canProduceVerified]. Plain NTP and
+  /// platform-mediated NTS resolve to [NtsAuthLevel.none], so no wait on
+  /// one could ever raise a cycle above degraded.
   ///
-  /// An additional source is excluded even though nothing stops one
-  /// stamping [NtsAuthLevel.verified] on its samples: that claim is
+  /// Type and trust mode are the whole test; provenance is not
+  /// consulted, and could not be — [_buildSources] concatenates
+  /// [TrustedTimeConfig.additionalSources] into one list and discards
+  /// where each entry came from. So an [NtsSource] supplied through
+  /// `additionalSources` under `bundledOnly` or `custom` counts here,
+  /// which is what the tier tests rely on. What the trust-mode check
+  /// does exclude is any *other* implementation stamping
+  /// [NtsAuthLevel.verified] on its own samples: that claim is
   /// unverifiable from here, and honouring it would let a custom source
-  /// hold the early exit open on a promise it need not keep. The cost
-  /// of the conservative reading is a lost wait, not a lost anchor.
+  /// hold the early exit open on a promise it need not keep. The cost of
+  /// the conservative reading is a lost wait, not a lost anchor.
   static bool _canProduceVerified(TimeSource source) =>
       source is NtsSource && source.canProduceVerified;
 
@@ -995,29 +999,47 @@ final class SyncEngine {
     try {
       var pendingQueries = activeSources.length;
 
-      // Verified-capable queries still in flight.
+      // Which verified-capable hosts are still in flight.
       //
       // The truth box needs [MarzulloEngine.minVerifiedQuorum] distinct
       // verified hosts, so a cycle can hold a degraded result that a
-      // later verified reply would have lifted. Counting what is still
+      // later verified reply would have lifted. Knowing what is still
       // outstanding is what lets the early exit tell "degraded" from
-      // "degraded so far". Decremented on every terminal outcome for
-      // such a source — sample, rejection, or failure — so it reaches
-      // zero on any path [pendingQueries] does.
-      var pendingVerifiedCapable = activeSources
-          .where(_canProduceVerified)
-          .length;
+      // "degraded so far". Emptied one host at a time on terminal
+      // outcomes — sample, rejection, or failure — so it runs out on
+      // any path [pendingQueries] does.
+      //
+      // Keyed by host id rather than a count of query objects, because
+      // the floor it is compared against counts hosts. [activeSources]
+      // can hold two instances of one id: the starvation rescue
+      // re-admits from [_sources] directly, so a blacklisted id backed
+      // by two instances is queried once per instance (the same
+      // asymmetry [_observeVantage] guards). A per-instance tally would
+      // then claim a floor of three still reachable on two distinct
+      // hosts, and the cycle would hold a stable degraded result for the
+      // full latency budget waiting on a box that cannot form.
+      //
+      // A multiset rather than a set, because a host is still in flight
+      // until its last instance has ended: dropping the id on the first
+      // outcome would understate reachability and release a hold whose
+      // remaining query could still have closed the box — the opposite
+      // error, and the one that costs an anchor's trust level rather
+      // than latency.
+      final pendingVerifiedHosts = <String, int>{};
+      for (final s in activeSources.where(_canProduceVerified)) {
+        pendingVerifiedHosts[s.id] = (pendingVerifiedHosts[s.id] ?? 0) + 1;
+      }
 
       TimeInterval? lastStabilityInterval;
       var stableCount = 0;
       var rejectedInvalid = 0;
 
-      // Whether the hold below has withheld a stable result that no
-      // later resolve has published.
+      // Whether the hold below is withholding a result that had reached
+      // stability, and that no later resolve has published or retracted.
       //
       // The hold has to be re-examined on outcomes that never reach a
-      // resolve: a failed or rejected verified query lowers
-      // [pendingVerifiedCapable] without producing a sample, so nothing
+      // resolve: a failed or rejected verified query empties
+      // [pendingVerifiedHosts] without producing a sample, so nothing
       // downstream would notice that the wait had become pointless.
       // Without this such a cycle stays blocked until an unrelated query
       // times out — the hold outliving the queries it waits on, which is
@@ -1027,28 +1049,38 @@ final class SyncEngine {
       // time the hold ends the population it was reduced from may no
       // longer be the cycle's. The arrival that ends the wait is often
       // the one that moves it: a third verified reply can close the box
-      // on a different interval, which resets the stability counter, so
-      // the block that would replace a retained result does not run.
-      // Publishing that result there would discard the very box the wait
-      // was for, so the release path resolves the population as it
-      // stands instead.
+      // on a different interval. Publishing the old result there would
+      // discard the very box the wait was for, so the release path
+      // resolves the population as it stands. The same arrival also
+      // resets the stability counter, and a cycle is never published on
+      // an interval that has not held twice — so the flag is cleared
+      // wherever a resolve fails to re-reach stability, leaving the
+      // normal stability path and _finalizeSync to decide the cycle.
       var holdWithheld = false;
 
       /// Whether [result] should still be withheld.
       ///
       /// Degraded, something verified-capable outstanding, and — the
-      /// part [pendingVerifiedCapable] alone does not establish — enough
-      /// of the floor still reachable for the wait to be able to pay
-      /// off. A cycle that has banked two verified hosts and lost one of
-      /// three queries can never reach a floor of three, so holding it
-      /// would spend up to the full maxLatency on an outcome already
-      /// decided. Counted through the engine so the hold and the floor
-      /// agree on what a verified host is.
-      bool holdApplies(ConsensusResult result) =>
-          result.degradedTier &&
-          pendingVerifiedCapable > 0 &&
-          _engine.usableVerifiedHostCount(samples) + pendingVerifiedCapable >=
-              _engine.minVerifiedQuorum;
+      /// part an outstanding query alone does not establish — enough of
+      /// the floor still reachable for the wait to be able to pay off. A
+      /// cycle that has banked two verified hosts and lost one of three
+      /// queries can never reach a floor of three, so holding it would
+      /// spend up to the full maxLatency on an outcome already decided.
+      ///
+      /// Reachability is over hosts, and banked and outstanding hosts
+      /// are not disjoint sets: a host can answer once and still have a
+      /// second query in flight under the starvation rescue, and a
+      /// verified host whose sample was banked but judged unusable is
+      /// outstanding to neither. Adding the two tallies would double
+      /// count such a host into a floor it cannot reach twice, so they
+      /// are unioned instead. Collapsed through the engine so the hold
+      /// and the floor agree on what a verified host is.
+      bool holdApplies(ConsensusResult result) {
+        if (!result.degradedTier || pendingVerifiedHosts.isEmpty) return false;
+        final reachable = _engine.usableVerifiedHostIds(samples)
+          ..addAll(pendingVerifiedHosts.keys);
+        return reachable.length >= _engine.minVerifiedQuorum;
+      }
 
       void fireEarlyExit(ConsensusResult result, List<TimeSample> population) {
         // Early Exit: If configured, we return as soon as a stable quorum
@@ -1073,12 +1105,18 @@ final class SyncEngine {
       /// so the cycle resumes the moment the last query it was waiting
       /// on ends rather than when some unrelated query does.
       ///
-      /// Resolves the population as it now stands rather than replaying
-      /// what was withheld, so a sample that arrived during the hold is
-      /// reflected in what gets published — including the case where it
-      /// formed the truth box the wait existed for. Where nothing has
-      /// changed this reproduces the withheld result, since the same
-      /// population reduces the same way.
+      /// Resolves rather than replaying what was withheld, so a sample
+      /// that arrived during the hold is reflected in what gets
+      /// published — including the case where it formed the truth box the
+      /// wait existed for.
+      ///
+      /// Not a second route past the stability guard. [holdWithheld] is
+      /// true only while the population as it stands has resolved to the
+      /// same interval [requiredStability] times over: the stability
+      /// block clears the flag on any accepted sample that does not
+      /// re-establish that, and no other path adds to [samples]. So the
+      /// resolve here is over the population that was already judged
+      /// stable, and reproduces the interval it was judged on.
       void releaseHoldIfPossible() {
         if (!holdWithheld) return;
         final (normalized, _) = _normalizedToLatestReceipt(samples);
@@ -1097,10 +1135,19 @@ final class SyncEngine {
 
         final (source, sample) = event;
         // Every branch below is terminal for this source, so the
-        // verified-capable balance drops here once rather than at each
+        // verified-capable tally drops here once rather than at each
         // exit. Reads of it further down are therefore already
-        // exclusive of the query being processed.
-        if (_canProduceVerified(source)) pendingVerifiedCapable--;
+        // exclusive of the query being processed. The host leaves only
+        // when its last instance has ended, since two instances of one
+        // id can be in flight together.
+        if (_canProduceVerified(source)) {
+          final left = (pendingVerifiedHosts[source.id] ?? 1) - 1;
+          if (left <= 0) {
+            pendingVerifiedHosts.remove(source.id);
+          } else {
+            pendingVerifiedHosts[source.id] = left;
+          }
+        }
 
         if (sample != null) {
           // Filter samples with negative uncertainty early, before both Marzullo
@@ -1198,6 +1245,12 @@ final class SyncEngine {
             // [releaseHoldIfPossible] publishes as soon as the queries
             // it waits on end — with _finalizeSync as the backstop when
             // they were the last outstanding.
+            //
+            // The flag tracks stability rather than merely accumulating,
+            // which is what keeps the release path from becoming a way
+            // around this guard: a sample that moves the interval resets
+            // [stableCount] and so clears the hold, leaving the cycle to
+            // be decided here on a later resolve or by _finalizeSync.
             if (stableCount >= requiredStability) {
               if (holdApplies(result)) {
                 holdWithheld = true;
@@ -1205,7 +1258,13 @@ final class SyncEngine {
                 holdWithheld = false;
                 fireEarlyExit(result, List<TimeSample>.of(samples));
               }
+            } else {
+              holdWithheld = false;
             }
+          } else {
+            // No consensus over the new population at all, so there is
+            // nothing stable left to withhold.
+            holdWithheld = false;
           }
         }
 

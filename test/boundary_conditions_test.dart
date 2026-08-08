@@ -262,6 +262,45 @@ void main() {
       expect(result.authLevel, NtsAuthLevel.none);
     });
 
+    test('a repeated outlier does not raise the bar it cannot help '
+        'clear', () {
+      // The other half of the collapse. The floor deduplicates, but the
+      // reduction's own quorum denominator used to count samples while
+      // the overlap it was compared against counts sources -- so a host
+      // answering twice raised the requirement with a vote it could
+      // never cast. Here A and B overlap and the duplicated outlier C
+      // demanded 3 of a possible 3, rejecting the very box the ratio of
+      // 0.6 exists to admit and defeating the one-outlier tolerance the
+      // floor of three was chosen for.
+      final result = engine.resolve([
+        verified('nts:a', 1000, 1020),
+        verified('nts:b', 1010, 1030),
+        verified('nts:liar', 9000, 9020),
+        verified('nts:liar', 9000, 9020),
+      ]);
+
+      expect(result, isNotNull);
+      expect(result!.degradedTier, isFalse);
+      expect(result.authLevel, NtsAuthLevel.verified);
+      expect(
+        result.participants.map((s) => s.sourceId),
+        isNot(contains('nts:liar')),
+      );
+    });
+
+    test('one host answering repeatedly is still a single source', () {
+      // The collapse must not open a hole in the two-source minimum:
+      // deduplicating the denominator means a lone chatty host now
+      // reduces to a population of one, which _resolveCore refuses.
+      final result = engine.resolve([
+        verified('nts:solo', 1000, 1020),
+        verified('nts:solo', 1002, 1022),
+        verified('nts:solo', 1004, 1024),
+      ]);
+
+      expect(result, isNull);
+    });
+
     test('a repeated host does not displace a third distinct one', () {
       // The same population plus a genuine third host clears the floor,
       // so the collapse rejects duplication rather than volume.

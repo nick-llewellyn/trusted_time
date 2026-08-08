@@ -488,10 +488,13 @@ void main() {
         // the geometric midpoint baseMs. Without dedup, b's five votes drag
         // the centre to (-30 + 5*30) / 6 = +20.
         //
-        // requiredQuorum derives from the total sample count, so duplicates
-        // raise the bar; a 0.3 ratio over six samples needs a quorum of two,
-        // which the two unique sources (a, b) satisfy.
-        const chattyEngine = MarzulloEngine(minQuorumRatio: 0.3);
+        // requiredQuorum derives from distinct responders, so the ratio
+        // applies at the default: two sources need a quorum of two, which
+        // a and b satisfy. This used to need a lowered ratio to pass,
+        // because the denominator counted samples while the overlap it was
+        // compared against counted sources — so b's repetition raised a bar
+        // it could not help clear.
+        const chattyEngine = MarzulloEngine();
         final result = chattyEngine.resolve([
           createSample(
             id: 'a',

@@ -444,6 +444,24 @@ void main() {
     // the deadline in [syncWithoutWaiting], not as a later anchor.
     Future<void> never() => Completer<void>().future;
 
+    // Freezes the receipt timeline for every case in this group.
+    //
+    // Stability compares consecutive resolves relative to the latest
+    // receipt stamp, so a reference that advances between them shifts
+    // the interval by the delta and resets the counter. NTS samples
+    // carry real stamps, which puts "did this cycle reach stability"
+    // at the mercy of whether two replies landed in the same
+    // millisecond -- an ordering these cases do not own, and the reason
+    // one of them passed in-file and failed run alone. A constant
+    // reader makes every sample's stamp identical, so normalization is
+    // the identity and the counter moves only with the consensus.
+    setUp(
+      () => TimeSample.debugSetReceiptReader(
+        MonotonicReader(read: () => 0, isSleepAware: true),
+      ),
+    );
+    tearDown(() => TimeSample.debugSetReceiptReader(null));
+
     test('a degraded result waits for a verified query still in '
         'flight', () async {
       final recorder = RecordingObserver();
@@ -523,6 +541,70 @@ void main() {
       expect(
         anchor.contributors.map((c) => c.sourceId),
         isNot(contains('nts:never.a.example')),
+      );
+    });
+
+    test('two instances of one host are one host for reachability', () async {
+      // Reachability is over hosts, so the queries still in flight have
+      // to be collapsed by id the same way the floor collapses banked
+      // samples. A cycle can query one id twice: while both instances
+      // are healthy the engine collapses them, but the starvation
+      // rescue re-admits from the source list directly, so a
+      // cooled-down id backed by two instances is force-included once
+      // per instance.
+      //
+      // One verified host banked and one verified id outstanding cannot
+      // reach a floor of three. Counting query objects instead makes
+      // that look like 1 + 2 and holds the cycle for the full latency
+      // budget on a box that cannot form.
+      final recorder = RecordingObserver();
+      // The id's first query fails, which arms the cooldown ladder and
+      // makes the rescue the only way back in. Every call after that
+      // hangs, so both rescued instances are in flight when the cycle
+      // turns stable. Shared across the instances because the cooldown
+      // belongs to the id, not to either of them -- and while both are
+      // healthy the engine collapses them, so only one query is issued
+      // and only one failure is available to arm it.
+      var failed = false;
+      Future<void> dupGate() {
+        if (failed) return Completer<void>().future;
+        failed = true;
+        throw StateError('cold');
+      }
+
+      final engine = engineFor(
+        [
+          verifiedNtsSource(host: 'a.example', startMs: 1000, endMs: 1020),
+          // Three lower-tier hosts on one interval, not two: the cycle
+          // has to reach stability while the duplicated id is still in
+          // flight, and stability needs two resolves that agree.
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p3', groupId: 'g3', startMs: 1000, endMs: 1020),
+          for (var i = 0; i < 2; i++)
+            verifiedNtsSource(
+              host: 'dup.example',
+              startMs: 1000,
+              endMs: 1020,
+              gate: dupGate,
+            ),
+        ],
+        observer: recorder,
+        maxLatency: const Duration(seconds: 30),
+      );
+
+      // The first cycle fails the id; the five after it are what the
+      // starvation guard counts before re-admitting both instances.
+      for (var i = 0; i < 5; i++) {
+        await syncWithoutWaiting(engine);
+      }
+      final anchor = await syncWithoutWaiting(engine);
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('nts:dup.example')),
       );
     });
 

@@ -266,7 +266,7 @@ final class MarzulloEngine {
         .where((s) => _tierOf(s) == _Tier.verified)
         .toList();
 
-    final usableVerified = usableVerifiedHostCount(samples);
+    final usableVerified = usableVerifiedHostIds(samples).length;
 
     final truthBox = usableVerified < minVerifiedQuorum
         ? null
@@ -313,8 +313,8 @@ final class MarzulloEngine {
     );
   }
 
-  /// How many distinct verified hosts in [samples] could fill a
-  /// truth-box slot — the number [minVerifiedQuorum] is checked against.
+  /// Which distinct verified hosts in [samples] could fill a truth-box
+  /// slot — the set whose size [minVerifiedQuorum] is checked against.
   ///
   /// The floor counts responders, not samples. Two conditions have to
   /// line up for that to be the same number the reduction sees:
@@ -326,17 +326,19 @@ final class MarzulloEngine {
   /// meant to have, since at the default ratio two unique authorities
   /// are enough to close the box.
   ///
-  /// Public because `SyncEngine` needs the same number to decide whether
-  /// a degraded cycle could still reach the floor before it holds the
-  /// early exit for an outstanding verified query. Two independent
-  /// counts would let the hold wait on a floor [resolve] has already
+  /// Public, and the ids rather than the count, because `SyncEngine`
+  /// needs the same collapse to decide whether a degraded cycle could
+  /// still reach the floor before it holds the early exit for an
+  /// outstanding verified query. That question is which *hosts* remain
+  /// reachable, so it has to subtract the ones already banked here from
+  /// the ones still in flight; a bare count cannot. Two independent
+  /// collapses would let the hold wait on a floor [resolve] has already
   /// ruled out.
-  int usableVerifiedHostCount(List<TimeSample> samples) => samples
+  Set<String> usableVerifiedHostIds(List<TimeSample> samples) => samples
       .where((s) => _tierOf(s) == _Tier.verified)
       .where(_isUsable)
       .map((s) => s.sourceId)
-      .toSet()
-      .length;
+      .toSet();
 
   /// Whether [sample] can enter a reduction at all.
   ///
@@ -360,10 +362,21 @@ final class MarzulloEngine {
     // and noisy sources with excessive uncertainty.
     final validSamples = samples.where(_isUsable).toList();
 
-    final totalSources = validSamples.length;
+    // Distinct responders, not samples: the sweep below optimizes on
+    // `activeSourceCounts.length`, so a host that answered twice can
+    // contribute at most one to `bestUniqueOverlap`. A denominator over
+    // samples therefore raises the bar with each duplicate while the
+    // numerator cannot follow — two agreeing hosts plus a repeated
+    // outlier need 3 of a possible 3, and the box that a ratio of 0.6
+    // exists to admit is rejected for a vote nothing could have cast.
+    // Collapsing both sides keeps the ratio a statement about how many
+    // authorities agreed out of how many answered.
+    final totalSources = validSamples.map((s) => s.sourceId).toSet().length;
     final requiredQuorum = (totalSources * minQuorumRatio).ceil();
 
-    // Minimum 2 samples required for any consensus (avoids single-source trust)
+    // Minimum 2 sources required for any consensus (avoids single-source
+    // trust — including the single-source case dressed up as a
+    // population by one host answering repeatedly).
     if (totalSources < 2 || requiredQuorum < 2) return null;
 
     final endpoints = <_Endpoint>[];
