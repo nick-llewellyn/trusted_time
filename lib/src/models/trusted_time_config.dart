@@ -466,10 +466,24 @@ final class TrustedTimeConfig {
   /// Values below [minNtsQueryTarget] are rejected by the constructor's
   /// assert rather than clamped: a target under the floor is a
   /// configuration that can never produce a truth box, so silently
-  /// raising it would hide the mistake. No upper bound beyond the
-  /// inventory itself — a target exceeding the promotable population
-  /// simply yields a smaller quorum, the same as one whose promotions
-  /// have not been ranked yet.
+  /// raising it would hide the mistake. The rejection is total for a
+  /// `const` invocation — constant evaluation runs the assert, making
+  /// it a compile-time error in any build mode — and covers a
+  /// runtime-computed value only where asserts are live, since release
+  /// builds strip them.
+  ///
+  /// That residual gap is left open on purpose. The truth box's floor
+  /// is enforced at the point of use from [minNtsQueryTarget] itself
+  /// rather than from this knob, so a below-floor target reaching a
+  /// release build yields a narrower cycle that degrades to
+  /// [NtsAuthLevel.none] — never a box resting on too few responders.
+  /// Throwing there instead would convert a benign misconfiguration
+  /// into a crash, in a library whose purpose is to keep working when
+  /// time is unavailable.
+  ///
+  /// No upper bound beyond the inventory itself — a target exceeding
+  /// the promotable population simply yields a smaller quorum, the same
+  /// as one whose promotions have not been ranked yet.
   final int ntsQueryTarget;
 
   /// The maximum amount of time the engine will wait for a response from any
