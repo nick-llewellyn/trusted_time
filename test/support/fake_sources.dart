@@ -252,15 +252,19 @@ class FailingSource implements TimeSource {
 ///
 /// Returns the genuine class rather than a fake, and deliberately so.
 /// `SyncEngine` decides which pending queries could still lift a cycle
-/// above degraded by asking whether a source is an [NtsSource] whose
-/// trust mode can reach a verified backend. The test is on type, not
-/// provenance — a genuine [NtsSource] handed in through
-/// `additionalSources` is counted, which is the case several of these
-/// tests exercise. What is never counted is any *other* [TimeSource]
-/// implementation, however it stamps its samples, so a wrapper or a
-/// stub around this one would leave the path untested.
-/// [NtsSource.debugQueryOverride] makes the real class reachable
+/// above degraded by asking each source, through [VerifiedCapable],
+/// whether it could produce a verified sample. What is under test here
+/// is [NtsSource]'s own answer — the mode-by-mode reasoning in
+/// [NtsSource.canProduceVerified] — so a stub declaring the interface
+/// would assert the mapping rather than exercise it, and a wrapper
+/// around this one would answer for it. [TierSource] covers the custom
+/// implementation opting in; only the real class covers the derivation
+/// from a trust mode. [NtsSource.debugQueryOverride] makes it reachable
 /// without touching the FFI surface.
+///
+/// Provenance is not consulted either way, so a genuine [NtsSource]
+/// handed in through `additionalSources` is counted — the case several
+/// of these tests exercise.
 ///
 /// [gate] is awaited before the sample is produced, so a test can order
 /// this source's reply against the others without a wall-clock delay —
