@@ -151,22 +151,29 @@ class _WarmRecordingNtpSource extends _FakeNtpSource implements Warmable {
   Future<void> warm() async => _warmed.add(id);
 }
 
-/// A [_FakeNtpSource] that answers, but only after [delay].
+/// A [_FakeNtpSource] that answers only once [release] is called.
 ///
 /// Distinct from [_HangingNtpSource]: this host *does* work, it is
 /// merely slower than the quorum it is racing. Under early exit that is
 /// the difference between a sample the cycle uses and one it discards.
-class _LateNtpSource implements TimeSource {
-  _LateNtpSource(String host, this.delay) : id = '${TimeSource.prefixNtp}$host';
+///
+/// Gated rather than delayed so the ordering is a fact about the test
+/// and not about the worker it runs on: a fixed delay only outlasts the
+/// quorum while nothing preempts the cycle, and a paused isolate turns
+/// "answers late" into "answered already".
+class _GatedNtpSource implements TimeSource {
+  _GatedNtpSource(String host) : id = '${TimeSource.prefixNtp}$host';
   @override
   final String id;
   @override
   final String groupId = 'as1';
-  final Duration delay;
+  final _gate = Completer<void>();
+
+  void release() => _gate.complete();
 
   @override
   Future<TimeSample> getTime() async {
-    await Future<void>.delayed(delay);
+    await _gate.future;
     return TimeSample(
       interval: TimeInterval(startMs: 1000, endMs: 1020),
       sourceId: id,
@@ -1373,12 +1380,10 @@ void main() {
             leapPolicy: LeapPolicy.documentedStepping,
           ),
       ];
+      final straggler = _GatedNtpSource('late.test');
       final sources = <TimeSource>[
         for (final host in hosts)
-          if (host == 'late.test')
-            _LateNtpSource(host, const Duration(milliseconds: 400))
-          else
-            _FakeNtpSource(host),
+          if (host == 'late.test') straggler else _FakeNtpSource(host),
       ];
       final engine = SyncEngine(
         config: TrustedTimeConfig(
@@ -1402,7 +1407,8 @@ void main() {
 
       // Let the straggler land. Its sample is discarded; the fact that
       // it answered is not.
-      await Future<void>.delayed(const Duration(milliseconds: 600));
+      straggler.release();
+      await pumpEventQueue();
       expect(tracker.hasSucceeded('${TimeSource.prefixNtp}late.test'), isTrue);
     });
   });

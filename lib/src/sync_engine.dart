@@ -445,11 +445,22 @@ final class SyncEngine {
   /// Rotating the tier does not make an anchor's authentication level
   /// cycle-dependent, which was the objection the pass-through rested
   /// on alongside the since-invalidated "there are few of them". The
-  /// fixed members are queried every cycle, so a cycle's *access* to a
-  /// verified truth box never turns on where the walk is. What varies is
-  /// the box's membership above them, and with it its width — a
-  /// precision property, not a trust one, since every member is
-  /// [NtsAuthLevel.verified] whichever cycle it landed in.
+  /// fixed members are queried every cycle, so a cycle's *access* to
+  /// whatever trust the configuration affords never turns on where the
+  /// walk is. What varies is the box's membership above them, and with
+  /// it its width — a precision property, not a trust one.
+  ///
+  /// The partition is trust-neutral, not trust-conferring. Whether a
+  /// member classifies [NtsAuthLevel.verified] is decided per query by
+  /// the trust backend the NTS-KE handshake resolved, via
+  /// [authLevelForTrustBackend]: the bundled and custom root paths
+  /// reach `verified`, while [TrustedTimeConfig.usePlatformTrust] —
+  /// and any [NtsSource] a caller constructs directly, whose default
+  /// is `platformWithFallback` — classifies [NtsAuthLevel.none]
+  /// however the partition placed the host. So a configuration that
+  /// cannot form a verified box could not form one before this change
+  /// either; what the invariant above claims is that the walk never
+  /// narrows the trust a configuration does afford.
   ///
   /// Classification is the ceiling, not the count: [sync] drops the
   /// ids still inside their `_blacklistUntil` cooldown, then re-admits
