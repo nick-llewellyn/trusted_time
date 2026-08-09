@@ -808,7 +808,7 @@ void main() {
         maxLatency: const Duration(seconds: 30),
       );
 
-      // The first cycle fails the id; the five after it are what the
+      // The first cycle fails the id; the four after it are what the
       // starvation guard counts before re-admitting both instances.
       for (var i = 0; i < 5; i++) {
         await syncWithoutWaiting(engine);
