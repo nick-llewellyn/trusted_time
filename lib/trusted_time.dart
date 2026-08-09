@@ -119,13 +119,16 @@ export 'src/domain/time_interval.dart' show TimeInterval;
 // additionalSources field on TrustedTimeConfig. Warmable is its
 // optional companion for sources whose one-time setup (NTS-KE
 // handshake, cache priming, etc.) must complete outside the
-// per-query latency budget. Exporting both closes the gap where
+// per-query latency budget; VerifiedCapable is the one for sources
+// whose samples can reach the verified tier, which a cycle needs
+// declared up front to know whether waiting could still lift it
+// above degraded. Exporting them closes the gap where
 // additionalSources was part of the public surface but the types
 // it required were only reachable via src/. Plain // comment
 // rather than /// because this rationale is for source readers
 // of trusted_time.dart, not for generated dartdoc consumers; the
 // types' own /// docstrings carry the API documentation.
-export 'src/domain/time_source.dart' show TimeSource, Warmable;
+export 'src/domain/time_source.dart' show TimeSource, VerifiedCapable, Warmable;
 
 /// The primary gateway for high-integrity time synchronization and retrieval.
 ///

@@ -97,8 +97,10 @@ void main() {
     test(
       'verified Tier 1 truth box assesses as synchronized and secure',
       () async {
-        // Two verified NTS samples overlap -> a Tier 1 truth box -> the
-        // anchor is verified, so the secure contract is satisfied.
+        // Three verified NTS samples overlap -> a Tier 1 truth box ->
+        // the anchor is verified, so the secure contract is satisfied.
+        // Three is the truth-box validity floor; two agreeing verified
+        // samples degrade.
         await initWith([
           TierSource(
             id: 'nts:v1',
@@ -113,6 +115,14 @@ void main() {
             groupId: 'g2',
             startMs: 1005,
             endMs: 1025,
+            authLevel: NtsAuthLevel.verified,
+            trustBackend: TrustBackend.webpkiRoots,
+          ),
+          TierSource(
+            id: 'nts:v3',
+            groupId: 'g3',
+            startMs: 1002,
+            endMs: 1022,
             authLevel: NtsAuthLevel.verified,
             trustBackend: TrustBackend.webpkiRoots,
           ),
@@ -318,12 +328,24 @@ void main() {
           authLevel: NtsAuthLevel.verified,
           trustBackend: TrustBackend.webpkiRoots,
         );
-        await initWith([nts1, nts2]);
+        // Three verified hosts: the truth-box validity floor, so the
+        // pre-flap assessment is secure for the reason this test means
+        // rather than sitting one host under the floor.
+        final nts3 = _FlappableTierSource(
+          id: 'nts:v3',
+          groupId: 'g3',
+          startMs: 1002,
+          endMs: 1022,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: TrustBackend.webpkiRoots,
+        );
+        await initWith([nts1, nts2, nts3]);
         expect(TrustedTime.getAssessment().isSecure, isTrue);
 
         // Every NTS server becomes unreachable; the resync cycle fails.
         nts1.failing = true;
         nts2.failing = true;
+        nts3.failing = true;
         await TrustedTime.forceResync();
 
         // Trust was invalidated by forceResync and the cycle failed, so
@@ -358,9 +380,18 @@ void main() {
             authLevel: NtsAuthLevel.verified,
             trustBackend: TrustBackend.webpkiRoots,
           );
+          final nts3 = _FlappableTierSource(
+            id: 'nts:v3',
+            groupId: 'g5',
+            startMs: 1002,
+            endMs: 1022,
+            authLevel: NtsAuthLevel.verified,
+            trustBackend: TrustBackend.webpkiRoots,
+          );
           await initWith([
             nts1,
             nts2,
+            nts3,
             TierSource(id: 'ntp:a', groupId: 'g3', startMs: 1000, endMs: 1020),
             TierSource(id: 'ntp:b', groupId: 'g4', startMs: 1005, endMs: 1025),
           ]);
@@ -370,6 +401,7 @@ void main() {
           // as a degraded consensus and replaces the verified anchor.
           nts1.failing = true;
           nts2.failing = true;
+          nts3.failing = true;
           await TrustedTime.forceResync();
 
           final assessment = TrustedTime.getAssessment();

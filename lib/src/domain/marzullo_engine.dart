@@ -182,7 +182,15 @@ final class MarzulloEngine {
     this.minQuorumRatio = 0.6,
     this.maxAllowedUncertaintyMs = 10000,
     this.minGroupCount = 2,
-  });
+    this.minVerifiedQuorum = 3,
+  }) : assert(
+         minVerifiedQuorum >= 2,
+         'minVerifiedQuorum must be at least 2: _resolveCore refuses any '
+         'population below that, so a lower floor would let the '
+         'truth-box pass admit a subset the reduction then rejects, '
+         'degrading the cycle for a reason the floor claims to have '
+         'cleared.',
+       );
 
   /// The minimum percentage of responding sources that must participate in
   /// the consensus for it to be considered valid.
@@ -195,6 +203,36 @@ final class MarzulloEngine {
   /// Minimum number of distinct administrative groups required to achieve
   /// high-confidence status.
   final int minGroupCount;
+
+  /// How many distinct verified hosts the truth-box pass requires.
+  ///
+  /// Counted over usable samples collapsed by `sourceId`, matching what
+  /// [_resolveCore]'s sweep counts: repeated samples from one host are
+  /// one authority on both sides of the check, so a chatty or
+  /// duplicated host cannot fill a slot it did not earn.
+  ///
+  /// Below this the verified subset does not get a Marzullo reduction at
+  /// all and [resolve] degrades, whatever the subset's internal
+  /// agreement. Three is the first population size at which the box
+  /// survives one bad host: at a [minQuorumRatio] of 0.6 a 3-sample
+  /// population needs an overlap of 2, so an outlier can be shed. At 2
+  /// the required overlap is also 2, so both must agree — that detects
+  /// a liar rather than outvoting one, which is not what the truth box
+  /// is for.
+  ///
+  /// Strictly a *validity* floor over responders. The number of hosts a
+  /// cycle asks is [TrustedTimeConfig.ntsQueryTarget], which sits above
+  /// this so failures have headroom.
+  ///
+  /// Deliberately narrower than [_resolveCore]'s own floor of 2, which
+  /// is left alone because the degraded fallback reduces over every
+  /// sample through the same method and must keep the generic minimum.
+  /// [TrustedTimeConfig.minimumQuorum] is likewise untouched. Lowering
+  /// this below that generic minimum is rejected by the constructor:
+  /// the pass would admit a subset the reduction then refuses, so the
+  /// cycle degrades for a reason this floor claims to have cleared.
+  /// See ADR 0007's 2026-08-02 postscript.
+  final int minVerifiedQuorum;
 
   /// Orchestrates tier-aware consensus resolution across a set of samples.
   ///
@@ -213,9 +251,10 @@ final class MarzulloEngine {
   ///    relocate the anchor (design doc section 4.3). The result reports
   ///    `authLevel == NtsAuthLevel.verified`.
   ///
-  /// If the verified samples cannot form a truth box — too few are present,
-  /// or those present are too divergent to reach a Marzullo quorum (i.e.
-  /// `_resolveCore` over the verified subset returns `null`) — the cycle is
+  /// If the verified samples cannot form a truth box — fewer than
+  /// [minVerifiedQuorum] are usable, or those present are too divergent
+  /// to reach a Marzullo quorum (i.e. `_resolveCore` over the verified
+  /// subset returns `null`) — the cycle is
   /// *degraded*. The engine falls back to a legacy single-tier Marzullo over
   /// all [samples], forces
   /// `authLevel == NtsAuthLevel.none`, and sets
@@ -227,7 +266,11 @@ final class MarzulloEngine {
         .where((s) => _tierOf(s) == _Tier.verified)
         .toList();
 
-    final truthBox = _resolveCore(verified);
+    final usableVerified = usableVerifiedHostIds(samples).length;
+
+    final truthBox = usableVerified < minVerifiedQuorum
+        ? null
+        : _resolveCore(verified);
     if (truthBox == null || truthBox.interval == null) {
       // No Tier 1 truth box this cycle. Fall back to a legacy single-tier
       // reduction over every sample, flagged as degraded with the auth
@@ -270,6 +313,43 @@ final class MarzulloEngine {
     );
   }
 
+  /// Which distinct verified hosts in [samples] could fill a truth-box
+  /// slot — the set whose size [minVerifiedQuorum] is checked against.
+  ///
+  /// The floor counts responders, not samples. Two conditions have to
+  /// line up for that to be the same number the reduction sees:
+  /// [_isUsable], so a verified host that answered with an unusable
+  /// uncertainty does not fill a slot; and a collapse by `sourceId`,
+  /// because [_resolveCore]'s sweep counts a repeated source once. Count
+  /// samples instead and three from two hosts clears a floor written to
+  /// mean three hosts — the second then carries a vote it was never
+  /// meant to have, since at the default ratio two unique authorities
+  /// are enough to close the box.
+  ///
+  /// Public, and the ids rather than the count, because `SyncEngine`
+  /// needs the same collapse to decide whether a degraded cycle could
+  /// still reach the floor before it holds the early exit for an
+  /// outstanding verified query. That question is which *hosts* remain
+  /// reachable, so it has to subtract the ones already banked here from
+  /// the ones still in flight; a bare count cannot. Two independent
+  /// collapses would let the hold wait on a floor [resolve] has already
+  /// ruled out.
+  Set<String> usableVerifiedHostIds(List<TimeSample> samples) => samples
+      .where((s) => _tierOf(s) == _Tier.verified)
+      .where(_isUsable)
+      .map((s) => s.sourceId)
+      .toSet();
+
+  /// Whether [sample] can enter a reduction at all.
+  ///
+  /// A negative uncertainty indicates a clock error, and one above
+  /// [maxAllowedUncertaintyMs] is a noisy source that would bloat the
+  /// consensus. Shared with [resolve]'s [minVerifiedQuorum] check so the
+  /// floor counts the same samples the reduction would.
+  bool _isUsable(TimeSample sample) =>
+      sample.uncertaintyMs >= 0 &&
+      sample.uncertaintyMs <= maxAllowedUncertaintyMs;
+
   /// Single-tier Marzullo reduction over [samples].
   ///
   /// Returns a [ConsensusResult] if a quorum is achieved that satisfies the
@@ -280,18 +360,23 @@ final class MarzulloEngine {
   ConsensusResult? _resolveCore(List<TimeSample> samples) {
     // Filter out invalid samples (negative uncertainty indicates clock errors)
     // and noisy sources with excessive uncertainty.
-    final validSamples = samples
-        .where(
-          (s) =>
-              s.uncertaintyMs >= 0 &&
-              s.uncertaintyMs <= maxAllowedUncertaintyMs,
-        )
-        .toList();
+    final validSamples = samples.where(_isUsable).toList();
 
-    final totalSources = validSamples.length;
+    // Distinct responders, not samples: the sweep below optimizes on
+    // `activeSourceCounts.length`, so a host that answered twice can
+    // contribute at most one to `bestUniqueOverlap`. A denominator over
+    // samples therefore raises the bar with each duplicate while the
+    // numerator cannot follow — two agreeing hosts plus a repeated
+    // outlier need 3 of a possible 3, and the box that a ratio of 0.6
+    // exists to admit is rejected for a vote nothing could have cast.
+    // Collapsing both sides keeps the ratio a statement about how many
+    // authorities agreed out of how many answered.
+    final totalSources = validSamples.map((s) => s.sourceId).toSet().length;
     final requiredQuorum = (totalSources * minQuorumRatio).ceil();
 
-    // Minimum 2 samples required for any consensus (avoids single-source trust)
+    // Minimum 2 sources required for any consensus (avoids single-source
+    // trust — including the single-source case dressed up as a
+    // population by one host answering repeatedly).
     if (totalSources < 2 || requiredQuorum < 2) return null;
 
     final endpoints = <_Endpoint>[];
