@@ -452,15 +452,20 @@ final class SyncEngine {
   ///
   /// The partition is trust-neutral, not trust-conferring. Whether a
   /// member classifies [NtsAuthLevel.verified] is decided per query by
-  /// the trust backend the NTS-KE handshake resolved, via
-  /// [authLevelForTrustBackend]: the bundled and custom root paths
-  /// reach `verified`, while [TrustedTimeConfig.usePlatformTrust] —
-  /// and any [NtsSource] a caller constructs directly, whose default
-  /// is `platformWithFallback` — classifies [NtsAuthLevel.none]
-  /// however the partition placed the host. So a configuration that
-  /// cannot form a verified box could not form one before this change
-  /// either; what the invariant above claims is that the walk never
-  /// narrows the trust a configuration does afford.
+  /// the trust backend the NTS-KE handshake actually resolved, via
+  /// [authLevelForTrustBackend] — not by the mode requested and not by
+  /// the tier the host landed in. The bundled and custom root paths
+  /// reach `verified`; [TrustedTimeConfig.usePlatformTrust] resolves
+  /// `platformOnly`, which refuses the bundled fallback and so is the
+  /// one mode that classifies [NtsAuthLevel.none] whatever happens. An
+  /// [NtsSource] a caller constructs directly defaults to
+  /// `platformWithFallback` and straddles the two: `none` where the
+  /// native verifier answers, `verified` where it is unavailable and
+  /// the handshake falls back to bundled roots. Either way the
+  /// partition does not enter into it. So a configuration that cannot
+  /// form a verified box could not form one before this change either;
+  /// what the invariant above claims is that the walk never narrows
+  /// the trust a configuration does afford.
   ///
   /// Classification is the ceiling, not the count: [sync] drops the
   /// ids still inside their `_blacklistUntil` cooldown, then re-admits
