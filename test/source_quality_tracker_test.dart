@@ -503,6 +503,7 @@ void main() {
           lastProbedUtcMs: 1700000000000,
           stratum: 2,
           vantageStale: true,
+          succeededOnce: true,
         );
         final decoded = SourceQualityStats.fromJson(stats.toJson());
         expect(decoded, isNotNull);
@@ -512,8 +513,169 @@ void main() {
         expect(decoded.lastProbedUtcMs, equals(1700000000000));
         expect(decoded.stratum, equals(2));
         expect(decoded.vantageStale, isTrue);
+        expect(decoded.succeededOnce, isTrue);
+      });
+    });
+
+    // The NTS promotion step's admission test. A positive successRate
+    // cannot answer "has this host ever worked" -- it starts at 1.0 and
+    // only decays -- so the flag is tracked separately.
+    group('hasSucceeded', () {
+      test('an unknown source has not succeeded', () {
+        expect(SourceQualityTracker().hasSucceeded('nts:never.test'), isFalse);
       });
 
+      test('a failed probe does not set it, and leaves a positive rate', () {
+        final tracker = SourceQualityTracker()..recordFailure('nts:down.test');
+        expect(tracker.hasSucceeded('nts:down.test'), isFalse);
+        // Why the flag exists: the rate alone would read as healthy.
+        expect(
+          tracker.snapshot()['nts:down.test']!.successRate,
+          greaterThan(0.0),
+        );
+      });
+
+      test('a successful probe latches it', () {
+        final tracker = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 10);
+        expect(tracker.hasSucceeded('nts:up.test'), isTrue);
+      });
+
+      test('later failures do not clear it', () {
+        // "Has answered once" is a different question from "is
+        // answering now"; the decaying rate covers the second.
+        final tracker = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:flaky.test', delayMs: 10)
+          ..recordFailure('nts:flaky.test')
+          ..recordFailure('nts:flaky.test');
+        expect(tracker.hasSucceeded('nts:flaky.test'), isTrue);
+      });
+
+      test('it survives a snapshot/restore round trip', () {
+        // Promotion runs on the first cycle after a restart, so the
+        // answer has to outlive the process.
+        final tracker = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 10);
+        final restored = SourceQualityTracker()..restore(tracker.snapshot());
+        expect(restored.hasSucceeded('nts:up.test'), isTrue);
+      });
+
+      test('a vantage change does not clear it', () {
+        // Unlike lastProbedUtcMs, which reports null so the walk
+        // restarts. The flag records that the host answered somewhere,
+        // which is evidence it exists and speaks the protocol.
+        final tracker = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 10)
+          ..markVantageStale();
+        expect(tracker.lastProbedUtcMs('nts:up.test'), isNull);
+        expect(tracker.hasSucceeded('nts:up.test'), isTrue);
+      });
+    });
+
+    group('markSucceeded', () {
+      test('latches without recording a measurement', () {
+        // The separation the engine depends on: a blocking query's
+        // metrics are folded in at the end of the cycle, but the cycle
+        // may exit early and drop the sample. The latch has to survive
+        // that, so it cannot be carried by the metric path.
+        final tracker = SourceQualityTracker(wallClock: () => 1000)
+          ..markSucceeded('nts:up.test');
+        expect(tracker.hasSucceeded('nts:up.test'), isTrue);
+        final stats = tracker.snapshot()['nts:up.test']!;
+        expect(stats.ewmaRttMs, isNull);
+        expect(stats.ewmaJitterMs, isNull);
+      });
+
+      test('stamps recency so the entry is restorable', () {
+        // lastProbedUtcMs is what snapshot() prunes by and what
+        // restore() ages out. Left at the epoch default the latch-only
+        // entry -- the one the early-exit path creates, and the only
+        // record that a late-answering host works at all -- would be
+        // discarded on the next start as a month stale, so the flag
+        // would never survive the restart its dartdoc promises.
+        const now = 1700000000000;
+        final first = SourceQualityTracker(wallClock: () => now)
+          ..markSucceeded('nts:up.test');
+        final restored = SourceQualityTracker(wallClock: () => now)
+          ..restore(first.snapshot());
+        expect(restored.hasSucceeded('nts:up.test'), isTrue);
+      });
+
+      test('advances the explorer cursor', () {
+        // A host that answered was contacted, so the walk has no reason
+        // to re-offer it at the unprobed head ahead of hosts nothing is
+        // known about.
+        final tracker = SourceQualityTracker(wallClock: () => 1000)
+          ..markSucceeded('nts:up.test');
+        expect(tracker.lastProbedUtcMs('nts:up.test'), 1000);
+      });
+
+      test('does not move the starvation cursor', () {
+        // Rotation is driven by recorded queries, and the latch is not
+        // one — it is a fact about the host, asserted alongside
+        // whatever bookkeeping the cycle does or does not perform.
+        // Were it to touch the cursor, a latch would silently defer the
+        // starvation rescue for the host it was asserting is good.
+        final latched = SourceQualityTracker()..markSucceeded('nts:up.test');
+        final probed = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 10);
+
+        // The probe resets the cursor; the latch leaves the host where
+        // it was, which for an otherwise-unknown host is never-queried.
+        expect(probed.isStarved('nts:up.test'), isFalse);
+        expect(latched.isStarved('nts:up.test'), isTrue);
+      });
+
+      test('applies no EWMA when paired with recordProbe', () {
+        // The engine calls both on a successful blocking query, so the
+        // latch must not double-count. Compared against a tracker that
+        // took the probe alone.
+        final both = SourceQualityTracker()
+          ..markSucceeded('nts:up.test')
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 40);
+        final probeOnly = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 40);
+        expect(
+          both.snapshot()['nts:up.test']!.ewmaRttMs,
+          probeOnly.snapshot()['nts:up.test']!.ewmaRttMs,
+        );
+        expect(
+          both.snapshot()['nts:up.test']!.successRate,
+          probeOnly.snapshot()['nts:up.test']!.successRate,
+        );
+      });
+
+      test('is idempotent', () {
+        final tracker = SourceQualityTracker()
+          ..markSucceeded('nts:up.test')
+          ..markSucceeded('nts:up.test');
+        expect(tracker.hasSucceeded('nts:up.test'), isTrue);
+      });
+    });
+
+    group('hasBeenProbed', () {
+      test('an unknown source has not been probed', () {
+        expect(SourceQualityTracker().hasBeenProbed('nts:never.test'), isFalse);
+      });
+
+      test('a failure counts as having been probed', () {
+        // The distinction the NTS cold-start fill turns on: knowing
+        // nothing about a host is not the same as knowing it failed.
+        final tracker = SourceQualityTracker()..recordFailure('nts:down.test');
+        expect(tracker.hasBeenProbed('nts:down.test'), isTrue);
+        expect(tracker.hasSucceeded('nts:down.test'), isFalse);
+      });
+
+      test('a vantage change does not clear it', () {
+        final tracker = SourceQualityTracker()
+          ..recordFailure('nts:down.test')
+          ..markVantageStale();
+        expect(tracker.lastProbedUtcMs('nts:down.test'), isNull);
+        expect(tracker.hasBeenProbed('nts:down.test'), isTrue);
+      });
+    });
+
+    group('SourceQualityStats JSON absent-field handling', () {
       test('round-trips with optional fields absent', () {
         const stats = SourceQualityStats(
           successRate: 1.0,
@@ -536,6 +698,12 @@ void main() {
         expect(decoded.ewmaJitterMs, isNull);
         expect(decoded.stratum, isNull);
         expect(decoded.vantageStale, isFalse);
+        expect(
+          json,
+          isNot(contains('succeededOnce')),
+          reason: 'a pre-upgrade payload has no key and must decode false',
+        );
+        expect(decoded.succeededOnce, isFalse);
       });
 
       test('fromJson rejects malformed entries and sanitizes fields', () {
@@ -555,12 +723,14 @@ void main() {
           'ewmaRttMs': 'fast', // Wrong type → dropped.
           'stratum': 99, // Out of range → dropped.
           'vantageStale': 'yes', // Wrong type → not stale.
+          'succeededOnce': 'sure', // Wrong type → never succeeded.
         });
         expect(sanitized, isNotNull);
         expect(sanitized!.successRate, equals(1.0));
         expect(sanitized.ewmaRttMs, isNull);
         expect(sanitized.stratum, isNull);
         expect(sanitized.vantageStale, isFalse);
+        expect(sanitized.succeededOnce, isFalse);
       });
     });
   });
