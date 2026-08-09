@@ -125,9 +125,11 @@ Notes on previously-listed divergences:
   cycle) is no longer a divergence. `_selectCycleHosts` partitions both
   curated inventories, pinning the 3 anycast NTS hosts as fixed members
   and promoting up to `TrustedTimeConfig.ntsQueryTarget` from the
-  unicast ranking (or the walk order while that ranking is empty), with
-  the rest on a rotating explorer walk; `warmAllSources()` is scoped to
-  the cycle's hosts; and `MarzulloEngine.minVerifiedQuorum` floors the
+  unicast ranking, filling any shortfall the ranking leaves — whether
+  it is empty or merely short — from the never-probed head of the
+  walk, with the rest on a rotating explorer walk; `warmAllSources()`
+  is scoped to the cycle's hosts; and
+  `MarzulloEngine.minVerifiedQuorum` floors the
   truth-box pass at the 3 responders the postscript requires, leaving
   `_resolveCore`'s generic floor of 2 for the degraded fallback.
   Implemented in `trusted_time-1ww` (decision: `trusted_time-ky3`).

@@ -307,8 +307,9 @@ final class SourceQualityTracker {
     markSucceeded(sourceId);
   }
 
-  /// Latches [SourceQualityStats.succeededOnce] for [sourceId] without
-  /// touching any other metric.
+  /// Latches [SourceQualityStats.succeededOnce] for [sourceId],
+  /// stamping [SourceQualityStats.lastProbedUtcMs] with it and leaving
+  /// every measured metric alone.
   ///
   /// Separated from [recordProbe] because the two answer to different
   /// events. The metrics are cycle bookkeeping: a blocking query's are

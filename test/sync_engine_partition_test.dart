@@ -687,6 +687,29 @@ void main() {
       expect(roles.blocking, hasLength(3));
     });
 
+    test('a partial ranking is topped up from the walk', () {
+      // Between the two cases the other tests pin: the ranking is
+      // neither empty nor deep enough. One qualifying host takes one of
+      // three open slots and the fill has to close the remaining two --
+      // a fill keyed on "no ranked host qualified" rather than on the
+      // shortfall would leave the cycle two members short of its target
+      // for as long as the ranking stayed thin, which on a mostly-cold
+      // install is every cycle.
+      final tracker = SourceQualityTracker();
+      final fake = _fakeNtsInventory(anycast: 2, unicast: 8, queryTarget: 5);
+      tracker.recordProbe(
+        sourceId: '${TimeSource.prefixNts}ntsuni5.test',
+        delayMs: 5,
+      );
+      final roles = _engine(
+        config: fake.config,
+        tracker: tracker,
+      ).selectCycleRolesForTesting();
+      expect(roles.blocking, contains('${TimeSource.prefixNts}ntsuni5.test'));
+      expect(roles.blocking, hasLength(5));
+      expect(roles.blocking.intersection(roles.explorers), isEmpty);
+    });
+
     test('cold start fills from the head of the walk', () {
       // With no ranking at all the target is still met, and from the
       // prefix of a traversal the cycle computes anyway rather than a
