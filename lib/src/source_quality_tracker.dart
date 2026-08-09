@@ -332,6 +332,15 @@ final class SourceQualityTracker {
   /// evidence never survives a restart. The stamp is advisory
   /// bookkeeping, not a measurement: no EWMA is touched.
   ///
+  /// That makes the latch *persistable*, not *promptly persisted*. The
+  /// caller snapshots the tracker just after its cycle resolves, so a
+  /// latch set by an answer arriving after an early exit misses that
+  /// write and is durable only from the next snapshot. This is the
+  /// unawaited tail's property rather than the latch's — an explorer
+  /// probe's metrics land the same way — and the cost is the same
+  /// either way: a restart in the gap leaves the host an explorer for
+  /// another cycle, which is where it would be regardless.
+  ///
   /// The stamp also advances [lastProbedUtcMs], and that is the
   /// intended reading: the host was contacted, whatever the cycle did
   /// with the answer, so re-offering it at the head of the explorer

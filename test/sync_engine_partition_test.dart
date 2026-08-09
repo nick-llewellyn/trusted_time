@@ -915,6 +915,27 @@ void main() {
       )..armExplorerBoost(4);
       expect(engine.effectiveNtsExplorerBudget, wide);
     });
+
+    test('a negative budget is a quorum-only cycle, not a throw', () {
+      // partitionInventory already reads a non-positive budget as
+      // quorum-only, but the NTS path takes its own trim after the
+      // promotion fill -- an untrimmed negative reaches take() and
+      // throws, so a cycle that could have run on its fixed members
+      // fails outright. Asserted on both tiers: the NTP one degrades
+      // today and pins that it keeps doing so.
+      final nts = SyncEngine(
+        config: _liveBothTiers,
+        clock: FakeMonotonicClock(),
+        explorerShuffle: const ExplorerShuffle(99),
+        ntsExplorerBudget: -1,
+      );
+      expect(nts.effectiveNtsExplorerBudget, 0);
+      expect(nts.selectCycleHostsForTesting, returnsNormally);
+
+      final ntp = _engine(budget: -1);
+      expect(ntp.effectiveExplorerBudget, 0);
+      expect(ntp.selectCycleHostsForTesting(), hasLength(10));
+    });
   });
 
   // An NTS warm is TCP + TLS + key exchange, so warming hosts the cycle

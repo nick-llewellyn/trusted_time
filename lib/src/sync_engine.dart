@@ -60,6 +60,12 @@ final class SyncEngine {
   /// separate because an NTS probe costs a TLS handshake an NTP probe
   /// does not — one shuffle orders both walks, but neither budget is
   /// derivable from the other.
+  ///
+  /// Both are clamped at zero, which [partitionInventory] reads as a
+  /// quorum-only cycle. Negative is meaningless rather than erroneous —
+  /// there is no width below "query the fixed members and stop" — so it
+  /// degrades to that instead of throwing from inside selection, where
+  /// a cycle that could have run on its quorum would fail entirely.
   SyncEngine({
     required TrustedTimeConfig config,
     required MonotonicClock clock,
@@ -75,11 +81,15 @@ final class SyncEngine {
        _cache = cache,
        _qualityTracker = qualityTracker ?? SourceQualityTracker(),
        _explorerShuffle = explorerShuffle ?? ExplorerShuffle.generate(),
-       _explorerBudget =
-           explorerBudget ?? defaultExplorerBudgetFor(defaultTargetPlatform),
-       _ntsExplorerBudget =
-           ntsExplorerBudget ??
-           defaultNtsExplorerBudgetFor(defaultTargetPlatform),
+       _explorerBudget = max(
+         0,
+         explorerBudget ?? defaultExplorerBudgetFor(defaultTargetPlatform),
+       ),
+       _ntsExplorerBudget = max(
+         0,
+         ntsExplorerBudget ??
+             defaultNtsExplorerBudgetFor(defaultTargetPlatform),
+       ),
        _engine = MarzulloEngine(
          minQuorumRatio: config.minQuorumRatio,
          maxAllowedUncertaintyMs: config.maxAllowedUncertaintyMs,
