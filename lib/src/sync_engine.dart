@@ -898,11 +898,19 @@ final class SyncEngine {
   /// under it. The barrier would then prime cookie jars for hosts the
   /// cycle is not querying and leave the ones it is cold — the reverse
   /// of what the barrier exists for.
+  ///
+  /// First-seen wins for a colliding id, matching the blocking path's
+  /// `healthyById` dedup and [_launchExplorerProbes]. An
+  /// `additionalSources` entry shadowing an inventory host is queried
+  /// once; warming both instances would prime a jar nothing then reads
+  /// and, for NTS, pay a second NTS-KE handshake for it — inside the
+  /// barrier, where the cost is start latency.
   Future<void> _warmHosts(Set<String> wanted) async {
-    final warmables = _sources
-        .where((s) => wanted.contains(s.id))
-        .whereType<Warmable>()
-        .toList(growable: false);
+    final byId = <String, TimeSource>{};
+    for (final s in _sources) {
+      if (wanted.contains(s.id)) byId.putIfAbsent(s.id, () => s);
+    }
+    final warmables = byId.values.whereType<Warmable>().toList(growable: false);
     if (warmables.isEmpty) return;
     await Future.wait(
       warmables.map((s) async {

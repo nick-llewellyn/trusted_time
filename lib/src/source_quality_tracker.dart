@@ -324,10 +324,33 @@ final class SourceQualityTracker {
   /// inverts the admission rule: the promotion filter would exclude
   /// exactly the reachable hosts it exists to find.
   ///
+  /// Stamps [SourceQualityStats.lastProbedUtcMs] alongside the latch,
+  /// since that field is what [snapshot] prunes by and what [restore]
+  /// ages out. An entry left at the epoch default would be discarded on
+  /// the next start as a month stale, so the one path that can create
+  /// an entry without any metric would also be the one path whose
+  /// evidence never survives a restart. The stamp is advisory
+  /// bookkeeping, not a measurement: no EWMA is touched.
+  ///
+  /// The stamp also advances [lastProbedUtcMs], and that is the
+  /// intended reading: the host was contacted, whatever the cycle did
+  /// with the answer, so re-offering it at the head of the explorer
+  /// walk would spend exploration on a host already known to be up. A
+  /// vantage mark is left as it stands — clearing it is the metric
+  /// path's business, and until a metric arrives the source keeps
+  /// reporting a null cursor and so keeps its place at the head of the
+  /// re-sweep.
+  ///
+  /// The *starvation* cursor is untouched. That one counts queries the
+  /// cycle chose to make, and moving it would let a latch defer the
+  /// rescue for the host it is asserting is good.
+  ///
   /// Idempotent, and safe to call alongside [recordProbe] — the latch
   /// is a set-to-true, so no EWMA is applied twice.
   void markSucceeded(String sourceId) {
-    _stats.putIfAbsent(sourceId, _SourceStats.new).succeededOnce = true;
+    _stats.putIfAbsent(sourceId, _SourceStats.new)
+      ..succeededOnce = true
+      ..lastProbedUtcMs = _wallClock();
   }
 
   /// Records a failure for a source: the query cycle is noted so
@@ -497,11 +520,13 @@ final class SourceQualityTracker {
   /// Whether [sourceId] has ever been probed at all, successfully or
   /// not.
   ///
-  /// The complement of [hasSucceeded] over the tracker's population:
-  /// together they split a source three ways — never tried, tried and
-  /// failed, tried and answered. The NTS cold-start fill needs the
-  /// first of those on its own, since a host it knows nothing about is
-  /// a reasonable gamble where one it has already watched fail is not.
+  /// Weaker than [hasSucceeded], not its complement: a host that
+  /// answered returns true from both. Read together they split a source
+  /// three ways — never tried (neither), tried and failed (this one
+  /// alone), tried and answered (both). The NTS cold-start fill needs
+  /// the first of those on its own, since a host it knows nothing about
+  /// is a reasonable gamble where one it has already watched fail is
+  /// not.
   ///
   /// Unaffected by a vantage change, like [hasSucceeded] and unlike
   /// [lastProbedUtcMs]: the question is whether a measurement exists,

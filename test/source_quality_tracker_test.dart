@@ -578,9 +578,36 @@ void main() {
         // metrics are folded in at the end of the cycle, but the cycle
         // may exit early and drop the sample. The latch has to survive
         // that, so it cannot be carried by the metric path.
-        final tracker = SourceQualityTracker()..markSucceeded('nts:up.test');
+        final tracker = SourceQualityTracker(wallClock: () => 1000)
+          ..markSucceeded('nts:up.test');
         expect(tracker.hasSucceeded('nts:up.test'), isTrue);
-        expect(tracker.lastProbedUtcMs('nts:up.test'), 0);
+        final stats = tracker.snapshot()['nts:up.test']!;
+        expect(stats.ewmaRttMs, isNull);
+        expect(stats.ewmaJitterMs, isNull);
+      });
+
+      test('stamps recency so the entry is restorable', () {
+        // lastProbedUtcMs is what snapshot() prunes by and what
+        // restore() ages out. Left at the epoch default the latch-only
+        // entry -- the one the early-exit path creates, and the only
+        // record that a late-answering host works at all -- would be
+        // discarded on the next start as a month stale, so the flag
+        // would never survive the restart its dartdoc promises.
+        const now = 1700000000000;
+        final first = SourceQualityTracker(wallClock: () => now)
+          ..markSucceeded('nts:up.test');
+        final restored = SourceQualityTracker(wallClock: () => now)
+          ..restore(first.snapshot());
+        expect(restored.hasSucceeded('nts:up.test'), isTrue);
+      });
+
+      test('advances the explorer cursor', () {
+        // A host that answered was contacted, so the walk has no reason
+        // to re-offer it at the unprobed head ahead of hosts nothing is
+        // known about.
+        final tracker = SourceQualityTracker(wallClock: () => 1000)
+          ..markSucceeded('nts:up.test');
+        expect(tracker.lastProbedUtcMs('nts:up.test'), 1000);
       });
 
       test('does not move the starvation cursor', () {

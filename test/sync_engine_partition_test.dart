@@ -57,34 +57,22 @@ class _FakeNtsSource implements TimeSource {
   );
 }
 
-/// A [_FakeNtsSource] that records each [warm] call into a shared list.
-///
-/// The real cost this partition exists to avoid is the NTS-KE handshake
-/// itself, which is what [Warmable.warm] stands for; observing the call
-/// is the only way to assert the cost was not paid.
-class _WarmRecordingNtsSource extends _FakeNtsSource implements Warmable {
-  _WarmRecordingNtsSource(super.host, this._warmed);
-
-  final List<String> _warmed;
-
-  @override
-  Future<void> warm() async => _warmed.add(id);
-}
-
 /// Builds a fake NTS inventory of [anycast] fixed members plus
 /// [unicast] promotion/explorer candidates, with a matching source per
 /// host.
 ///
-/// Pass [warmLog] to get [Warmable] sources that append their id to it
-/// on each warm; otherwise the sources implement no warming at all, so
-/// a cycle's barrier is a no-op over them.
-///
 /// NTP is emptied so the assertions are about the NTS partition alone.
+///
+/// Not usable for warm assertions: the NTS seam substitutes the
+/// inventory but still builds a real [NtsSource] per entry, so each of
+/// these fakes *shadows* one rather than replacing it, and the engine's
+/// first-seen dedup resolves the id to the real source. Warm scoping is
+/// asserted over [_fakeNtpInventory], whose seam does suppress
+/// construction; the barrier keys off [Warmable], not off the prefix.
 ({TrustedTimeConfig config, List<TimeSource> sources}) _fakeNtsInventory({
   required int anycast,
   required int unicast,
   int? queryTarget,
-  List<String>? warmLog,
 }) {
   final entries = <NtsServerInfo>[
     for (var i = 0; i < anycast; i++)
@@ -102,13 +90,7 @@ class _WarmRecordingNtsSource extends _FakeNtsSource implements Warmable {
         leapPolicy: LeapPolicy.documentedStepping,
       ),
   ];
-  final sources = [
-    for (final e in entries)
-      if (warmLog == null)
-        _FakeNtsSource(e.host)
-      else
-        _WarmRecordingNtsSource(e.host, warmLog),
-  ];
+  final sources = [for (final e in entries) _FakeNtsSource(e.host)];
   return (
     config: TrustedTimeConfig(
       disableNtpForTesting: true,
@@ -222,11 +204,19 @@ class _CountingNtpSource implements TimeSource {
 ///
 /// Returned as a config with `disableNtpForTesting: true` so the
 /// override is the only inventory in play and no live [NtpSource] is
-/// ever constructed.
+/// ever constructed. That is also what makes this, rather than
+/// [_fakeNtsInventory], the seam warm assertions run on: these fakes
+/// are the only instances carrying their ids, so a warm count over
+/// them is exact.
+///
+/// Pass [warmLog] to get [Warmable] sources that append their id to it
+/// on each warm; otherwise the sources implement no warming at all, so
+/// a cycle's barrier is a no-op over them.
 ({TrustedTimeConfig config, List<TimeSource> sources}) _fakeInventory({
   required int anycast,
   required int unicast,
   bool hangingUnicast = false,
+  List<String>? warmLog,
 }) {
   final entries = <NtpServerInfo>[
     for (var i = 0; i < anycast; i++)
@@ -250,6 +240,8 @@ class _CountingNtpSource implements TimeSource {
     for (final e in entries)
       if (hangingUnicast && e.tier != TimeServerTier.anycast)
         _HangingNtpSource(e.host)
+      else if (warmLog != null)
+        _WarmRecordingNtpSource(e.host, warmLog)
       else
         _FakeNtpSource(e.host),
   ];
@@ -643,7 +635,7 @@ void main() {
       );
     });
 
-    test('a target below the promotable population still fills', () {
+    test('a target above the promotable population fills what it can', () {
       // Fewer unicast candidates than slots: the quorum is simply
       // smaller, the same as one whose promotions are unranked.
       final fake = _fakeNtsInventory(anycast: 1, unicast: 1, queryTarget: 5);
@@ -709,8 +701,14 @@ void main() {
       // failure -- routing around hasSucceeded on exactly the
       // population that rule exists for, and leaving the target's
       // failure headroom nominal for as long as the outage lasts.
+      //
+      // Three anycast members, matching the production floor: the
+      // claim is that declining costs width rather than trust, and a
+      // partition that shrank below the verified quorum would be a
+      // trust cost. With two the assertion would hold for a partition
+      // that necessarily degrades authentication.
       final tracker = SourceQualityTracker();
-      final fake = _fakeNtsInventory(anycast: 2, unicast: 8, queryTarget: 5);
+      final fake = _fakeNtsInventory(anycast: 3, unicast: 8, queryTarget: 5);
       for (var i = 0; i < 8; i++) {
         tracker.recordFailure('${TimeSource.prefixNts}ntsuni$i.test');
       }
@@ -721,7 +719,7 @@ void main() {
 
       // The fixed members alone. They still meet the verified floor, so
       // shrinking to them costs width rather than trust.
-      expect(roles.blocking, hasLength(2));
+      expect(roles.blocking, hasLength(TrustedTimeConfig.minNtsQueryTarget));
       expect(
         roles.blocking.every((id) => id.contains('ntsany')),
         isTrue,
@@ -928,13 +926,8 @@ void main() {
       // complete just as happily, so the narrowing has to be observed
       // where the cost is actually paid.
       final warmed = <String>[];
-      final fake = _fakeNtsInventory(
-        anycast: 2,
-        unicast: 20,
-        queryTarget: 3,
-        warmLog: warmed,
-      );
-      final engine = _engine(config: fake.config);
+      final fake = _fakeInventory(anycast: 2, unicast: 20, warmLog: warmed);
+      final engine = _engine(config: fake.config, budget: 4);
       final selected = engine.selectCycleHostsForTesting();
 
       expect(
@@ -963,44 +956,9 @@ void main() {
       // explorer probe landing in the tracker mid-span would re-rank
       // the inventory and leave the barrier priming hosts the cycle is
       // not querying.
-      // On the NTP inventory rather than the NTS one: the NTS seam
-      // builds a real NtsSource per entry, so an offline cycle cannot
-      // reach quorum there. The barrier is protocol-agnostic -- it
-      // keys off Warmable, not off the id prefix.
       final warmed = <String>[];
-      final entries = <NtpServerInfo>[
-        for (var i = 0; i < 2; i++)
-          NtpServerInfo(
-            host: 'any$i.test',
-            tier: TimeServerTier.anycast,
-            observedStratum: 1,
-            observedGroupId: 'as1',
-            leapPolicy: LeapPolicy.documentedStepping,
-          ),
-        for (var i = 0; i < 20; i++)
-          NtpServerInfo(
-            host: 'uni$i.test',
-            tier: TimeServerTier.unicastStratum1,
-            observedStratum: 1,
-            observedGroupId: 'as1',
-            leapPolicy: LeapPolicy.documentedStepping,
-          ),
-      ];
-      final sources = [
-        for (final e in entries) _WarmRecordingNtpSource(e.host, warmed),
-      ];
-      final engine = SyncEngine(
-        config: TrustedTimeConfig(
-          disableNts: true,
-          disableNtpForTesting: true,
-          ntpInventoryForTesting: entries,
-          additionalSources: sources,
-          minGroupCount: 1,
-        ),
-        clock: FakeMonotonicClock(),
-        explorerShuffle: const ExplorerShuffle(99),
-        explorerBudget: 4,
-      );
+      final fake = _fakeInventory(anycast: 2, unicast: 20, warmLog: warmed);
+      final engine = _engine(config: fake.config, budget: 4);
       final roles = engine.selectCycleRolesForTesting();
 
       await engine.sync();
@@ -1008,9 +966,37 @@ void main() {
       expect(warmed.toSet(), equals(roles.blocking.union(roles.explorers)));
       expect(
         warmed.toSet().length,
-        lessThan(sources.length),
+        lessThan(fake.sources.length),
         reason: 'the barrier must narrow, or this asserts nothing',
       );
+    });
+
+    test('a shadowed host is warmed once, not once per instance', () async {
+      // The blocking path and the explorer probes both resolve a
+      // colliding id first-seen, so a shadowing additionalSources entry
+      // is queried once. Warming both instances would prime a jar
+      // nothing reads and, for NTS, pay a second NTS-KE handshake for
+      // it -- inside the barrier, where the cost is start latency.
+      final warmed = <String>[];
+      final fake = _fakeInventory(anycast: 2, unicast: 20, warmLog: warmed);
+      final shadow = _WarmRecordingNtpSource('any0.test', warmed);
+      final engine = _engine(
+        config: fake.config.copyWith(
+          additionalSources: [...fake.sources, shadow],
+        ),
+        budget: 4,
+      );
+      final selected = engine.selectCycleHostsForTesting();
+      expect(
+        selected,
+        contains(shadow.id),
+        reason: 'the shadowed host must be in the cycle for this to bite',
+      );
+
+      await engine.warmAllSources();
+
+      expect(warmed, hasLength(warmed.toSet().length));
+      expect(warmed.where((id) => id == shadow.id), hasLength(1));
     });
   });
 
