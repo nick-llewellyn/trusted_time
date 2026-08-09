@@ -71,7 +71,7 @@ export 'nts_burst_reducer.dart' show NtsBurstReducer, lowestRttReducer;
 ///
 /// **Zero overhead when unused:** When [TrustedTimeConfig.disableNts] is
 /// set, no NTS source is built and no NTS connections are made.
-final class NtsSource implements TimeSource, Warmable {
+final class NtsSource implements TimeSource, Warmable, VerifiedCapable {
   /// Creates an NTS source for the given NTS-KE server.
   ///
   /// [dnsConcurrencyCap] is forwarded verbatim to every `ntsQuery` and
@@ -253,6 +253,7 @@ final class NtsSource implements TimeSource, Warmable {
   /// inclusion while the two decisions stay apart — wire this predicate
   /// into a classification and it becomes the hole it is written to
   /// avoid.
+  @override
   bool get canProduceVerified => _trustMode != nts.TrustMode.platformOnly;
 
   /// Per-source [nts.NtsClient]. Lazily constructed on first [warm]

@@ -13,7 +13,15 @@ import 'package:trusted_time/src/sources/nts_source.dart';
 /// Callers drive the real engine with these rather than stubbing an
 /// assessment, because a verified assessment is only reachable by
 /// establishing a genuine anchor through a live sync.
-class TierSource implements TimeSource {
+///
+/// Implements [VerifiedCapable] but answers [canProduceVerified] from a
+/// flag defaulting to `false`, so the default instance models the
+/// custom source that stamps [NtsAuthLevel.verified] without opting
+/// into being waited for — admitted to a truth box it qualifies for,
+/// never held for. Set [canProduceVerified] to model the opted-in
+/// source the early exit must wait on. [gate] withholds the reply so
+/// the wait is observable.
+class TierSource implements TimeSource, VerifiedCapable {
   TierSource({
     required this.id,
     required this.groupId,
@@ -21,6 +29,8 @@ class TierSource implements TimeSource {
     required this.endMs,
     this.authLevel = NtsAuthLevel.none,
     this.trustBackend,
+    this.canProduceVerified = false,
+    this.gate,
   });
 
   @override
@@ -31,15 +41,22 @@ class TierSource implements TimeSource {
   final int endMs;
   final NtsAuthLevel authLevel;
   final nts.TrustBackend? trustBackend;
+  @override
+  final bool canProduceVerified;
+  final Future<void> Function()? gate;
 
   @override
-  Future<TimeSample> getTime() async => TimeSample(
-    interval: TimeInterval(startMs: startMs, endMs: endMs),
-    sourceId: id,
-    groupId: groupId,
-    authLevel: authLevel,
-    trustBackend: trustBackend,
-  );
+  Future<TimeSample> getTime() async {
+    final held = gate;
+    if (held != null) await held();
+    return TimeSample(
+      interval: TimeInterval(startMs: startMs, endMs: endMs),
+      sourceId: id,
+      groupId: groupId,
+      authLevel: authLevel,
+      trustBackend: trustBackend,
+    );
+  }
 }
 
 /// A deterministic [TimeSource] centred on a fixed UTC instant with a
@@ -297,31 +314,40 @@ NtsSource verifiedNtsSource({
   );
 }
 
-/// A real [NtsSource] under `platformWithFallback` whose query succeeds
-/// through the platform trust store, optionally held behind a [gate].
+/// A real [NtsSource] whose query succeeds through the platform trust
+/// store, optionally held behind a [gate].
 ///
-/// The counterpart [verifiedNtsSource] cannot express: a source
-/// `SyncEngine` counts as verified-capable, which then answers with
-/// [nts.TrustBackend.platform] and so classifies [NtsAuthLevel.none].
-/// That is the other arm of `platformWithFallback` — and the one the
-/// trust model turns on, since a platform store may hold an inspection
-/// CA that lets the handshake terminate off-device.
+/// The counterpart [verifiedNtsSource] cannot express: a source that
+/// answers with [nts.TrustBackend.platform] and so classifies
+/// [NtsAuthLevel.none]. The trust model turns on this case, since a
+/// platform store may hold an inspection CA that lets the handshake
+/// terminate off-device.
 ///
-/// Capability and classification are separate decisions, so this source
-/// is waited for and then refused the truth box. A test that only ever
-/// scripts `webpkiRoots` cannot tell that apart from a capability check
-/// leaking into the trust label.
+/// [trustMode] selects which of the two sources of that backend is
+/// being modelled, and they differ in scheduling:
+///
+/// - `platformWithFallback` (the default) is the mode's *other* arm.
+///   `SyncEngine` counts it verified-capable, so the cycle waits for it
+///   and then refuses it the box — capability and classification being
+///   separate decisions. A test that only ever scripts `webpkiRoots`
+///   cannot tell that apart from a capability check leaking into the
+///   trust label.
+/// - `platformOnly` cannot reach a verified backend at all, so it is
+///   the one mode `SyncEngine` must *not* wait for. Scripting the
+///   platform backend keeps the source honest: `webpkiRoots` is not an
+///   outcome this mode has.
 NtsSource platformNtsSource({
   required String host,
   required int startMs,
   required int endMs,
   Future<void> Function()? gate,
+  nts.TrustMode trustMode = nts.TrustMode.platformWithFallback,
 }) {
   final midMs = (startMs + endMs) ~/ 2;
   final halfWidthMs = (endMs - startMs) ~/ 2;
   return NtsSource(
     host,
-    trustMode: nts.TrustMode.platformWithFallback,
+    trustMode: trustMode,
     debugQueryOverride: () async {
       if (gate != null) await gate();
       return nts.NtsTimeSample(

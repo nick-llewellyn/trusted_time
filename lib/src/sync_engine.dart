@@ -294,33 +294,42 @@ final class SyncEngine {
 
   /// Whether [source] could contribute a Tier 1 sample to a truth box.
   ///
-  /// Only [NtsSource] can, and only under a trust mode that can reach a
-  /// library-controlled anchor set — see [NtsSource.canProduceVerified],
-  /// which owns the mode-by-mode reasoning. Plain NTP and a
-  /// `platformOnly` NTS source always resolve to [NtsAuthLevel.none], so
-  /// no wait on one could ever raise a cycle above degraded.
+  /// The declared capability and nothing else: a source counts when it
+  /// implements [VerifiedCapable] and answers `true`. [NtsSource] does,
+  /// under every trust mode that can reach a library-controlled anchor
+  /// set — see [NtsSource.canProduceVerified], which owns the
+  /// mode-by-mode reasoning. Plain NTP and a `platformOnly` NTS source
+  /// always resolve to [NtsAuthLevel.none], so no wait on one could
+  /// ever raise a cycle above degraded.
+  ///
+  /// An explicit interface rather than a type test, because
+  /// [MarzulloEngine] admits any sample carrying
+  /// [NtsAuthLevel.verified] regardless of what produced it. A type
+  /// test made scheduling narrower than admission: a custom source
+  /// whose sample would have closed the box was never waited for, so a
+  /// cycle could publish a degraded anchor while the reply that would
+  /// have lifted it was still in flight. Opting in aligns the two
+  /// without widening admission — a source that stamps `verified`
+  /// without implementing [VerifiedCapable] still enters a box it
+  /// qualifies for, and still is not waited for.
   ///
   /// Read only to decide whether to keep waiting. A source counted here
-  /// still earns its [NtsAuthLevel] from the [nts.TrustBackend] its
-  /// handshake resolved, so one that answers through the platform trust
-  /// store — where an inspection CA could have terminated the handshake
-  /// off-device — is filtered from the box on arrival exactly as if it
-  /// had never been waited for. Do not reuse this predicate to admit,
-  /// weight, or label a sample; that would convert a scheduling hint
-  /// into a trust claim the mode cannot support.
+  /// still earns its [NtsAuthLevel] from what its sample carries, so an
+  /// [NtsSource] that answers through the platform trust store — where
+  /// an inspection CA could have terminated the handshake off-device —
+  /// is filtered from the box on arrival exactly as if it had never
+  /// been waited for. Do not reuse this predicate to admit, weight, or
+  /// label a sample; that would convert a scheduling hint into a trust
+  /// claim the source cannot support.
   ///
-  /// Type and trust mode are the whole test; provenance is not
-  /// consulted, and could not be — [_buildSources] concatenates
-  /// [TrustedTimeConfig.additionalSources] into one list and discards
-  /// where each entry came from. So an [NtsSource] supplied through
-  /// `additionalSources` counts here, which is what the tier tests rely
-  /// on. What the type check excludes is any *other* implementation
-  /// stamping [NtsAuthLevel.verified] on its own samples: that claim is
-  /// unverifiable from here, and honouring it would let a custom source
-  /// hold the early exit open on a promise it need not keep. The cost of
-  /// the conservative reading is a lost wait, not a lost anchor.
+  /// Provenance is not consulted, and could not be — [_buildSources]
+  /// concatenates [TrustedTimeConfig.additionalSources] into one list
+  /// and discards where each entry came from. So a capable source
+  /// supplied through `additionalSources` counts here, which is what
+  /// the tier tests rely on.
   static bool _canProduceVerified(TimeSource source) =>
-      source is NtsSource && source.canProduceVerified;
+      source is VerifiedCapable &&
+      (source as VerifiedCapable).canProduceVerified;
 
   /// The source ids this cycle may query.
   ///

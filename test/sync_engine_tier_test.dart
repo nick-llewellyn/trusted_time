@@ -531,6 +531,89 @@ void main() {
       },
     );
 
+    test('a degraded result waits for an opted-in custom source', () async {
+      // The engine admits any sample carrying NtsAuthLevel.verified,
+      // whatever produced it, so a custom source can be the third host
+      // a truth box needs. Declaring VerifiedCapable is what makes the
+      // hold count it -- without that the cycle would publish the
+      // degraded anchor while the reply that closes the box is still in
+      // flight, which is the asymmetry the interface exists to remove.
+      final recorder = RecordingObserver();
+      final seq = sequencerFor(recorder);
+      final engine = engineFor([
+        verifiedNtsSource(host: 'fast1.a.example', startMs: 1000, endMs: 1020),
+        verifiedNtsSource(host: 'fast2.b.example', startMs: 1005, endMs: 1025),
+        TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+        TierSource(id: 'ntp:p2', groupId: 'g2', startMs: 1000, endMs: 1020),
+        TierSource(
+          id: 'custom:slow.c',
+          groupId: 'gc',
+          startMs: 1002,
+          endMs: 1022,
+          authLevel: NtsAuthLevel.verified,
+          trustBackend: nts.TrustBackend.webpkiRoots,
+          canProduceVerified: true,
+          gate: seq.after(4),
+        ),
+      ], observer: seq);
+
+      final anchor = await engine.sync();
+
+      expect(anchor.authLevel, NtsAuthLevel.verified);
+      expect(recorder.consensusReached.last.degradedTier, isFalse);
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        contains('custom:slow.c'),
+      );
+    });
+
+    test('a custom source that has not opted in is not waited for', () async {
+      // The other side of the opt-in: capability is declared, not
+      // inferred. This source would qualify for the box on arrival --
+      // same interval and auth level as the case above -- but says
+      // nothing about being able to produce one, so the cycle does not
+      // spend its latency budget discovering that. Silence reads as
+      // incapable rather than as capable-by-default, which keeps a
+      // consumer's source from holding the early exit open on a promise
+      // it never made.
+      final recorder = RecordingObserver();
+      final engine = engineFor(
+        [
+          verifiedNtsSource(
+            host: 'fast1.a.example',
+            startMs: 1000,
+            endMs: 1020,
+          ),
+          verifiedNtsSource(
+            host: 'fast2.b.example',
+            startMs: 1000,
+            endMs: 1020,
+          ),
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          TierSource(
+            id: 'custom:silent.c',
+            groupId: 'gc',
+            startMs: 1000,
+            endMs: 1020,
+            authLevel: NtsAuthLevel.verified,
+            trustBackend: nts.TrustBackend.webpkiRoots,
+            gate: never,
+          ),
+        ],
+        observer: recorder,
+        maxLatency: const Duration(seconds: 30),
+      );
+
+      final anchor = await syncWithoutWaiting(engine);
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('custom:silent.c')),
+      );
+    });
+
     test('a platform-store reply is waited for and then refused the '
         'box', () async {
       // The two halves of platformWithFallback held apart. Capability
@@ -625,6 +708,54 @@ void main() {
       expect(
         anchor.contributors.map((c) => c.sourceId),
         isNot(contains('nts:never.a.example')),
+      );
+    });
+
+    test('a platformOnly query is not waited for', () async {
+      // The only mode canProduceVerified excludes, and so the only one
+      // that must not hold a cycle. platformOnly refuses the webpki
+      // fallback by construction: every outcome it has is
+      // platform-mediated, classifies none, and cannot enter a box.
+      //
+      // Reachability cannot be what releases this cycle. Two verified
+      // hosts are banked and this is a third responder, so counting it
+      // would put the floor of three in reach and hold for the full
+      // maxLatency -- arriving at the degraded anchor it already had.
+      // Only incapability keeps the cycle moving, which is what makes
+      // this fail if the excluded arm is ever admitted.
+      final recorder = RecordingObserver();
+      final engine = engineFor(
+        [
+          verifiedNtsSource(
+            host: 'fast1.a.example',
+            startMs: 1000,
+            endMs: 1020,
+          ),
+          verifiedNtsSource(
+            host: 'fast2.b.example',
+            startMs: 1000,
+            endMs: 1020,
+          ),
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          platformNtsSource(
+            host: 'platform.c.example',
+            startMs: 1000,
+            endMs: 1020,
+            gate: never,
+            trustMode: nts.TrustMode.platformOnly,
+          ),
+        ],
+        observer: recorder,
+        maxLatency: const Duration(seconds: 30),
+      );
+
+      final anchor = await syncWithoutWaiting(engine);
+
+      expect(anchor.authLevel, NtsAuthLevel.none);
+      expect(recorder.consensusReached.last.degradedTier, isTrue);
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        isNot(contains('nts:platform.c.example')),
       );
     });
 
