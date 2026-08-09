@@ -823,6 +823,89 @@ void main() {
       );
     });
 
+    test('a held cycle outlives one instance of a duplicated verified '
+        'host failing', () async {
+      // The other half of the multiset. Collapsing by id is what keeps
+      // reachability honest; keeping a count per id is what keeps the
+      // hold alive while any instance of that id is still in flight.
+      // Dropping the id on the first outcome instead would release a
+      // degraded anchor here, discarding the box the second instance
+      // goes on to close -- the same trade the reachability case makes
+      // in the other direction, and the expensive one.
+      //
+      // Two verified hosts bank, one short of the floor, and the
+      // duplicated id supplies the third: its first instance fails
+      // after the cycle is held, its second then answers.
+      final recorder = RecordingObserver();
+      final seq = sequencerFor(recorder);
+
+      // The rescue is the only way to get two instances of one id
+      // queried together, and a failure is the only way into it: while
+      // both instances are healthy the engine collapses them. So the
+      // id's first query fails outright to arm the cooldown, and the
+      // instance's second query -- in the rescue cycle -- is the one
+      // held back until the cycle is stable.
+      var dupQueries = 0;
+      final firstInstanceFailed = Completer<void>();
+      Future<void> failingGate() async {
+        dupQueries++;
+        if (dupQueries == 1) return;
+        await seq.after(3)();
+        if (!firstInstanceFailed.isCompleted) firstInstanceFailed.complete();
+      }
+
+      // Ordered behind the failure reaching the engine's listener, not
+      // merely behind the throw: the release path runs there, so a
+      // sample that overtook it would close the box before the hold was
+      // ever asked to survive the failure -- and would pass against a
+      // plain set just the same.
+      Future<void> liftingGate() async {
+        await firstInstanceFailed.future;
+        await pumpEventQueue();
+      }
+
+      final engine = engineFor(
+        [
+          verifiedNtsSource(host: 'a.example', startMs: 1000, endMs: 1020),
+          verifiedNtsSource(host: 'b.example', startMs: 1000, endMs: 1020),
+          TierSource(id: 'ntp:p1', groupId: 'g1', startMs: 1000, endMs: 1020),
+          failingVerifiedNtsSource(host: 'dup.example', gate: failingGate),
+          verifiedNtsSource(
+            host: 'dup.example',
+            startMs: 1000,
+            endMs: 1020,
+            gate: liftingGate,
+          ),
+          // Keeps _finalizeSync out of it: with a query still
+          // outstanding, the only route to an anchor is the early exit,
+          // so what the cycle publishes is what the hold decided.
+          _GatedTierSource(
+            id: 'ntp:never',
+            groupId: 'g2',
+            startMs: 1000,
+            endMs: 1020,
+            gate: never,
+          ),
+        ],
+        observer: seq,
+        maxLatency: const Duration(seconds: 30),
+      );
+
+      // The first cycle fails the id; the four after it are what the
+      // starvation guard counts before re-admitting both instances.
+      for (var i = 0; i < 5; i++) {
+        await syncWithoutWaiting(engine);
+      }
+      final anchor = await engine.sync();
+
+      expect(anchor.authLevel, NtsAuthLevel.verified);
+      expect(recorder.consensusReached.last.degradedTier, isFalse);
+      expect(
+        anchor.contributors.map((c) => c.sourceId),
+        contains('nts:dup.example'),
+      );
+    });
+
     test('a verified failure releases a hold it was the last reason '
         'for', () async {
       // The hold has to end on the terminal outcome of the query it was
@@ -1020,10 +1103,17 @@ class _Sequencer implements SyncObserver {
   final _pending = <int, Completer<void>>{};
   int _seen = 0;
 
-  /// A gate that opens once [samples] samples have reached the engine.
+  /// A gate that opens once [samples] samples of the current cycle have
+  /// reached the engine.
+  ///
+  /// The count is per cycle, so the closure resolves its completer on
+  /// each call rather than capturing the one registered here: a test
+  /// that runs several cycles would otherwise find every gate already
+  /// open from the replies of the first.
   Future<void> Function() after(int samples) {
-    final gate = _pending.putIfAbsent(samples, Completer<void>.new);
+    _pending.putIfAbsent(samples, Completer<void>.new);
     return () {
+      final gate = _pending.putIfAbsent(samples, Completer<void>.new);
       if (_seen >= samples && !gate.isCompleted) gate.complete();
       return gate.future;
     };
@@ -1045,7 +1135,15 @@ class _Sequencer implements SyncObserver {
       inner.onSourceFailed(sourceId, error);
 
   @override
-  void onSyncStarted() => inner.onSyncStarted();
+  void onSyncStarted() {
+    // A gate counts this cycle's replies only. Cycles are sequential
+    // here, and onSyncStarted precedes every query in one, so clearing
+    // both here leaves a multi-cycle test ordering each cycle the same
+    // way the single-cycle cases order theirs.
+    _seen = 0;
+    _pending.clear();
+    inner.onSyncStarted();
+  }
 
   @override
   void onConsensusReached(ConsensusResult result) =>
