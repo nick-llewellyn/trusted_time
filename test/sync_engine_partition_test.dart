@@ -57,15 +57,34 @@ class _FakeNtsSource implements TimeSource {
   );
 }
 
+/// A [_FakeNtsSource] that records each [warm] call into a shared list.
+///
+/// The real cost this partition exists to avoid is the NTS-KE handshake
+/// itself, which is what [Warmable.warm] stands for; observing the call
+/// is the only way to assert the cost was not paid.
+class _WarmRecordingNtsSource extends _FakeNtsSource implements Warmable {
+  _WarmRecordingNtsSource(super.host, this._warmed);
+
+  final List<String> _warmed;
+
+  @override
+  Future<void> warm() async => _warmed.add(id);
+}
+
 /// Builds a fake NTS inventory of [anycast] fixed members plus
 /// [unicast] promotion/explorer candidates, with a matching source per
 /// host.
+///
+/// Pass [warmLog] to get [Warmable] sources that append their id to it
+/// on each warm; otherwise the sources implement no warming at all, so
+/// a cycle's barrier is a no-op over them.
 ///
 /// NTP is emptied so the assertions are about the NTS partition alone.
 ({TrustedTimeConfig config, List<TimeSource> sources}) _fakeNtsInventory({
   required int anycast,
   required int unicast,
   int? queryTarget,
+  List<String>? warmLog,
 }) {
   final entries = <NtsServerInfo>[
     for (var i = 0; i < anycast; i++)
@@ -83,7 +102,13 @@ class _FakeNtsSource implements TimeSource {
         leapPolicy: LeapPolicy.documentedStepping,
       ),
   ];
-  final sources = [for (final e in entries) _FakeNtsSource(e.host)];
+  final sources = [
+    for (final e in entries)
+      if (warmLog == null)
+        _FakeNtsSource(e.host)
+      else
+        _WarmRecordingNtsSource(e.host, warmLog),
+  ];
   return (
     config: TrustedTimeConfig(
       disableNtpForTesting: true,
@@ -132,6 +157,40 @@ class _HangingNtpSource implements TimeSource {
 
   @override
   Future<TimeSample> getTime() => Completer<TimeSample>().future;
+}
+
+/// A [_FakeNtpSource] that records each [warm] call into a shared list.
+class _WarmRecordingNtpSource extends _FakeNtpSource implements Warmable {
+  _WarmRecordingNtpSource(super.host, this._warmed);
+
+  final List<String> _warmed;
+
+  @override
+  Future<void> warm() async => _warmed.add(id);
+}
+
+/// A [_FakeNtpSource] that answers, but only after [delay].
+///
+/// Distinct from [_HangingNtpSource]: this host *does* work, it is
+/// merely slower than the quorum it is racing. Under early exit that is
+/// the difference between a sample the cycle uses and one it discards.
+class _LateNtpSource implements TimeSource {
+  _LateNtpSource(String host, this.delay) : id = '${TimeSource.prefixNtp}$host';
+  @override
+  final String id;
+  @override
+  final String groupId = 'as1';
+  final Duration delay;
+
+  @override
+  Future<TimeSample> getTime() async {
+    await Future<void>.delayed(delay);
+    return TimeSample(
+      interval: TimeInterval(startMs: 1000, endMs: 1020),
+      sourceId: id,
+      groupId: groupId,
+    );
+  }
 }
 
 /// A [_FakeNtpSource] that tallies how often it was queried.
@@ -643,6 +702,84 @@ void main() {
       expect(roles.blocking.union(roles.explorers), equals(all));
     });
 
+    test('the fill declines hosts known only from failures', () {
+      // The fill is a cold-start allowance, not a standing exemption.
+      // On a network where every unicast candidate has failed, taking
+      // the head of the walk unconditionally would seat the oldest
+      // failure -- routing around hasSucceeded on exactly the
+      // population that rule exists for, and leaving the target's
+      // failure headroom nominal for as long as the outage lasts.
+      final tracker = SourceQualityTracker();
+      final fake = _fakeNtsInventory(anycast: 2, unicast: 8, queryTarget: 5);
+      for (var i = 0; i < 8; i++) {
+        tracker.recordFailure('${TimeSource.prefixNts}ntsuni$i.test');
+      }
+      final roles = _engine(
+        config: fake.config,
+        tracker: tracker,
+      ).selectCycleRolesForTesting();
+
+      // The fixed members alone. They still meet the verified floor, so
+      // shrinking to them costs width rather than trust.
+      expect(roles.blocking, hasLength(2));
+      expect(
+        roles.blocking.every((id) => id.contains('ntsany')),
+        isTrue,
+        reason: 'a failed unicast host must not reach the quorum',
+      );
+    });
+
+    test('a declined host stays an explorer for retry', () {
+      // Declining is not exclusion: the fill decides only whether this
+      // cycle may build an anchor on the host, not whether it is
+      // contacted. Every declined host must still be probed, or the
+      // outage that disqualified it could never be observed to end and
+      // the decline would be permanent.
+      //
+      // Sized so the whole unicast half fits in one explorer budget,
+      // which makes the assertion exact rather than a non-emptiness
+      // check: anything the fill took would be missing from this set.
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+      final tracker = SourceQualityTracker();
+      final failed = {
+        for (var i = 0; i < SyncEngine.standardNtsExplorerBudget; i++)
+          '${TimeSource.prefixNts}ntsuni$i.test',
+      };
+      final fake = _fakeNtsInventory(
+        anycast: 2,
+        unicast: SyncEngine.standardNtsExplorerBudget,
+        queryTarget: 5,
+      );
+      for (final id in failed) {
+        tracker.recordFailure(id);
+      }
+      final roles = _engine(
+        config: fake.config,
+        tracker: tracker,
+      ).selectCycleRolesForTesting();
+      expect(roles.explorers, equals(failed));
+    });
+
+    test('the declined slots are not spent widening the walk', () {
+      // The walk is computed at budget + shortfall so the fill has a
+      // surplus to draw from. What the fill declines has to go back: a
+      // cycle that promotes nothing must not silently query the target
+      // as explorers instead, which would keep the handshake count at
+      // its ceiling on precisely the degraded network the decline is
+      // protecting.
+      final tracker = SourceQualityTracker();
+      final fake = _fakeNtsInventory(anycast: 2, unicast: 20, queryTarget: 5);
+      for (var i = 0; i < 20; i++) {
+        tracker.recordFailure('${TimeSource.prefixNts}ntsuni$i.test');
+      }
+      final engine = _engine(config: fake.config, tracker: tracker);
+      expect(
+        engine.selectCycleRolesForTesting().explorers,
+        hasLength(engine.effectiveNtsExplorerBudget),
+      );
+    });
+
     test('two installs promote different cold-start hosts', () {
       // The fill inherits the per-install shuffle rather than
       // introducing a shared constant order.
@@ -786,7 +923,17 @@ void main() {
   // then narrows away is the cost the partition exists to avoid.
   group('warmAllSources cycle scoping', () {
     test('only the cycle-selected sources are warmed', () async {
-      final fake = _fakeNtsInventory(anycast: 2, unicast: 20, queryTarget: 3);
+      // Asserted on the warms themselves, not on completion: a
+      // warmAllSources() that fanned out across all 22 hosts would
+      // complete just as happily, so the narrowing has to be observed
+      // where the cost is actually paid.
+      final warmed = <String>[];
+      final fake = _fakeNtsInventory(
+        anycast: 2,
+        unicast: 20,
+        queryTarget: 3,
+        warmLog: warmed,
+      );
       final engine = _engine(config: fake.config);
       final selected = engine.selectCycleHostsForTesting();
 
@@ -795,8 +942,75 @@ void main() {
         lessThan(fake.sources.length),
         reason: 'the partition must narrow, or this asserts nothing',
       );
-      // Completes rather than fanning out across the whole inventory.
+
       await engine.warmAllSources();
+
+      expect(warmed.toSet(), equals(selected));
+      expect(
+        warmed,
+        hasLength(selected.length),
+        reason: 'each selected source is warmed exactly once',
+      );
+    });
+
+    test("a cycle's barrier warms that cycle's set", () async {
+      // sync() warms the roles it already computed rather than deriving
+      // a second selection. The two agree today -- nothing awaits
+      // between the two points -- so this pins the agreement rather
+      // than catching a live divergence. What it does catch is the
+      // barrier reverting to the whole pool, and it is the anchor for
+      // the property should an await ever appear in that span: an
+      // explorer probe landing in the tracker mid-span would re-rank
+      // the inventory and leave the barrier priming hosts the cycle is
+      // not querying.
+      // On the NTP inventory rather than the NTS one: the NTS seam
+      // builds a real NtsSource per entry, so an offline cycle cannot
+      // reach quorum there. The barrier is protocol-agnostic -- it
+      // keys off Warmable, not off the id prefix.
+      final warmed = <String>[];
+      final entries = <NtpServerInfo>[
+        for (var i = 0; i < 2; i++)
+          NtpServerInfo(
+            host: 'any$i.test',
+            tier: TimeServerTier.anycast,
+            observedStratum: 1,
+            observedGroupId: 'as1',
+            leapPolicy: LeapPolicy.documentedStepping,
+          ),
+        for (var i = 0; i < 20; i++)
+          NtpServerInfo(
+            host: 'uni$i.test',
+            tier: TimeServerTier.unicastStratum1,
+            observedStratum: 1,
+            observedGroupId: 'as1',
+            leapPolicy: LeapPolicy.documentedStepping,
+          ),
+      ];
+      final sources = [
+        for (final e in entries) _WarmRecordingNtpSource(e.host, warmed),
+      ];
+      final engine = SyncEngine(
+        config: TrustedTimeConfig(
+          disableNts: true,
+          disableNtpForTesting: true,
+          ntpInventoryForTesting: entries,
+          additionalSources: sources,
+          minGroupCount: 1,
+        ),
+        clock: FakeMonotonicClock(),
+        explorerShuffle: const ExplorerShuffle(99),
+        explorerBudget: 4,
+      );
+      final roles = engine.selectCycleRolesForTesting();
+
+      await engine.sync();
+
+      expect(warmed.toSet(), equals(roles.blocking.union(roles.explorers)));
+      expect(
+        warmed.toSet().length,
+        lessThan(sources.length),
+        reason: 'the barrier must narrow, or this asserts nothing',
+      );
     });
   });
 
@@ -1120,5 +1334,69 @@ void main() {
     // the two. The guard scoping is hardening for the front-loaded
     // foreground budget, where widths differ *within* an engine's life;
     // the test belongs with that change.
+  });
+
+  group('success latch under early exit', () {
+    test('a host that answers after the exit still latches', () async {
+      // The promotion admission rule reads a latch that the end-of-cycle
+      // bookkeeping cannot set on its own: _completeSync folds in the
+      // samples it collected, and under early exit a late one is
+      // discarded before it gets there. A host that answers every cycle
+      // but always a little behind the quorum would then stay
+      // unpromotable forever -- the filter excluding exactly the
+      // reachable hosts it exists to find.
+      //
+      // Four anycast answer instantly and settle consensus; the fifth
+      // is late enough that the cycle is long gone when it returns.
+      final tracker = SourceQualityTracker();
+      final hosts = const [
+        'any0.test',
+        'any1.test',
+        'any2.test',
+        'any3.test',
+        'late.test',
+      ];
+      final entries = <NtpServerInfo>[
+        for (final host in hosts)
+          NtpServerInfo(
+            host: host,
+            tier: TimeServerTier.anycast,
+            observedStratum: 1,
+            observedGroupId: 'as1',
+            leapPolicy: LeapPolicy.documentedStepping,
+          ),
+      ];
+      final sources = <TimeSource>[
+        for (final host in hosts)
+          if (host == 'late.test')
+            _LateNtpSource(host, const Duration(milliseconds: 400))
+          else
+            _FakeNtpSource(host),
+      ];
+      final engine = SyncEngine(
+        config: TrustedTimeConfig(
+          disableNts: true,
+          disableNtpForTesting: true,
+          ntpInventoryForTesting: entries,
+          additionalSources: sources,
+          minGroupCount: 1,
+        ),
+        clock: FakeMonotonicClock(),
+        qualityTracker: tracker,
+        explorerShuffle: const ExplorerShuffle(99),
+      );
+
+      await engine.sync();
+      expect(
+        tracker.hasSucceeded('${TimeSource.prefixNtp}late.test'),
+        isFalse,
+        reason: 'the late host has not answered yet, so nothing to latch',
+      );
+
+      // Let the straggler land. Its sample is discarded; the fact that
+      // it answered is not.
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      expect(tracker.hasSucceeded('${TimeSource.prefixNtp}late.test'), isTrue);
+    });
   });
 }

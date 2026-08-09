@@ -118,6 +118,15 @@ final class SourceQualityStats {
   /// which is also what an older payload without the key means — a
   /// pre-upgrade install re-earns the flag on its next successful
   /// probe.
+  ///
+  /// Durable only for the sources [SourceQualityTracker.snapshot]
+  /// keeps: it prunes to the most-recently-probed entries, so a host
+  /// that falls out of that window loses the flag along with the rest
+  /// of its stats and is treated as never-tried on the next start.
+  /// That is the intended reading — the flag is evidence, and evidence
+  /// old enough to be evicted has stopped being current — but it means
+  /// the guarantee is "survives a restart while the host is still
+  /// among the recently probed", not unconditionally.
   final bool succeededOnce;
 
   /// Serializes to a JSON-compatible map. Null fields are omitted.
@@ -295,7 +304,30 @@ final class SourceQualityTracker {
     stats.successRate = _ewma(stats.successRate, 1.0);
     stats.lastProbedUtcMs = _wallClock();
     stats.vantageStale = false;
-    stats.succeededOnce = true;
+    markSucceeded(sourceId);
+  }
+
+  /// Latches [SourceQualityStats.succeededOnce] for [sourceId] without
+  /// touching any other metric.
+  ///
+  /// Separated from [recordProbe] because the two answer to different
+  /// events. The metrics are cycle bookkeeping: a blocking query's are
+  /// folded in at the end of the cycle, from the samples that arrived
+  /// in time to matter. The latch is not bookkeeping but a fact about
+  /// the host, and it is established the moment the host answers —
+  /// whether or not the cycle still wants the answer.
+  ///
+  /// The distinction is load-bearing because a cycle can exit early on
+  /// quorum, and samples landing after that are discarded before
+  /// [record] ever sees them. A host that answered every cycle but
+  /// always a little late would stay unpromotable forever, which
+  /// inverts the admission rule: the promotion filter would exclude
+  /// exactly the reachable hosts it exists to find.
+  ///
+  /// Idempotent, and safe to call alongside [recordProbe] — the latch
+  /// is a set-to-true, so no EWMA is applied twice.
+  void markSucceeded(String sourceId) {
+    _stats.putIfAbsent(sourceId, _SourceStats.new).succeededOnce = true;
   }
 
   /// Records a failure for a source: the query cycle is noted so
@@ -461,6 +493,20 @@ final class SourceQualityTracker {
     if (stats == null || stats.vantageStale) return null;
     return stats.lastProbedUtcMs;
   }
+
+  /// Whether [sourceId] has ever been probed at all, successfully or
+  /// not.
+  ///
+  /// The complement of [hasSucceeded] over the tracker's population:
+  /// together they split a source three ways — never tried, tried and
+  /// failed, tried and answered. The NTS cold-start fill needs the
+  /// first of those on its own, since a host it knows nothing about is
+  /// a reasonable gamble where one it has already watched fail is not.
+  ///
+  /// Unaffected by a vantage change, like [hasSucceeded] and unlike
+  /// [lastProbedUtcMs]: the question is whether a measurement exists,
+  /// not whether it is current.
+  bool hasBeenProbed(String sourceId) => _stats.containsKey(sourceId);
 
   /// Whether [sourceId] has ever answered a probe successfully.
   ///

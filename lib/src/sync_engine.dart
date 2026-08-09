@@ -408,18 +408,29 @@ final class SyncEngine {
   ///   Only a host with a recorded success is promotable
   ///   ([SourceQualityTracker.hasSucceeded]): one known solely from a
   ///   failed probe would fill a slot the target's failure headroom
-  ///   depends on. When no ranked host qualifies the target is filled
-  ///   from the head of the walk order instead, which is the cold-start
-  ///   case — those hosts are probed this cycle either way, and
-  ///   discarding their samples in the one cycle where the truth-box
-  ///   floor is otherwise unmet is not defensible.
+  ///   depends on. When too few ranked hosts qualify the remaining
+  ///   slots are filled from the *unmeasured* hosts in walk order,
+  ///   which is the cold-start case — those hosts are probed this cycle
+  ///   either way, and discarding their samples in the one cycle where
+  ///   the truth-box floor is otherwise unmet is not defensible. Hosts
+  ///   the tracker has already watched fail are not eligible: that
+  ///   would route around the admission rule on precisely the
+  ///   population it was written for. Where nothing qualifies the
+  ///   quorum is the fixed members alone.
   /// - The remaining unicast hosts are walked
   ///   [effectiveNtsExplorerBudget] at a time. Promoted hosts come out
   ///   of that budget rather than widening the cycle.
   ///
-  /// A cycle therefore opens `ntsQueryTarget + effectiveNtsExplorerBudget`
-  /// NTS-KE handshakes — single digits — where the pre-partition engine
-  /// opened one per inventory host.
+  /// A cycle therefore opens at most
+  /// `ntsQueryTarget + effectiveNtsExplorerBudget` NTS-KE handshakes,
+  /// where the pre-partition engine opened one per inventory host. On
+  /// the curated inventory at the default target that is single digits;
+  /// [TrustedTimeConfig.ntsQueryTarget] has a floor but no ceiling, so a
+  /// caller that raises it raises this with it. The count is also a
+  /// ceiling rather than an equality: an inventory with fewer unicast
+  /// hosts than the target has nothing to promote from, and one whose
+  /// fixed members already meet or exceed the target — which test
+  /// inventories can arrange — leaves promotion no slots at all.
   ///
   /// Rotating the tier does not make an anchor's authentication level
   /// cycle-dependent, which was the objection the pass-through rested
@@ -601,19 +612,47 @@ final class SyncEngine {
     ).explorers;
 
     // Cold-start fill: with fewer qualifying ranked hosts than slots,
-    // take the head of the walk. partitionInventory already sorts
-    // never-probed hosts first with the per-install shuffle breaking
-    // ties, so this promotes the prefix of a traversal the cycle
-    // computes anyway — no new selection rule and no new randomness.
-    // Those hosts are probed this cycle regardless; the fill decides
-    // only whether the cycle may *use* the result, and discarding it in
-    // the one cycle where the truth-box floor is otherwise unmet is not
-    // defensible. The cost is latency: a filled host gates the cycle
-    // while nothing is known about it. Accepted, since a cold cycle has
-    // no cached anchor either and maxLatency bounds it.
+    // draw from the walk. partitionInventory already sorts never-probed
+    // hosts first with the per-install shuffle breaking ties, so this
+    // consumes a traversal the cycle computes anyway — no new selection
+    // rule and no new randomness. Those hosts are probed this cycle
+    // regardless; the fill decides only whether the cycle may *use* the
+    // result, and discarding it in the one cycle where the truth-box
+    // floor is otherwise unmet is not defensible. The cost is latency: a
+    // filled host gates the cycle while nothing is known about it.
+    // Accepted, since a cold cycle has no cached anchor either and
+    // maxLatency bounds it.
+    //
+    // Only *unmeasured* hosts qualify, which is the difference between
+    // knowing nothing and knowing something bad. Taking the head
+    // unconditionally reads the same on a genuinely cold install, where
+    // the head is unmeasured by construction — but once every unicast
+    // candidate carries a failure the head is merely the oldest failure,
+    // and seating it would route around `hasSucceeded` on exactly the
+    // population that rule was written for. The fill would stop being a
+    // cold-start allowance and become a standing exemption, leaving the
+    // target's failure headroom nominal on a permanently degraded
+    // network. Where nothing qualifies the quorum falls back to the
+    // fixed members, which still meet the verified floor; the failed
+    // hosts stay explorers and are retried there.
+    final filled = <String>[];
+    for (final host in walk) {
+      if (filled.length == shortfall) break;
+      if (!_qualityTracker.hasBeenProbed('${TimeSource.prefixNts}$host')) {
+        filled.add(host);
+      }
+    }
+    final filledSet = filled.toSet();
+
+    // Trimmed rather than left at the widened budget: the surplus was
+    // borrowed for the fill, so what the fill declined goes back rather
+    // than quietly widening the cycle beyond target + budget.
     return InventoryPartition(
-      quorum: [...fixed, ...promoted, ...walk.take(shortfall)],
-      explorers: walk.skip(shortfall).toList(),
+      quorum: [...fixed, ...promoted, ...filled],
+      explorers: [
+        for (final host in walk)
+          if (!filledSet.contains(host)) host,
+      ].take(effectiveNtsExplorerBudget).toList(),
     );
   }
 
@@ -834,9 +873,32 @@ final class SyncEngine {
   /// this method multiple times is safe and cheap. Failures from
   /// individual sources are swallowed: warming is best-effort, and
   /// [sync] retains its existing JIT-warm fallback path.
+  ///
+  /// [sync] does not call this method — it calls [_warmHosts] with the
+  /// selection it already made. See there for why re-deriving one would
+  /// not do.
+  ///
+  /// `async` rather than returning [_warmHosts] directly: the selection
+  /// is the first thing to touch the late-built `_sources`, so an
+  /// invalid trust config throws here. Callers are promised a rejected
+  /// future, not a synchronous throw.
   Future<void> warmAllSources() async {
     final roles = _selectCycleHosts();
-    final wanted = {...roles.blocking, ...roles.explorers};
+    await _warmHosts({...roles.blocking, ...roles.explorers});
+  }
+
+  /// Warms every [Warmable] source whose id is in [wanted].
+  ///
+  /// Takes the selection rather than deriving it so a caller that has
+  /// already partitioned the cycle warms the hosts it is about to
+  /// query, not a fresh partition. The two can differ: explorer probes
+  /// are unawaited and outlive their cycle, so one landing in
+  /// [_qualityTracker] between a cycle's selection and its warm barrier
+  /// would re-rank the inventory and move NTS promotion or the walk
+  /// under it. The barrier would then prime cookie jars for hosts the
+  /// cycle is not querying and leave the ones it is cold — the reverse
+  /// of what the barrier exists for.
+  Future<void> _warmHosts(Set<String> wanted) async {
     final warmables = _sources
         .where((s) => wanted.contains(s.id))
         .whereType<Warmable>()
@@ -1524,10 +1586,17 @@ final class SyncEngine {
       // a completion gate, not a fixed delay: when handshakes are fast
       // (or already memoized, as after initialize()'s explicit
       // warmAllSources()) it costs nothing. The warmBarrierCap only
-      // bounds a pathological hang — warmAllSources() already swallows
+      // bounds a pathological hang — _warmHosts() already swallows
       // per-source failures, so on timeout the cycle proceeds and the
       // per-source Phase A warm below covers any laggard.
-      await warmAllSources().timeout(warmBarrierCap, onTimeout: () {});
+      //
+      // Warms this cycle's own selection rather than re-deriving one,
+      // so a probe landing in the tracker before the barrier cannot
+      // repartition the inventory underneath it.
+      await _warmHosts({
+        ...cycleRoles.blocking,
+        ...cycleRoles.explorers,
+      }).timeout(warmBarrierCap, onTimeout: () {});
 
       // 3. Launch racing queries.
       //
@@ -2244,6 +2313,14 @@ final class SyncEngine {
       _sourceHealth[source.id] = 0; // Reset failure count on success
       _sourceTransientStreak.remove(source.id);
       _blacklistUntil.remove(source.id);
+      // Latch here rather than leaving it to the end-of-cycle
+      // bookkeeping in _completeSync, which only sees the samples that
+      // arrived in time to be folded in. A cycle can exit early on
+      // quorum, and this sample may be discarded; that the host
+      // answered is true either way, and NTS promotion turns on it.
+      // Latch-only, so the EWMAs are still applied exactly once, by
+      // whichever of record/recordProbe owns this source's path.
+      _qualityTracker.markSucceeded(source.id);
       // Retain NTP samples for the pre-sync rescue: if this cycle ends
       // up failing on an NTS cert-validity deadlock, the rescue reuses
       // these as its coarse estimate without a second round trip.

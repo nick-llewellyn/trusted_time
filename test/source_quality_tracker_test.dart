@@ -572,6 +572,82 @@ void main() {
       });
     });
 
+    group('markSucceeded', () {
+      test('latches without recording a measurement', () {
+        // The separation the engine depends on: a blocking query's
+        // metrics are folded in at the end of the cycle, but the cycle
+        // may exit early and drop the sample. The latch has to survive
+        // that, so it cannot be carried by the metric path.
+        final tracker = SourceQualityTracker()..markSucceeded('nts:up.test');
+        expect(tracker.hasSucceeded('nts:up.test'), isTrue);
+        expect(tracker.lastProbedUtcMs('nts:up.test'), 0);
+      });
+
+      test('does not move the starvation cursor', () {
+        // Rotation is driven by recorded queries, and the latch is not
+        // one — it is a fact about the host, asserted alongside
+        // whatever bookkeeping the cycle does or does not perform.
+        // Were it to touch the cursor, a latch would silently defer the
+        // starvation rescue for the host it was asserting is good.
+        final latched = SourceQualityTracker()..markSucceeded('nts:up.test');
+        final probed = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 10);
+
+        // The probe resets the cursor; the latch leaves the host where
+        // it was, which for an otherwise-unknown host is never-queried.
+        expect(probed.isStarved('nts:up.test'), isFalse);
+        expect(latched.isStarved('nts:up.test'), isTrue);
+      });
+
+      test('applies no EWMA when paired with recordProbe', () {
+        // The engine calls both on a successful blocking query, so the
+        // latch must not double-count. Compared against a tracker that
+        // took the probe alone.
+        final both = SourceQualityTracker()
+          ..markSucceeded('nts:up.test')
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 40);
+        final probeOnly = SourceQualityTracker()
+          ..recordProbe(sourceId: 'nts:up.test', delayMs: 40);
+        expect(
+          both.snapshot()['nts:up.test']!.ewmaRttMs,
+          probeOnly.snapshot()['nts:up.test']!.ewmaRttMs,
+        );
+        expect(
+          both.snapshot()['nts:up.test']!.successRate,
+          probeOnly.snapshot()['nts:up.test']!.successRate,
+        );
+      });
+
+      test('is idempotent', () {
+        final tracker = SourceQualityTracker()
+          ..markSucceeded('nts:up.test')
+          ..markSucceeded('nts:up.test');
+        expect(tracker.hasSucceeded('nts:up.test'), isTrue);
+      });
+    });
+
+    group('hasBeenProbed', () {
+      test('an unknown source has not been probed', () {
+        expect(SourceQualityTracker().hasBeenProbed('nts:never.test'), isFalse);
+      });
+
+      test('a failure counts as having been probed', () {
+        // The distinction the NTS cold-start fill turns on: knowing
+        // nothing about a host is not the same as knowing it failed.
+        final tracker = SourceQualityTracker()..recordFailure('nts:down.test');
+        expect(tracker.hasBeenProbed('nts:down.test'), isTrue);
+        expect(tracker.hasSucceeded('nts:down.test'), isFalse);
+      });
+
+      test('a vantage change does not clear it', () {
+        final tracker = SourceQualityTracker()
+          ..recordFailure('nts:down.test')
+          ..markVantageStale();
+        expect(tracker.lastProbedUtcMs('nts:down.test'), isNull);
+        expect(tracker.hasBeenProbed('nts:down.test'), isTrue);
+      });
+    });
+
     group('SourceQualityStats JSON absent-field handling', () {
       test('round-trips with optional fields absent', () {
         const stats = SourceQualityStats(
